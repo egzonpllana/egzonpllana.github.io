@@ -1,0 +1,139 @@
+---
+import { SITE, APP_STORE_DEVELOPER_URL } from '../data/site';
+import { STACK_OVERFLOW } from '../data/stackoverflow';
+
+type IconKey =
+  | 'email'
+  | 'linkedin'
+  | 'github'
+  | 'medium'
+  | 'stackoverflow'
+  | 'appstore';
+
+interface Contact {
+  label: string;
+  value: string;
+  href: string;
+  icon: IconKey;
+  external?: boolean;
+}
+
+const CONTACTS: Contact[] = [
+  { label: 'Email', value: SITE.email, href: `mailto:${SITE.email}`, icon: 'email' },
+  { label: 'LinkedIn', value: 'in/egzon-pllana', href: 'https://linkedin.com/in/egzon-pllana', icon: 'linkedin', external: true },
+  { label: 'GitHub', value: '@egzonpllana', href: 'https://github.com/egzonpllana', icon: 'github', external: true },
+  { label: 'Medium', value: '@egzonpllana', href: 'https://medium.com/@egzonpllana', icon: 'medium', external: true },
+  { label: 'Stack Overflow', value: 'egzon-p', href: STACK_OVERFLOW.url, icon: 'stackoverflow', external: true },
+  { label: 'App Store', value: 'Developer page', href: APP_STORE_DEVELOPER_URL, icon: 'appstore', external: true },
+];
+
+const ICONS: Record<IconKey, string> = {
+  email:
+    'M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v.4l8 5 8-5V6H4zm16 2.8-7.43 4.64a1 1 0 0 1-1.14 0L4 8.8V18h16V8.8z',
+  linkedin:
+    'M6.94 5a1.94 1.94 0 1 1-3.88 0 1.94 1.94 0 0 1 3.88 0zM3.32 8.5h3.24V21H3.32V8.5zM9.6 8.5h3.1v1.7h.05c.43-.8 1.49-1.65 3.07-1.65 3.28 0 3.88 2.13 3.88 4.9V21h-3.23v-5.9c0-1.4-.03-3.21-1.96-3.21-1.96 0-2.26 1.53-2.26 3.11V21H9.6V8.5z',
+  github:
+    'M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49v-1.7c-2.78.62-3.37-1.37-3.37-1.37-.46-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.3 9.3 0 0 1 5 0c1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.93-2.35 4.79-4.58 5.05.36.32.68.94.68 1.9v2.82c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2z',
+  medium:
+    'M4.37 7.3a.78.78 0 0 0-.26-.66L2.2 4.35v-.34h5.93l4.58 10.05L16.74 4h5.65v.34l-1.63 1.56a.48.48 0 0 0-.18.46v11.5a.48.48 0 0 0 .18.46l1.59 1.56v.34h-8v-.34l1.65-1.6c.16-.16.16-.21.16-.46V8.42l-4.59 11.65h-.62L5.8 8.42v7.8c-.04.34.07.68.31.92l2.14 2.6v.34H2v-.34l2.14-2.6c.24-.24.35-.58.3-.92V7.3z',
+  stackoverflow:
+    'M17.36 20.2v-5.38h1.79V22H3.5v-7.18h1.8v5.38h12.06zM6.77 13.05l8.78 1.83.37-1.76-8.78-1.83-.37 1.76zm1.16-4.21l8.14 3.79.74-1.62-8.14-3.8-.74 1.63zm2.26-4.01l6.9 5.74 1.13-1.36-6.9-5.74-1.13 1.36zM14.64 2l-1.43 1.06 5.34 7.19 1.43-1.06L14.64 2zM6.59 18.41h9V16.6h-9v1.81z',
+  appstore:
+    'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm3.42 13.42a.7.7 0 0 1-.96.26l-.6-.35h-4.6l-.6.35a.7.7 0 1 1-.7-1.22l.46-.26-1.9-3.3a.7.7 0 1 1 1.22-.7l.3.52 2.36-4.09a.7.7 0 0 1 1.2.7l-3.1 5.36h2.92l.84-1.46a.7.7 0 1 1 1.21.7l-.34.6.6.35a.7.7 0 0 1 .25.95z',
+};
+---
+
+<div class="contact-cards">
+  {
+    CONTACTS.map((c, i) => (
+      <a
+        class="ccard"
+        href={c.href}
+        data-reveal
+        style={`--d:${(i % 3) * 80}ms`}
+        target={c.external ? '_blank' : undefined}
+        rel={c.external ? 'noopener noreferrer' : undefined}
+      >
+        <span class="ccard__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d={ICONS[c.icon]} />
+          </svg>
+        </span>
+        <span class="ccard__text">
+          <span class="ccard__label">{c.label}</span>
+          <span class="ccard__value">{c.value}</span>
+        </span>
+        <span class="ccard__arrow" aria-hidden="true">{c.external ? '↗' : '→'}</span>
+      </a>
+    ))
+  }
+</div>
+
+<style>
+  .contact-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--sp-4);
+  }
+  .ccard {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-4);
+    padding: var(--sp-4) var(--sp-5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--fg);
+    transition: border-color 0.18s var(--ease), transform 0.18s var(--ease),
+      box-shadow 0.18s var(--ease);
+  }
+  .ccard:hover {
+    border-color: var(--accent);
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-md);
+  }
+  .ccard__icon {
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    flex: 0 0 auto;
+    border-radius: var(--radius-sm);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .ccard__icon svg {
+    width: 22px;
+    height: 22px;
+  }
+  .ccard__text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+  }
+  .ccard__label {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-faint);
+  }
+  .ccard__value {
+    font-size: var(--fs-sm);
+    font-weight: 540;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ccard__arrow {
+    margin-left: auto;
+    color: var(--fg-faint);
+    transition: color 0.18s var(--ease), transform 0.18s var(--ease);
+  }
+  .ccard:hover .ccard__arrow {
+    color: var(--accent);
+    transform: translate(2px, -2px);
+  }
+</style>

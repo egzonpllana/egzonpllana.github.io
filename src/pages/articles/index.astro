@@ -1,0 +1,66 @@
+---
+import { getCollection } from 'astro:content';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import SectionHeading from '../../components/SectionHeading.astro';
+import ArticleCard from '../../components/ArticleCard.astro';
+import { readingTime } from '../../lib/reading-time';
+import { articleSlug } from '../../lib/slug';
+
+const published = (await getCollection('articles')).filter(
+  (a) => !a.data.draft
+);
+published.sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+
+const articles = published.map((a) => ({
+  ...a,
+  readingTime: readingTime(a.body ?? ''),
+}));
+---
+
+<BaseLayout
+  title="Articles"
+  description="Writing on Swift 6 concurrency, SDK design, and iOS architecture by Egzon Pllana."
+>
+  <section class="section">
+    <div class="container">
+      <SectionHeading
+        number="—"
+        title="Articles"
+        description="Writing on Swift 6 concurrency, SDK architecture, and shipping production iOS frameworks."
+      />
+
+      {
+        articles.length === 0 ? (
+          <p class="empty">No articles published yet. Check back soon.</p>
+        ) : (
+          <div class="articles-grid">
+            {articles.map((a, i) => (
+              <ArticleCard
+                title={a.data.title}
+                description={a.data.description}
+                date={a.data.date}
+                readingTime={a.readingTime}
+                tags={a.data.tags}
+                slug={articleSlug(a.id)}
+                image={a.data.heroImage}
+                index={i}
+              />
+            ))}
+          </div>
+        )
+      }
+    </div>
+  </section>
+</BaseLayout>
+
+<style>
+  .articles-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: var(--sp-4);
+    align-items: stretch;
+  }
+  .empty {
+    color: var(--fg-muted);
+  }
+</style>

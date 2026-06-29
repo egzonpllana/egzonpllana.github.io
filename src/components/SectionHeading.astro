@@ -1,0 +1,61 @@
+---
+interface Props {
+  number: string;
+  title: string;
+  id?: string;
+  description?: string;
+  descFull?: boolean;
+}
+
+const { number, title, id, description, descFull = false } = Astro.props;
+---
+
+<div class="section-heading" id={id} data-reveal>
+  <div class="section-heading__row">
+    <span class="section-heading__num">{number}</span>
+    <span class="section-heading__rule"></span>
+  </div>
+  <h2 class="section-heading__title">{title}</h2>
+  {
+    description && (
+      <p class:list={['section-heading__desc', { 'section-heading__desc--full': descFull }]}>
+        {description}
+      </p>
+    )
+  }
+</div>
+
+<style>
+  .section-heading {
+    margin-bottom: var(--sp-6);
+  }
+  .section-heading__row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .section-heading__num {
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+  }
+  .section-heading__rule {
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  .section-heading__title {
+    font-size: var(--fs-2xl);
+  }
+  .section-heading__desc {
+    margin-top: var(--sp-3);
+    color: var(--fg-muted);
+    max-width: 52ch;
+  }
+  .section-heading__desc--full {
+    max-width: none;
+  }
+</style>

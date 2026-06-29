@@ -1,0 +1,122 @@
+---
+import type { Sdk } from '../types';
+
+interface Props {
+  sdk: Sdk;
+  index?: number;
+}
+
+const { sdk, index = 0 } = Astro.props;
+---
+
+<article class="sdk" data-reveal style={`--d:${(index % 3) * 80}ms`}>
+  <a
+    class="sdk__link"
+    href={sdk.repoUrl}
+    target="_blank"
+    rel="noopener noreferrer"
+    aria-label={`${sdk.displayName} on GitHub`}></a>
+
+  <header class="sdk__head">
+    <h3 class="sdk__name">{sdk.displayName}</h3>
+    <span class="sdk__gh" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49v-1.7c-2.78.62-3.37-1.37-3.37-1.37-.46-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.3 9.3 0 0 1 5 0c1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.93-2.35 4.79-4.58 5.05.36.32.68.94.68 1.9v2.82c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2z" />
+      </svg>
+    </span>
+  </header>
+
+  <p class="sdk__desc">{sdk.description}</p>
+
+  <div class="sdk__footer">
+    <ul class="sdk__tags">
+      {sdk.tags.map((tag) => <li class="tag">{tag}</li>)}
+    </ul>
+  </div>
+</article>
+
+<style>
+  .sdk {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    padding: var(--sp-5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    transition: border-color 0.18s var(--ease), transform 0.18s var(--ease),
+      box-shadow 0.18s var(--ease);
+  }
+  .sdk:hover {
+    border-color: var(--accent);
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-md);
+  }
+  .sdk__link {
+    position: absolute;
+    inset: 0;
+    border-radius: var(--radius);
+  }
+  .sdk__link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .sdk__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+  }
+  .sdk__name {
+    font-family: var(--font-mono);
+    font-size: var(--fs-md);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .sdk__gh {
+    display: inline-flex;
+    align-items: center;
+    color: var(--fg-faint);
+    transition: color 0.18s var(--ease);
+  }
+  .sdk:hover .sdk__gh {
+    color: var(--fg);
+  }
+  .sdk__gh svg {
+    width: 18px;
+    height: 18px;
+  }
+  .sdk__desc {
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
+    line-height: 1.55;
+  }
+  .sdk__footer {
+    margin-top: auto;
+    padding-top: var(--sp-2);
+    min-width: 0;
+  }
+  .sdk__tags {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: var(--sp-2);
+    list-style: none;
+    padding: 0 0 2px;
+    margin: 0;
+    overflow-x: auto;
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge */
+    -webkit-overflow-scrolling: touch;
+    /* fade the right edge to hint scrollability */
+    mask-image: linear-gradient(to right, #000 88%, transparent);
+    -webkit-mask-image: linear-gradient(to right, #000 88%, transparent);
+  }
+  .sdk__tags::-webkit-scrollbar {
+    display: none; /* Chrome/Safari */
+  }
+  .sdk__tags .tag {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+</style>

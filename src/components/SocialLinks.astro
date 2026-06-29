@@ -1,0 +1,80 @@
+---
+import type { SocialLink } from '../types';
+import { SOCIALS } from '../data/site';
+
+interface Props {
+  links?: SocialLink[];
+  size?: number;
+}
+
+const { links = SOCIALS, size = 20 } = Astro.props;
+
+const paths: Record<SocialLink['icon'], string> = {
+  github:
+    'M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49v-1.7c-2.78.62-3.37-1.37-3.37-1.37-.46-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.3 9.3 0 0 1 5 0c1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.93-2.35 4.79-4.58 5.05.36.32.68.94.68 1.9v2.82c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2z',
+  linkedin:
+    'M6.94 5a1.94 1.94 0 1 1-3.88 0 1.94 1.94 0 0 1 3.88 0zM3.32 8.5h3.24V21H3.32V8.5zM9.6 8.5h3.1v1.7h.05c.43-.8 1.49-1.65 3.07-1.65 3.28 0 3.88 2.13 3.88 4.9V21h-3.23v-5.9c0-1.4-.03-3.21-1.96-3.21-1.96 0-2.26 1.53-2.26 3.11V21H9.6V8.5z',
+  medium:
+    'M4.37 7.3a.78.78 0 0 0-.26-.66L2.2 4.35v-.34h5.93l4.58 10.05L16.74 4h5.65v.34l-1.63 1.56a.48.48 0 0 0-.18.46v11.5a.48.48 0 0 0 .18.46l1.59 1.56v.34h-8v-.34l1.65-1.6c.16-.16.16-.21.16-.46V8.42l-4.59 11.65h-.62L5.8 8.42v7.8c-.04.34.07.68.31.92l2.14 2.6v.34H2v-.34l2.14-2.6c.24-.24.35-.58.3-.92V7.3z',
+  stackoverflow:
+    'M17.36 20.2v-5.38h1.79V22H3.5v-7.18h1.8v5.38h12.06zM6.77 13.05l8.78 1.83.37-1.76-8.78-1.83-.37 1.76zm1.16-4.21l8.14 3.79.74-1.62-8.14-3.8-.74 1.63zm2.26-4.01l6.9 5.74 1.13-1.36-6.9-5.74-1.13 1.36zM14.64 2l-1.43 1.06 5.34 7.19 1.43-1.06L14.64 2zM6.59 18.41h9V16.6h-9v1.81z',
+  appstore:
+    'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm3.42 13.42a.7.7 0 0 1-.96.26l-.6-.35h-4.6l-.6.35a.7.7 0 1 1-.7-1.22l.46-.26-1.9-3.3a.7.7 0 1 1 1.22-.7l.3.52 2.36-4.09a.7.7 0 0 1 1.2.7l-3.1 5.36h2.92l.84-1.46a.7.7 0 1 1 1.21.7l-.34.6.6.35a.7.7 0 0 1 .25.95l-.26.09z',
+  email:
+    'M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v.4l8 5 8-5V6H4zm16 2.8-7.43 4.64a1 1 0 0 1-1.14 0L4 8.8V18h16V8.8z',
+  rss:
+    'M5 3a16 16 0 0 1 16 16h-3A13 13 0 0 0 5 6V3zm0 6a10 10 0 0 1 10 10h-3A7 7 0 0 0 5 12V9zm1.5 7a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z',
+};
+---
+
+<ul class="socials" style={`--icon-size:${size}px`}>
+  {
+    links.map((link) => (
+      <li>
+        <a
+          href={link.url}
+          class="socials__link"
+          aria-label={link.label}
+          title={link.label}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d={paths[link.icon]} />
+          </svg>
+        </a>
+      </li>
+    ))
+  }
+</ul>
+
+<style>
+  .socials {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    list-style: none;
+    padding: 0;
+  }
+  .socials__link {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    color: var(--fg-muted);
+    transition: color 0.16s var(--ease), background 0.16s var(--ease),
+      border-color 0.16s var(--ease), transform 0.16s var(--ease);
+  }
+  .socials__link:hover {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    transform: translateY(-2px);
+  }
+  .socials__link svg {
+    width: var(--icon-size);
+    height: var(--icon-size);
+  }
+</style>

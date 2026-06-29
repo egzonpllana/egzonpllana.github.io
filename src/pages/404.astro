@@ -1,0 +1,49 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="Page not found" description="The page you’re looking for doesn’t exist.">
+  <section class="section">
+    <div class="container nf">
+      <p class="nf__code">404</p>
+      <h1 class="nf__title">This page wandered off.</h1>
+      <p class="nf__text">
+        The page you’re looking for doesn’t exist or has moved.
+      </p>
+      <div class="nf__actions">
+        <a class="btn btn--primary" href="/">Back to portfolio <span class="arrow">→</span></a>
+        <a class="btn" href="/articles">Read articles</a>
+      </div>
+    </div>
+  </section>
+</BaseLayout>
+
+<style>
+  .nf {
+    max-width: 540px;
+    padding-block: var(--sp-8);
+    text-align: center;
+    margin-inline: auto;
+  }
+  .nf__code {
+    font-family: var(--font-mono);
+    font-size: var(--fs-3xl);
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .nf__title {
+    margin-top: var(--sp-3);
+    font-size: var(--fs-2xl);
+  }
+  .nf__text {
+    margin-top: var(--sp-3);
+    color: var(--fg-muted);
+  }
+  .nf__actions {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: var(--sp-3);
+    margin-top: var(--sp-6);
+  }
+</style>
