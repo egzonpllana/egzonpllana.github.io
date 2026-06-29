@@ -1,0 +1,34 @@
+---
+import { getCollection, render } from 'astro:content';
+import ArticleLayout from '../../layouts/ArticleLayout.astro';
+import { readingTime } from '../../lib/reading-time';
+import { articleSlug } from '../../lib/slug';
+
+export async function getStaticPaths() {
+  const articles = (await getCollection('articles')).filter(
+    (a) => !a.data.draft
+  );
+  return articles.map((article) => ({
+    params: { slug: articleSlug(article.id) },
+    props: { article },
+  }));
+}
+
+const { article } = Astro.props;
+const { Content } = await render(article);
+const minutes = readingTime(article.body ?? '');
+---
+
+<ArticleLayout
+  title={article.data.title}
+  description={article.data.description}
+  date={article.data.date}
+  updated={article.data.updated}
+  tags={article.data.tags}
+  readingTime={minutes}
+  heroImage={article.data.heroImage}
+  ogImage={article.data.ogImage}
+  repoUrl={article.data.repoUrl}
+>
+  <Content />
+</ArticleLayout>

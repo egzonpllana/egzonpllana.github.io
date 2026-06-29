@@ -1,0 +1,114 @@
+/* Article body typography. Scoped under .prose. */
+.prose {
+  font-size: var(--fs-md);
+  line-height: 1.75;
+  color: var(--fg);
+}
+
+.prose > * + * {
+  margin-top: var(--sp-5);
+}
+
+.prose h2,
+.prose h3,
+.prose h4 {
+  margin-top: var(--sp-7);
+  margin-bottom: var(--sp-3);
+  scroll-margin-top: 6rem;
+}
+.prose h2 {
+  font-size: var(--fs-xl);
+}
+.prose h3 {
+  font-size: var(--fs-lg);
+}
+.prose h4 {
+  font-size: var(--fs-md);
+}
+
+.prose p,
+.prose ul,
+.prose ol,
+.prose blockquote {
+  color: var(--fg);
+}
+
+.prose a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.4rem;
+}
+.prose li + li {
+  margin-top: var(--sp-2);
+}
+
+.prose blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: var(--sp-4);
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.prose img {
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.prose hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin-block: var(--sp-7);
+}
+
+/* Inline code */
+.prose :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.12em 0.4em;
+}
+
+/* Shiki code blocks */
+.prose pre {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  white-space: pre;
+  background: var(--code-bg) !important;
+}
+.prose pre code {
+  white-space: inherit;
+}
+.prose pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* Dual-theme Shiki: swap only the token COLOR by data-theme (defaultColor:false).
+   Never apply per-token background — that paints a rectangle behind each token.
+   The block background comes solely from .prose pre (--code-bg) above. */
+.prose pre.astro-code {
+  color: var(--shiki-light);
+}
+.prose pre.astro-code span {
+  color: var(--shiki-light);
+  background-color: transparent !important;
+}
+:root[data-theme='dark'] .prose pre.astro-code,
+:root[data-theme='dark'] .prose pre.astro-code span {
+  color: var(--shiki-dark);
+}

@@ -1,0 +1,97 @@
+---
+import { PROFILE } from '../data/profile';
+import SocialLinks from './SocialLinks.astro';
+---
+
+<section class="hero">
+  <div class="container">
+    <div class="hero__inner">
+    <h1 class="hero__name anim-in" style="--d:120ms">{PROFILE.name}</h1>
+    <p class="hero__headline anim-in" style="--d:200ms">{PROFILE.headline}</p>
+    <p class="hero__summary anim-in" style="--d:280ms">{PROFILE.summary}</p>
+
+    <div class="hero__statement anim-in" style="--d:360ms">
+      <span class="hero__statement-label">// focus</span>
+      <p>{PROFILE.statement}</p>
+    </div>
+
+    <div class="hero__actions anim-in" style="--d:440ms">
+      <a class="btn btn--primary" href="#sdks">
+        View the SDKs <span class="arrow">→</span>
+      </a>
+      <a class="btn" href="/contact">Get in touch</a>
+      <SocialLinks size={18} />
+    </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .hero {
+    padding-top: var(--sp-8);
+    padding-bottom: var(--sp-7);
+    border-bottom: 1px solid var(--border);
+    background:
+      radial-gradient(
+        60% 50% at 15% 0%,
+        var(--accent-soft),
+        transparent 70%
+      );
+  }
+  .hero__inner {
+    max-width: 760px;
+  }
+  .hero__eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-5);
+  }
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #2ecc71;
+    box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.18);
+  }
+  .hero__name {
+    font-size: var(--fs-3xl);
+    letter-spacing: -0.03em;
+  }
+  .hero__headline {
+    margin-top: var(--sp-3);
+    font-size: var(--fs-lg);
+    color: var(--accent);
+    font-weight: 560;
+  }
+  .hero__summary {
+    margin-top: var(--sp-5);
+    font-size: var(--fs-md);
+    color: var(--fg-muted);
+    max-width: 60ch;
+  }
+  .hero__statement {
+    margin-top: var(--sp-6);
+    padding: var(--sp-4) var(--sp-5);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+  .hero__statement-label {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--fg-faint);
+  }
+  .hero__statement p {
+    margin-top: var(--sp-2);
+    color: var(--fg);
+  }
+  .hero__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-top: var(--sp-6);
+  }
+</style>

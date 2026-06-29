@@ -1,0 +1,81 @@
+---
+import '@fontsource-variable/inter';
+import '@fontsource-variable/jetbrains-mono';
+import { SITE } from '../data/site';
+
+interface Props {
+  title: string;
+  description?: string;
+  image?: string;
+  type?: 'website' | 'article';
+  publishedDate?: Date;
+}
+
+const {
+  title,
+  description = SITE.description,
+  image = '/og/default-og.png',
+  type = 'website',
+  publishedDate,
+} = Astro.props;
+
+const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url).toString();
+const ogImage = new URL(image, Astro.site ?? Astro.url).toString();
+
+const personLd = {
+  '@context': 'https://schema.org',
+  '@type': 'Person',
+  name: SITE.author,
+  email: `mailto:${SITE.email}`,
+  jobTitle: 'Senior iOS Engineer & SDK Architect',
+  url: SITE.url,
+  sameAs: [
+    'https://linkedin.com/in/egzon-pllana',
+    'https://github.com/egzonpllana',
+    'https://medium.com/@egzonpllana',
+    'https://apps.apple.com/developer/id1315313322',
+  ],
+};
+---
+
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="generator" content={Astro.generator} />
+
+<title>{title}</title>
+<meta name="description" content={description} />
+<link rel="canonical" href={canonical} />
+<meta name="author" content={SITE.author} />
+
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="/favicon.ico" sizes="32x32" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#0b0e14" media="(prefers-color-scheme: dark)" />
+
+<link
+  rel="alternate"
+  type="application/rss+xml"
+  title={`${SITE.name} — Articles`}
+  href={new URL('rss.xml', Astro.site ?? Astro.url).toString()}
+/>
+
+<!-- Open Graph -->
+<meta property="og:type" content={type} />
+<meta property="og:title" content={title} />
+<meta property="og:description" content={description} />
+<meta property="og:url" content={canonical} />
+<meta property="og:image" content={ogImage} />
+<meta property="og:site_name" content={SITE.name} />
+<meta property="og:locale" content="en_US" />
+{publishedDate && (
+  <meta property="article:published_time" content={publishedDate.toISOString()} />
+)}
+
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content={title} />
+<meta name="twitter:description" content={description} />
+<meta name="twitter:image" content={ogImage} />
+
+<script type="application/ld+json" set:html={JSON.stringify(personLd)} />

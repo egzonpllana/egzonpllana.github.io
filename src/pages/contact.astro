@@ -1,0 +1,22 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import SectionHeading from '../components/SectionHeading.astro';
+import ContactCards from '../components/ContactCards.astro';
+---
+
+<BaseLayout
+  title="Contact"
+  description="Get in touch with Egzon Pllana — senior iOS engineer and SDK architect."
+>
+  <section class="section">
+    <div class="container">
+      <SectionHeading
+        number="—"
+        title="Get in touch"
+        description="Open to senior / staff iOS engineering, SDK architecture, and consulting. Reach me by email, or anywhere I'm active publicly."
+        descFull
+      />
+      <ContactCards />
+    </div>
+  </section>
+</BaseLayout>

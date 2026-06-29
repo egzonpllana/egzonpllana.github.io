@@ -1,0 +1,185 @@
+---
+import '../styles/prose.css';
+import BaseLayout from './BaseLayout.astro';
+import ArticleActions from '../components/ArticleActions.astro';
+import { formatDate, isoDate } from '../lib/format-date';
+
+interface Props {
+  title: string;
+  description: string;
+  date: Date;
+  updated?: Date;
+  tags: string[];
+  readingTime: number;
+  heroImage?: string;
+  ogImage?: string;
+  repoUrl?: string;
+}
+
+const { title, description, date, updated, tags, readingTime, heroImage, ogImage, repoUrl } =
+  Astro.props;
+---
+
+<BaseLayout
+  title={title}
+  description={description}
+  type="article"
+  publishedDate={date}
+  image={ogImage ?? heroImage}
+>
+  <article class="article container">
+    <a class="article__back link-accent" href="/articles">
+      <span aria-hidden="true">←</span> All articles
+    </a>
+
+    <header class="article__header">
+      <div class="article__meta">
+        <time datetime={isoDate(date)}>{formatDate(date)}</time>
+        <span aria-hidden="true">·</span>
+        <span>{readingTime} min read</span>
+        {updated && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>Updated {formatDate(updated)}</span>
+          </>
+        )}
+      </div>
+      <h1 class="article__title">{title}</h1>
+      <p class="article__lede">{description}</p>
+      {
+        tags.length > 0 && (
+          <ul class="article__tags">
+            {tags.map((tag) => (
+              <li class="tag">{tag}</li>
+            ))}
+          </ul>
+        )
+      }
+    </header>
+
+    {
+      heroImage && (
+        <figure class="article__hero">
+          <img src={heroImage} alt={`${title} cover`} loading="eager" decoding="async" />
+        </figure>
+      )
+    }
+
+    <div class="prose">
+      <slot />
+    </div>
+
+    <div class="article__actions article__actions--bottom">
+      <ArticleActions repoUrl={repoUrl} showShare />
+    </div>
+  </article>
+</BaseLayout>
+
+<script is:inline>
+  (() => {
+    if (window.__articleActionsBound) return;
+    window.__articleActionsBound = true;
+
+    const flash = (btn, text) => {
+      const label = btn.querySelector('.aa-label');
+      if (!label) return;
+      const original = label.textContent;
+      label.textContent = text;
+      setTimeout(() => {
+        label.textContent = original;
+      }, 1600);
+    };
+
+    document.addEventListener('click', async (e) => {
+      const copyBtn = e.target.closest('[data-copy]');
+      if (copyBtn) {
+        try {
+          await navigator.clipboard.writeText(location.href);
+          flash(copyBtn, 'Copied!');
+        } catch (err) {
+          flash(copyBtn, 'Copy failed');
+        }
+        return;
+      }
+      const shareBtn = e.target.closest('[data-share]');
+      if (shareBtn) {
+        const data = { title: document.title, url: location.href };
+        if (navigator.share) {
+          try {
+            await navigator.share(data);
+          } catch (err) {
+            /* user cancelled */
+          }
+        } else {
+          try {
+            await navigator.clipboard.writeText(location.href);
+            flash(shareBtn, 'Link copied!');
+          } catch (err) {
+            flash(shareBtn, 'Share unavailable');
+          }
+        }
+      }
+    });
+  })();
+</script>
+
+<style>
+  .article {
+    max-width: var(--container-narrow);
+    padding-top: var(--sp-7);
+  }
+  .article__back {
+    display: inline-block;
+    font-size: var(--fs-sm);
+    margin-bottom: var(--sp-6);
+  }
+  .article__header {
+    padding-bottom: var(--sp-6);
+    margin-bottom: var(--sp-6);
+    border-bottom: 1px solid var(--border);
+  }
+  .article__actions--bottom {
+    margin-top: var(--sp-7);
+    padding-top: var(--sp-6);
+    border-top: 1px solid var(--border);
+  }
+  .article__hero {
+    margin: 0 0 var(--sp-7);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--bg-subtle);
+  }
+  .article__hero img {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .article__meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--fg-faint);
+    margin-bottom: var(--sp-4);
+  }
+  .article__title {
+    font-size: var(--fs-3xl);
+    letter-spacing: -0.03em;
+  }
+  .article__lede {
+    margin-top: var(--sp-4);
+    font-size: var(--fs-md);
+    color: var(--fg-muted);
+  }
+  .article__tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    list-style: none;
+    padding: 0;
+    margin-top: var(--sp-5);
+  }
+</style>
