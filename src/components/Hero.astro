@@ -1,27 +1,50 @@
 ---
+import { Image } from 'astro:assets';
 import { PROFILE } from '../data/profile';
 import SocialLinks from './SocialLinks.astro';
+import portrait from '../assets/portrait.png';
 ---
 
 <section class="hero">
   <div class="container">
     <div class="hero__inner">
-    <h1 class="hero__name anim-in" style="--d:120ms">{PROFILE.name}</h1>
-    <p class="hero__headline anim-in" style="--d:200ms">{PROFILE.headline}</p>
-    <p class="hero__summary anim-in" style="--d:280ms">{PROFILE.summary}</p>
+      <div class="hero__content">
+        <h1 class="hero__name anim-in" style="--d:120ms">{PROFILE.name}</h1>
+        <p class="hero__headline anim-in" style="--d:200ms">{PROFILE.headline}</p>
+        <p class="hero__summary anim-in" style="--d:280ms">{PROFILE.summary}</p>
 
-    <div class="hero__statement anim-in" style="--d:360ms">
-      <span class="hero__statement-label">// focus</span>
-      <p>{PROFILE.statement}</p>
-    </div>
+        <div class="hero__statement anim-in" style="--d:360ms">
+          <span class="hero__statement-label">// focus</span>
+          <p>{PROFILE.statement}</p>
+        </div>
 
-    <div class="hero__actions anim-in" style="--d:440ms">
-      <a class="btn btn--primary" href="#sdks">
-        View the SDKs <span class="arrow">→</span>
-      </a>
-      <a class="btn" href="/contact">Get in touch</a>
-      <SocialLinks size={18} />
-    </div>
+        <div class="hero__actions anim-in" style="--d:440ms">
+          <a class="btn btn--primary" href="#sdks">
+            View the SDKs <span class="arrow">→</span>
+          </a>
+          <a class="btn" href="/contact">Get in touch</a>
+          <SocialLinks size={18} />
+        </div>
+      </div>
+
+      <aside class="hero__portrait anim-in" style="--d:200ms">
+        <figure class="hero__frame">
+          <Image
+            class="hero__avatar"
+            src={portrait}
+            alt={`Illustrated portrait of ${PROFILE.name}`}
+            width={305}
+            height={305}
+            quality={90}
+            loading="eager"
+            fetchpriority="high"
+          />
+          <figcaption class="hero__badge">
+            <span class="dot" aria-hidden="true"></span>
+            <span>{PROFILE.location}</span>
+          </figcaption>
+        </figure>
+      </aside>
     </div>
   </div>
 </section>
@@ -39,20 +62,13 @@ import SocialLinks from './SocialLinks.astro';
       );
   }
   .hero__inner {
-    max-width: 760px;
-  }
-  .hero__eyebrow {
-    display: inline-flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: var(--sp-2);
-    margin-bottom: var(--sp-5);
+    gap: var(--sp-8);
   }
-  .dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #2ecc71;
-    box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.18);
+  .hero__content {
+    max-width: 680px;
   }
   .hero__name {
     font-size: var(--fs-3xl);
@@ -93,5 +109,111 @@ import SocialLinks from './SocialLinks.astro';
     align-items: center;
     gap: var(--sp-3);
     margin-top: var(--sp-6);
+  }
+
+  /* ---- Portrait ----------------------------------------------------------- */
+  .hero__portrait {
+    justify-self: end;
+  }
+  .hero__frame {
+    position: relative;
+    width: 300px;
+    max-width: 100%;
+    border-radius: var(--radius-lg);
+  }
+  /* Soft accent halo bleeding out behind the frame. */
+  .hero__frame::before {
+    content: '';
+    position: absolute;
+    inset: -14%;
+    z-index: -1;
+    border-radius: 50%;
+    background: radial-gradient(
+      closest-side,
+      var(--accent-soft),
+      transparent 78%
+    );
+    filter: blur(6px);
+  }
+  .hero__avatar {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-strong);
+    box-shadow:
+      var(--shadow-md),
+      0 0 0 6px var(--accent-soft);
+    transition: transform 0.3s var(--ease), box-shadow 0.3s var(--ease);
+  }
+  .hero__frame:hover .hero__avatar {
+    transform: translateY(-3px);
+    box-shadow:
+      var(--shadow-md),
+      0 0 0 6px var(--accent-soft),
+      0 0 28px -6px var(--accent);
+  }
+  .hero__badge {
+    position: absolute;
+    left: 50%;
+    bottom: 0;
+    transform: translate(-50%, 50%);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    box-shadow: var(--shadow-sm);
+    backdrop-filter: blur(6px);
+  }
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #2ecc71;
+    box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.18);
+  }
+
+  /* Tablet: shrink the portrait before it forces a stack. */
+  @media (max-width: 900px) {
+    .hero__frame {
+      width: 240px;
+    }
+  }
+
+  /* Mobile: stack, portrait first and centered. */
+  @media (max-width: 720px) {
+    .hero__inner {
+      grid-template-columns: 1fr;
+      gap: var(--sp-7);
+    }
+    .hero__portrait {
+      order: -1;
+      justify-self: center;
+    }
+    .hero__frame {
+      width: 200px;
+    }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .dot {
+      animation: hero-pulse 2.4s var(--ease) infinite;
+    }
+  }
+  @keyframes hero-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.18);
+    }
+    50% {
+      box-shadow: 0 0 0 5px rgba(46, 204, 113, 0.05);
+    }
   }
 </style>
