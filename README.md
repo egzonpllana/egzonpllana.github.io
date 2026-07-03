@@ -1,4 +1,6 @@
-# egzonpllana.com
+# egzonpllana portfolio website
+
+👨‍💻 [egzonpllana.github.io](egzonpllana.github.io)
 
 Personal portfolio for Egzon Pllana — Senior iOS Engineer & SDK Architect. Built with [Astro](https://astro.build), static output, host-agnostic.
 
