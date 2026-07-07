@@ -198,9 +198,9 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     margin-top: var(--sp-6);
   }
 
-  /* ===== STAGE — all slides stacked in one grid cell, sizes to tallest ===== */
+  /* ===== STAGE — active slide sizes the stage; others overlay for cross-fade ===== */
   .ai-stage {
-    display: grid;
+    position: relative;
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     background: var(--surface);
@@ -211,8 +211,10 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     outline: none;
   }
   .ai-slide {
-    grid-area: 1 / 1;
-    padding: clamp(1.5rem, 1rem + 2.5vw, 3rem);
+    position: absolute;
+    inset: 0;
+    min-width: 0;
+    padding: clamp(1.25rem, 0.8rem + 2.5vw, 3rem);
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
@@ -223,6 +225,8 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     min-height: 340px;
   }
   .ai-slide.is-active {
+    position: relative;
+    inset: auto;
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
@@ -249,9 +253,6 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     color: var(--fg-faint);
     letter-spacing: 0.08em;
   }
-  .ai-slide {
-    position: relative;
-  }
   .ai-slide__kicker {
     display: inline-flex;
     align-items: center;
@@ -271,10 +272,11 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     flex: 0 0 auto;
   }
   .ai-slide__title {
-    font-size: clamp(1.7rem, 1.2rem + 2.2vw, 2.4rem);
+    font-size: clamp(1.5rem, 1.05rem + 2.2vw, 2.4rem);
     line-height: 1.08;
     letter-spacing: -0.02em;
     margin-bottom: var(--sp-4);
+    overflow-wrap: anywhere;
   }
   .ai-slide__title :global(.hl) {
     color: var(--accent);
@@ -283,6 +285,11 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     display: flex;
     flex-direction: column;
     gap: var(--sp-5);
+    min-width: 0;
+  }
+  .ai-slide__body > :global(*) {
+    min-width: 0;
+    max-width: 100%;
   }
 
   /* Columns inside a slide */
