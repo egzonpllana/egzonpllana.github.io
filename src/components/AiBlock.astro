@@ -1,0 +1,421 @@
+---
+import { BlockKind, type LeafBlock, type IconKey } from '../data/aiTalk';
+
+interface Props {
+  block: LeafBlock;
+}
+
+const { block } = Astro.props;
+
+// Inline SVG inner markup (stroke, currentColor), keyed. viewBox 0 0 24 24.
+const ICONS: Record<IconKey, string> = {
+  shield:
+    '<path d="M12 2 4 6v6c0 5 3.4 8 8 10 4.6-2 8-5 8-10V6z"/><path d="m9 12 2 2 4-4"/>',
+  lock: '<path d="M14 9V5a3 3 0 0 0-6 0v4M5 9h14l1 12H4z"/>',
+  bolt: '<path d="M13 2 3 14h7l-1 8 10-12h-7z"/>',
+  list: '<path d="M3 6h18M6 12h12M10 18h4"/>',
+  arrowUp: '<path d="M12 19V5m0 0-7 7m7-7 7 7"/>',
+  bug: '<path d="M8 2l1.5 1.5M16 2l-1.5 1.5"/><path d="M9 7a3 3 0 0 1 6 0"/><rect x="6" y="7" width="12" height="11" rx="6"/><path d="M12 12v6M4 11H2M22 11h-2M4 20l2.5-1.5M20 20l-2.5-1.5M6 8 3.5 6.5M18 8l2.5-1.5"/>',
+  tests:
+    '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><path d="m9 14 2 2 4-4"/>',
+  build: '<path d="M9 11H5v10h14V11h-4M9 11V7a3 3 0 0 1 6 0v4M9 11h6"/>',
+  wiring:
+    '<path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v3a6 6 0 0 1-6 6h-3"/>',
+  logic: '<path d="M12 3a9 9 0 1 0 9 9M21 3l-9 9"/><path d="M9 12l2 2 4-4"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  image:
+    '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
+  race: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
+  folder: '<path d="M3 7l9-4 9 4-9 4z"/><path d="M3 7v10l9 4 9-4V7"/>',
+  terminal: '<path d="m4 17 6-6-6-6M12 19h8"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 0 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3.5 14H3a2 2 0 0 1 0-4h.1A1.6 1.6 0 0 0 5 7"/>',
+  brain:
+    '<path d="M12 3a4 4 0 0 0-4 4v1a4 4 0 0 0 0 8v1a4 4 0 0 0 8 0v-1a4 4 0 0 0 0-8V7a4 4 0 0 0-4-4z"/>',
+  branch: '<path d="M4 17l6-6-6-6M12 19h8"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  searchX: '<circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/>',
+  sparkle:
+    '<path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  arrow: '<path d="M5 12h14m-6-6 6 6-6 6"/>',
+};
+---
+
+{
+  block.kind === BlockKind.Lead && (
+    <p class:list={['ai-lead', { 'ai-lead--sm': block.small }]} set:html={block.html} />
+  )
+}
+
+{
+  block.kind === BlockKind.Pills && (
+    <div class="ai-pills">
+      {block.items.map((p) => (
+        <>
+          {p.arrowBefore && (
+            <svg class="ai-pill-arrow" viewBox="0 0 24 24" aria-hidden="true" set:html={ICONS.arrow} />
+          )}
+          <span class:list={['ai-pill', { 'ai-pill--strong': p.strong }]}>
+            {p.icon && (
+              <svg class="ai-pill-ic" viewBox="0 0 24 24" aria-hidden="true" set:html={ICONS[p.icon]} />
+            )}
+            {p.label}
+          </span>
+        </>
+      ))}
+    </div>
+  )
+}
+
+{
+  block.kind === BlockKind.Cards && (
+    <div class:list={['ai-cards', `ai-cards--${block.cols}`]}>
+      {block.items.map((c, i) => (
+        <div class="ai-card" data-reveal style={`--d:${(i % 3) * 70}ms`}>
+          {c.step && <div class="ai-card__step">{c.step}</div>}
+          {c.icon && (
+            <div class="ai-card__ic" aria-hidden="true">
+              <svg viewBox="0 0 24 24" set:html={ICONS[c.icon]} />
+            </div>
+          )}
+          <h3 class="ai-card__title" set:html={c.title} />
+          <p class="ai-card__body" set:html={c.body} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+{
+  block.kind === BlockKind.Code && (
+    <div class="ai-code-wrap">
+      {block.label && (
+        <div class="ai-filetab">
+          {block.labelIcon && (
+            <svg viewBox="0 0 24 24" aria-hidden="true" set:html={ICONS[block.labelIcon]} />
+          )}
+          <span set:html={block.label} />
+        </div>
+      )}
+      <div class:list={['ai-code', block.tone && `ai-code--${block.tone}`]}>
+        {block.lines.map((line) => (
+          <div class="ai-code__row" set:html={line} />
+        ))}
+      </div>
+      {block.caption && <p class="ai-code__caption" set:html={block.caption} />}
+    </div>
+  )
+}
+
+{
+  block.kind === BlockKind.Checklist && (
+    <ul class:list={['ai-checks', { 'ai-checks--2col': block.columns === 2 }]}>
+      {block.items.map((it) => (
+        <li class="ai-check">
+          <svg class="ai-check__mark" viewBox="0 0 24 24" aria-hidden="true" set:html={ICONS.check} />
+          <span class="ai-check__text">
+            <span set:html={it.title} />
+            {it.note && <span class="ai-check__note" set:html={it.note} />}
+          </span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+{
+  block.kind === BlockKind.Stats && (
+    <div class="ai-stats">
+      {block.items.map((s) => (
+        <div class="ai-stat">
+          <div class="ai-stat__big">{s.big}</div>
+          <div class="ai-stat__lbl">{s.label}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+{block.kind === BlockKind.Quote && <p class="ai-quote" set:html={block.html} />}
+
+<style>
+  /* --- shared inline-emphasis token classes (injected via set:html) --- */
+  .ai-lead :global(b),
+  .ai-card__body :global(b),
+  .ai-check__text :global(b),
+  .ai-code__caption :global(b) {
+    color: var(--fg);
+    font-weight: 620;
+  }
+  .ai-lead :global(.hl),
+  .ai-quote :global(.hl),
+  .ai-lead :global(i),
+  .ai-check__text :global(.hl) {
+    color: var(--accent);
+    font-weight: 560;
+    font-style: normal;
+  }
+  .ai-lead :global(i),
+  .ai-card__body :global(i),
+  .ai-check__text :global(i) {
+    color: var(--fg-muted);
+    font-style: italic;
+    font-weight: 500;
+  }
+  .ai-quote :global(.mut) {
+    color: var(--fg-faint);
+  }
+
+  /* --- lead paragraph --- */
+  .ai-lead {
+    color: var(--fg-muted);
+    max-width: 62ch;
+    font-size: var(--fs-md);
+    line-height: 1.55;
+  }
+  .ai-lead--sm {
+    font-size: var(--fs-base);
+  }
+
+  /* --- pills --- */
+  .ai-pills {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .ai-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.85rem;
+    border-radius: 999px;
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .ai-pill--strong {
+    border-color: var(--accent);
+    color: var(--fg);
+    background: var(--accent-soft);
+  }
+  .ai-pill-ic {
+    width: 16px;
+    height: 16px;
+    stroke: var(--accent);
+    stroke-width: 1.8;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .ai-pill-arrow {
+    width: 20px;
+    height: 20px;
+    stroke: var(--fg-faint);
+    stroke-width: 2;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* --- cards --- */
+  .ai-cards {
+    display: grid;
+    gap: var(--sp-4);
+  }
+  .ai-cards--2 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .ai-cards--3 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .ai-card {
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--sp-5);
+  }
+  .ai-card__step {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    margin-bottom: var(--sp-3);
+  }
+  .ai-card__ic {
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    border-radius: var(--radius-sm);
+    background: var(--accent-soft);
+    color: var(--accent);
+    margin-bottom: var(--sp-3);
+  }
+  .ai-card__ic svg {
+    width: 22px;
+    height: 22px;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .ai-card__title {
+    font-size: var(--fs-md);
+    margin-bottom: var(--sp-2);
+  }
+  .ai-card__body {
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+
+  /* --- code --- */
+  .ai-filetab {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--fg-faint);
+    margin-bottom: var(--sp-2);
+  }
+  .ai-filetab svg {
+    width: 15px;
+    height: 15px;
+    stroke: var(--accent);
+    stroke-width: 1.7;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    flex: 0 0 auto;
+  }
+  .ai-code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--sp-4) var(--sp-5);
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.72;
+    overflow-x: auto;
+  }
+  .ai-code--good {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  }
+  .ai-code--bad {
+    border-style: dashed;
+  }
+  .ai-code__row {
+    white-space: pre;
+  }
+  .ai-code :global(.kw) {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .ai-code :global(.str) {
+    color: var(--fg);
+    font-weight: 500;
+  }
+  .ai-code :global(.mut) {
+    color: var(--fg-faint);
+  }
+  .ai-code :global(.var) {
+    color: var(--fg-muted);
+  }
+  .ai-code__caption {
+    margin-top: var(--sp-3);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+
+  /* --- checklist --- */
+  .ai-checks {
+    list-style: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+  }
+  .ai-checks--2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--sp-4) var(--sp-6);
+  }
+  .ai-check {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-3);
+    font-size: var(--fs-md);
+    line-height: 1.45;
+  }
+  .ai-check__mark {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    margin-top: 3px;
+    stroke: var(--accent);
+    stroke-width: 2.2;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .ai-check__text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .ai-check__text :global(b) {
+    color: var(--accent);
+    font-weight: 620;
+  }
+  .ai-check__note {
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
+  }
+
+  /* --- stats --- */
+  .ai-stats {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-5);
+  }
+  .ai-stat__big {
+    font-size: var(--fs-2xl);
+    font-weight: 720;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    color: var(--accent);
+  }
+  .ai-stat__lbl {
+    margin-top: var(--sp-2);
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
+    max-width: 34ch;
+  }
+
+  /* --- quote --- */
+  .ai-quote {
+    font-size: var(--fs-xl);
+    font-weight: 680;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    color: var(--fg);
+  }
+
+  @media (max-width: 640px) {
+    .ai-cards--2,
+    .ai-cards--3,
+    .ai-checks--2col {
+      grid-template-columns: 1fr;
+    }
+    .ai-quote {
+      font-size: var(--fs-lg);
+    }
+  }
+</style>
