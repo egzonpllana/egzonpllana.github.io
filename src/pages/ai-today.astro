@@ -3,6 +3,9 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 import SectionHeading from '../components/SectionHeading.astro';
 import AiTalkSlideshow from '../components/AiTalkSlideshow.astro';
 import { AI_TALK_INTRO, AI_TALK_META } from '../data/aiTalk';
+import { formatDate, isoDate } from '../lib/format-date';
+
+const publishedDate = new Date('2026-07-07');
 ---
 
 <BaseLayout title={AI_TALK_META.title} description={AI_TALK_META.description}>
@@ -14,6 +17,9 @@ import { AI_TALK_INTRO, AI_TALK_META } from '../data/aiTalk';
         description={AI_TALK_INTRO.lead}
         descFull
       />
+      <time class="ai-date" datetime={isoDate(publishedDate)} data-reveal>
+        {formatDate(publishedDate)}
+      </time>
       <p class="ai-intro" data-reveal>{AI_TALK_INTRO.body}</p>
       <AiTalkSlideshow />
     </div>
@@ -21,9 +27,18 @@ import { AI_TALK_INTRO, AI_TALK_META } from '../data/aiTalk';
 </BaseLayout>
 
 <style>
+  .ai-date {
+    display: block;
+    margin-top: calc(-1 * var(--sp-4));
+    margin-bottom: var(--sp-3);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
   .ai-intro {
     max-width: 68ch;
-    margin-top: calc(-1 * var(--sp-3));
     color: var(--fg-muted);
     line-height: 1.7;
   }
