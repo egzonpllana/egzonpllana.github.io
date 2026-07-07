@@ -1,0 +1,30 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import SectionHeading from '../components/SectionHeading.astro';
+import AiTalkSlideshow from '../components/AiTalkSlideshow.astro';
+import { AI_TALK_INTRO, AI_TALK_META } from '../data/aiTalk';
+---
+
+<BaseLayout title={AI_TALK_META.title} description={AI_TALK_META.description}>
+  <section class="section">
+    <div class="container">
+      <SectionHeading
+        number="—"
+        title={AI_TALK_INTRO.title}
+        description={AI_TALK_INTRO.lead}
+        descFull
+      />
+      <p class="ai-intro" data-reveal>{AI_TALK_INTRO.body}</p>
+      <AiTalkSlideshow />
+    </div>
+  </section>
+</BaseLayout>
+
+<style>
+  .ai-intro {
+    max-width: 68ch;
+    margin-top: calc(-1 * var(--sp-3));
+    color: var(--fg-muted);
+    line-height: 1.7;
+  }
+</style>

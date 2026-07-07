@@ -15,6 +15,7 @@ export const SITE = {
 export const NAV: NavItem[] = [
   { label: 'Portfolio', href: '/' },
   { label: 'Articles', href: '/articles' },
+  { label: 'AI Today', href: '/ai-today' },
   { label: 'Contact', href: '/contact' },
 ];
 
