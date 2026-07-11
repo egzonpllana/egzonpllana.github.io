@@ -3,7 +3,7 @@ title: '6 Problems With NSLocalizedString That Made Me Build LocalizationEngine 
 description: 'Why Apple''s built-in localization tools fall short for multi-language iOS apps, and the open-source Swift Package I built to fix them.'
 date: 2026-03-08
 tags: ['iOS', 'Swift', 'Localization', 'SwiftUI', 'Mobile App Development']
-heroImage: '/articles/covers/six-problems-with-nslocalizedstring.png'
+heroImage: '../../assets/covers/six-problems-with-nslocalizedstring.png'
 repoUrl: 'https://github.com/egzonpllana/localization-engine-ios'
 ---
 

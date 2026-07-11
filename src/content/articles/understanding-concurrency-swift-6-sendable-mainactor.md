@@ -3,7 +3,7 @@ title: 'Understanding Concurrency in Swift 6 with Sendable protocol, MainActor, 
 description: 'A practical guide to Swift 6 concurrency: async/await, MainActor, the Sendable protocol, actors, TaskGroup, and more for safe, modern asynchronous code.'
 date: 2024-08-25
 tags: ['Swift', 'iOS', 'Concurrency', 'async-await', 'Sendable']
-heroImage: '/articles/covers/understanding-concurrency-swift-6-sendable-mainactor.png'
+heroImage: '../../assets/covers/understanding-concurrency-swift-6-sendable-mainactor.png'
 ---
 
 This is part of the article Building a generic, thread-safe Networking Layer in Swift 6.

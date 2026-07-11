@@ -4,6 +4,7 @@ export const PROFILE: Profile = {
   name: 'Egzon Pllana',
   headline: 'Senior iOS Engineer · SDK & Mobile Architect',
   location: 'Kosovo (Europe) · Remote',
+  availability: 'Open to senior / staff iOS & SDK roles',
   summary:
     'Engineer with 15 years across the field — over 10 of them focused on iOS and Swift — built on a foundation in electronics. I design protocol-first, fully testable Swift packages engineered for Swift 6 strict concurrency (actors, Sendable, async/await), shipping production frameworks across FinTech and HealthTech while owning architecture, review, and production quality end to end.',
   statement:

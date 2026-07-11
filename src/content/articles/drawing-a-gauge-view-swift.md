@@ -3,7 +3,7 @@ title: 'Drawing a Gauge View with Swift 5.9 on iOS'
 description: 'Building a custom UIKit GaugeViewXK using CAShapeLayer, CAGradientLayer, CADisplayLink, and trigonometry to draw an animated, gradient gauge.'
 date: 2024-08-02
 tags: ['Swift', 'iOS', 'UIKit', 'Core Animation', 'Mathematics']
-heroImage: '/articles/covers/drawing-a-gauge-view-swift.png'
+heroImage: '../../assets/covers/drawing-a-gauge-view-swift.png'
 ---
 
 ## Introduction

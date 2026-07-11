@@ -144,10 +144,8 @@ export const AI_TALK_META = {
 
 export const AI_TALK_INTRO = {
   title: 'How I actually work with AI',
-  lead:
-    "I don't treat AI as an oracle — I treat it as a brilliant junior engineer with zero taste, then configure it until it ships my standard of code across the production iOS SDKs I build.",
-  body:
-    "This is the talk I gave on exactly how: encode your taste in a file, give it memory, make it prove its work. Step through the slides below — the transcript under each one is what I said out loud. Wherever you sit with these tools, skeptic or power user, every tactic here is copyable today.",
+  lead: "I don't treat AI as an oracle — I treat it as a brilliant junior engineer with zero taste, then configure it until it ships my standard of code across the production iOS SDKs I build.",
+  body: 'This is the talk I gave on exactly how: encode your taste in a file, give it memory, make it prove its work. Step through the slides below — the transcript under each one is what I said out loud. Wherever you sit with these tools, skeptic or power user, every tactic here is copyable today.',
 } as const;
 
 export const SLIDES: Slide[] = [
@@ -155,7 +153,8 @@ export const SLIDES: Slide[] = [
   {
     n: 1,
     kicker: 'Whether you avoid AI or live in it',
-    titleHtml: 'Stop Prompting.<br /><span class="hl">Start Configuring.</span>',
+    titleHtml:
+      'Stop Prompting.<br /><span class="hl">Start Configuring.</span>',
     layout: SlideLayout.Center,
     blocks: [
       {
@@ -164,14 +163,15 @@ export const SLIDES: Slide[] = [
       },
     ],
     transcript:
-      "Every person reading this has the exact same AI I do. Same model, same price, same little box to type into. So why does it hand most people confident guesswork — and ship production code for a few of us? That gap is the whole talk. I build iOS SDKs — the libraries other teams ship their apps on — and I closed that gap not by prompting harder, but by configuring. Wherever you land with these tools, this is built for you.",
+      'Every person reading this has the exact same AI I do. Same model, same price, same little box to type into. So why does it hand most people confident guesswork — and ship production code for a few of us? That gap is the whole talk. I build iOS SDKs — the libraries other teams ship their apps on — and I closed that gap not by prompting harder, but by configuring. Wherever you land with these tools, this is built for you.',
   },
 
   /* 2 — THE SPECTRUM */
   {
     n: 2,
     kicker: 'Wherever you are starting from',
-    titleHtml: 'Some of you avoid it.<br /><span class="hl">Some of you live in it.</span>',
+    titleHtml:
+      'Some of you avoid it.<br /><span class="hl">Some of you live in it.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
@@ -184,7 +184,12 @@ export const SLIDES: Slide[] = [
           { label: 'Never touched it', icon: 'searchX' },
           { label: 'Ask & paste', icon: 'search' },
           { label: 'Lives in the tools', icon: 'bolt' },
-          { label: 'Configure & direct', icon: 'sparkle', strong: true, arrowBefore: true },
+          {
+            label: 'Configure & direct',
+            icon: 'sparkle',
+            strong: true,
+            arrowBefore: true,
+          },
         ],
       },
       {
@@ -201,7 +206,8 @@ export const SLIDES: Slide[] = [
   {
     n: 3,
     kicker: 'The mental model',
-    titleHtml: "It's not an oracle.<br>It's a <span class=\"hl\">brilliant junior</span> with zero taste.",
+    titleHtml:
+      'It\'s not an oracle.<br>It\'s a <span class="hl">brilliant junior</span> with zero taste.',
     layout: SlideLayout.Default,
     blocks: [
       {
@@ -233,7 +239,8 @@ export const SLIDES: Slide[] = [
   {
     n: 4,
     kicker: 'This is not a toy demo',
-    titleHtml: 'Everything here ships in<br><span class="hl">production iOS SDKs.</span>',
+    titleHtml:
+      'Everything here ships in<br><span class="hl">production iOS SDKs.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
@@ -259,11 +266,19 @@ export const SLIDES: Slide[] = [
             {
               kind: BlockKind.Stats,
               items: [
-                { big: '11', label: 'versioned Swift packages — shipped as SDKs, reused across apps' },
-                { big: '~160k', label: 'lines of Swift behind those public APIs' },
+                {
+                  big: '11',
+                  label:
+                    'versioned Swift packages — shipped as SDKs, reused across apps',
+                },
+                {
+                  big: '~160k',
+                  label: 'lines of Swift behind those public APIs',
+                },
                 {
                   big: 'Public → internal',
-                  label: 'every surface protocol-abstracted, dependencies point inward',
+                  label:
+                    'every surface protocol-abstracted, dependencies point inward',
                 },
               ],
             },
@@ -335,7 +350,9 @@ export const SLIDES: Slide[] = [
               label: 'the lazy ask',
               labelIcon: 'searchX',
               tone: 'bad',
-              lines: ['<span class="mut">&gt;</span> Add caching to the network layer.'],
+              lines: [
+                '<span class="mut">&gt;</span> Add caching to the network layer.',
+              ],
               caption:
                 'It guesses the scope, invents an approach, and edits files you never meant to touch.',
             },
@@ -353,7 +370,8 @@ export const SLIDES: Slide[] = [
                 '  behind a <span class="str">CachePolicy</span> protocol to swap',
                 '  <span class="kw">Don’t</span> touch the existing retry logic.',
               ],
-              caption: '<b>Exactly</b> what you meant — in your architecture, first try.',
+              caption:
+                '<b>Exactly</b> what you meant — in your architecture, first try.',
             },
           ],
         ],
@@ -461,13 +479,14 @@ export const SLIDES: Slide[] = [
   {
     n: 9,
     kicker: 'Tactic 4 · the compounding loop',
-    titleHtml: 'Catch the insight. <span class="hl">Promote it to a rule.</span>',
+    titleHtml:
+      'Catch the insight. <span class="hl">Promote it to a rule.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
         kind: BlockKind.Lead,
         small: true,
-        html: "The gold is in the corrections. When something clicks — or the AI catches a sloppy habit — I capture it, then graduate the good ones into permanent config.",
+        html: 'The gold is in the corrections. When something clicks — or the AI catches a sloppy habit — I capture it, then graduate the good ones into permanent config.',
       },
       {
         kind: BlockKind.Cards,
@@ -560,7 +579,8 @@ export const SLIDES: Slide[] = [
   {
     n: 11,
     kicker: 'Skills · for Swift iOS devs',
-    titleHtml: 'A skill your iOS team<br><span class="hl">runs as one command.</span>',
+    titleHtml:
+      'A skill your iOS team<br><span class="hl">runs as one command.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
@@ -679,7 +699,7 @@ export const SLIDES: Slide[] = [
   {
     n: 14,
     kicker: 'Audit · what it actually caught',
-    titleHtml: "The auditor can't be <span class=\"hl\">the author.</span>",
+    titleHtml: 'The auditor can\'t be <span class="hl">the author.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
@@ -744,7 +764,10 @@ export const SLIDES: Slide[] = [
             title: 'Prove it in the code',
             note: 'no shown lines means no cause, only a theory.',
           },
-          { title: 'One targeted fix', note: 'not five "try this and see" patches.' },
+          {
+            title: 'One targeted fix',
+            note: 'not five "try this and see" patches.',
+          },
           {
             title: 'Uncertain? Stop and say so',
             note: 'guessing on prod is the actual bug.',
@@ -784,7 +807,8 @@ export const SLIDES: Slide[] = [
   {
     n: 17,
     kicker: 'The takeaway',
-    titleHtml: "AI doesn't replace the engineer<br>who knows what <span class=\"hl\">good</span> looks like.",
+    titleHtml:
+      'AI doesn\'t replace the engineer<br>who knows what <span class="hl">good</span> looks like.',
     layout: SlideLayout.Center,
     blocks: [
       {

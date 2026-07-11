@@ -3,7 +3,7 @@ title: 'From 0 to over 1,000 Unit Tests: The DI Framework Behind It'
 description: 'Why I built OrbitCore, an open-source Swift DI container with three retain policies, thread-safe lazy injection, and a test pattern that scaled past 1,000 unit tests.'
 date: 2026-05-07
 tags: ['Swift', 'iOS', 'Dependency Injection', 'Unit Testing', 'Clean Architecture']
-heroImage: '/articles/covers/from-0-to-1000-unit-tests-di-framework.png'
+heroImage: '../../assets/covers/from-0-to-1000-unit-tests-di-framework.png'
 repoUrl: 'https://github.com/egzonpllana/orbitcore-ios'
 ---
 

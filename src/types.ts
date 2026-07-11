@@ -1,3 +1,5 @@
+import type { ImageMetadata } from 'astro';
+
 export interface NavItem {
   label: string;
   href: string;
@@ -7,7 +9,14 @@ export interface SocialLink {
   label: string;
   url: string;
   /** key into the inline icon set in SocialLinks.astro */
-  icon: 'linkedin' | 'github' | 'medium' | 'stackoverflow' | 'appstore' | 'email' | 'rss';
+  icon:
+    | 'linkedin'
+    | 'github'
+    | 'medium'
+    | 'stackoverflow'
+    | 'appstore'
+    | 'email'
+    | 'rss';
 }
 
 export interface Sdk {
@@ -26,8 +35,8 @@ export interface App {
   category: string;
   blurb: string;
   appStoreUrl: string;
-  /** path under /public, e.g. "/apps/engramr.png" */
-  iconUrl: string;
+  /** icon asset imported from src/assets/apps */
+  icon: ImageMetadata;
   /** featured on the homepage */
   featured?: boolean;
 }
@@ -44,6 +53,7 @@ export interface Profile {
   name: string;
   headline: string;
   location: string;
+  availability: string;
   summary: string;
   statement: string;
   experience: ExperienceItem[];

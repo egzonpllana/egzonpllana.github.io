@@ -3,7 +3,7 @@ title: 'Implementing Apple App Attest for iOS API Security — No More Static Se
 description: 'How Apple App Attest replaces static shared secrets with per-device hardware keys in the Secure Enclave to secure iOS API requests.'
 date: 2026-02-13
 tags: ['Swift', 'Security', 'Apple', 'Certificate Attestation', 'iOS']
-heroImage: '/articles/covers/apple-app-attest-ios-api-security.png'
+heroImage: '../../assets/covers/apple-app-attest-ios-api-security.png'
 ---
 
 ## Why Static Secrets Don't Work

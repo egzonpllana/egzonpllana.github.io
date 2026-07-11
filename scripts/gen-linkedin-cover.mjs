@@ -12,7 +12,7 @@ const GREEN = '#2ee06a';
 const rings = [70, 130, 190, 250]
   .map(
     (r, i) =>
-      `<circle cx="250" cy="200" r="${r}" fill="none" stroke="${GREEN}" stroke-opacity="${0.16 - i * 0.03}" stroke-width="1.5"/>`
+      `<circle cx="250" cy="200" r="${r}" fill="none" stroke="${GREEN}" stroke-opacity="${0.16 - i * 0.03}" stroke-width="1.5"/>`,
   )
   .join('');
 const nodes = [
@@ -22,7 +22,10 @@ const nodes = [
   [70, 200],
   [370, 90],
 ]
-  .map(([cx, cy]) => `<circle cx="${cx}" cy="${cy}" r="4" fill="${GREEN}" fill-opacity="0.6"/>`)
+  .map(
+    ([cx, cy]) =>
+      `<circle cx="${cx}" cy="${cy}" r="4" fill="${GREEN}" fill-opacity="0.6"/>`,
+  )
   .join('');
 
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">

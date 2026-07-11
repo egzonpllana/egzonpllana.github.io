@@ -3,7 +3,7 @@ title: 'How I Stopped a Silent Memory Leak in My iOS App'
 description: 'How I diagnosed a silent SwiftUI memory leak, achieved 85% memory reduction on tab switches, and open-sourced a real-time memory profiler.'
 date: 2025-07-27
 tags: ['Swift', 'iOS', 'SwiftUI', 'Memory Management', 'Combine']
-heroImage: '/articles/covers/stopping-a-silent-memory-leak-ios.png'
+heroImage: '../../assets/covers/stopping-a-silent-memory-leak-ios.png'
 repoUrl: 'https://github.com/egzonpllana/memory-profiler-ios'
 ---
 

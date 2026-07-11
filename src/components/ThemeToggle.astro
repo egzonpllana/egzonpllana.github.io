@@ -6,16 +6,33 @@
   id="theme-toggle"
   class="theme-toggle"
   type="button"
-  aria-label="Toggle color theme"
-  aria-pressed="false"
+  aria-label="Switch to dark theme"
   title="Toggle theme"
 >
-  <svg class="icon icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-    <circle cx="12" cy="12" r="4" />
-    <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke-linecap="round" />
+  <svg
+    class="icon icon-sun"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.8"
+    aria-hidden="true"
+  >
+    <circle cx="12" cy="12" r="4"></circle>
+    <path
+      d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"
+      stroke-linecap="round"></path>
   </svg>
-  <svg class="icon icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-    <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" stroke-linejoin="round" />
+  <svg
+    class="icon icon-moon"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.8"
+    aria-hidden="true"
+  >
+    <path
+      d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"
+      stroke-linejoin="round"></path>
   </svg>
 </button>
 
@@ -28,7 +45,9 @@
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     color: var(--fg-muted);
-    transition: background 0.18s var(--ease), color 0.18s var(--ease),
+    transition:
+      background 0.18s var(--ease),
+      color 0.18s var(--ease),
       border-color 0.18s var(--ease);
   }
   .theme-toggle:hover {
@@ -57,19 +76,27 @@
   (() => {
     const btn = document.getElementById('theme-toggle');
     if (!btn) return;
-    const sync = () => {
-      const dark = document.documentElement.dataset.theme === 'dark';
-      btn.setAttribute('aria-pressed', String(dark));
+    const apply = (theme) => {
+      document.documentElement.dataset.theme = theme;
+      btn.setAttribute(
+        'aria-label',
+        theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme',
+      );
+      // Keep the browser chrome color in sync with the chosen theme.
+      const color = theme === 'dark' ? '#0b0e14' : '#ffffff';
+      document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
+        m.setAttribute('content', color);
+        m.removeAttribute('media');
+      });
     };
     btn.addEventListener('click', () => {
       const next =
         document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-      document.documentElement.dataset.theme = next;
+      apply(next);
       try {
         localStorage.setItem('theme', next);
       } catch (e) {}
-      sync();
     });
-    sync();
+    apply(document.documentElement.dataset.theme || 'light');
   })();
 </script>

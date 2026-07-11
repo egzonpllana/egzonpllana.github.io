@@ -44,7 +44,10 @@ const ICONS: Record<IconKey, string> = {
 
 {
   block.kind === BlockKind.Lead && (
-    <p class:list={['ai-lead', { 'ai-lead--sm': block.small }]} set:html={block.html} />
+    <p
+      class:list={['ai-lead', { 'ai-lead--sm': block.small }]}
+      set:html={block.html}
+    />
   )
 }
 
@@ -54,11 +57,21 @@ const ICONS: Record<IconKey, string> = {
       {block.items.map((p) => (
         <>
           {p.arrowBefore && (
-            <svg class="ai-pill-arrow" viewBox="0 0 24 24" aria-hidden="true" set:html={ICONS.arrow} />
+            <svg
+              class="ai-pill-arrow"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              set:html={ICONS.arrow}
+            />
           )}
           <span class:list={['ai-pill', { 'ai-pill--strong': p.strong }]}>
             {p.icon && (
-              <svg class="ai-pill-ic" viewBox="0 0 24 24" aria-hidden="true" set:html={ICONS[p.icon]} />
+              <svg
+                class="ai-pill-ic"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                set:html={ICONS[p.icon]}
+              />
             )}
             {p.label}
           </span>
@@ -93,7 +106,11 @@ const ICONS: Record<IconKey, string> = {
       {block.label && (
         <div class="ai-filetab">
           {block.labelIcon && (
-            <svg viewBox="0 0 24 24" aria-hidden="true" set:html={ICONS[block.labelIcon]} />
+            <svg
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              set:html={ICONS[block.labelIcon]}
+            />
           )}
           <span set:html={block.label} />
         </div>
@@ -113,7 +130,12 @@ const ICONS: Record<IconKey, string> = {
     <ul class:list={['ai-checks', { 'ai-checks--2col': block.columns === 2 }]}>
       {block.items.map((it) => (
         <li class="ai-check">
-          <svg class="ai-check__mark" viewBox="0 0 24 24" aria-hidden="true" set:html={ICONS.check} />
+          <svg
+            class="ai-check__mark"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            set:html={ICONS.check}
+          />
           <span class="ai-check__text">
             <span set:html={it.title} />
             {it.note && <span class="ai-check__note" set:html={it.note} />}
@@ -152,7 +174,7 @@ const ICONS: Record<IconKey, string> = {
   .ai-quote :global(.hl),
   .ai-lead :global(i),
   .ai-check__text :global(.hl) {
-    color: var(--accent);
+    color: var(--accent-text);
     font-weight: 560;
     font-style: normal;
   }
@@ -239,7 +261,7 @@ const ICONS: Record<IconKey, string> = {
   }
   .ai-card__step {
     font-family: var(--font-mono);
-    font-size: 0.66rem;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--fg-faint);
@@ -314,7 +336,7 @@ const ICONS: Record<IconKey, string> = {
     white-space: pre;
   }
   .ai-code :global(.kw) {
-    color: var(--accent);
+    color: var(--accent-text);
     font-weight: 600;
   }
   .ai-code :global(.str) {
@@ -371,7 +393,7 @@ const ICONS: Record<IconKey, string> = {
     gap: 0.1rem;
   }
   .ai-check__text :global(b) {
-    color: var(--accent);
+    color: var(--accent-text);
     font-weight: 620;
   }
   .ai-check__note {

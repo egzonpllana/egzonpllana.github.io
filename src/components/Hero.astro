@@ -10,7 +10,9 @@ import portrait from '../assets/portrait.png';
     <div class="hero__inner">
       <div class="hero__content">
         <h1 class="hero__name anim-in" style="--d:120ms">{PROFILE.name}</h1>
-        <p class="hero__headline anim-in" style="--d:200ms">{PROFILE.headline}</p>
+        <p class="hero__headline anim-in" style="--d:200ms">
+          {PROFILE.headline}
+        </p>
         <p class="hero__summary anim-in" style="--d:280ms">{PROFILE.summary}</p>
 
         <div class="hero__statement anim-in" style="--d:360ms">
@@ -18,11 +20,16 @@ import portrait from '../assets/portrait.png';
           <p>{PROFILE.statement}</p>
         </div>
 
+        <p class="hero__availability anim-in" style="--d:400ms">
+          <span class="dot" aria-hidden="true"></span>
+          {PROFILE.availability}
+        </p>
+
         <div class="hero__actions anim-in" style="--d:440ms">
-          <a class="btn btn--primary" href="#sdks">
-            View the SDKs <span class="arrow">→</span>
+          <a class="btn btn--primary" href="/contact/">
+            Get in touch <span class="arrow">→</span>
           </a>
-          <a class="btn" href="/contact">Get in touch</a>
+          <a class="btn" href="#sdks">View the SDKs</a>
           <SocialLinks size={18} />
         </div>
       </div>
@@ -54,12 +61,11 @@ import portrait from '../assets/portrait.png';
     padding-top: var(--sp-8);
     padding-bottom: var(--sp-7);
     border-bottom: 1px solid var(--border);
-    background:
-      radial-gradient(
-        60% 50% at 15% 0%,
-        var(--accent-soft),
-        transparent 70%
-      );
+    background: radial-gradient(
+      60% 50% at 15% 0%,
+      var(--accent-soft),
+      transparent 70%
+    );
   }
   .hero__inner {
     display: grid;
@@ -103,12 +109,25 @@ import portrait from '../assets/portrait.png';
     margin-top: var(--sp-2);
     color: var(--fg);
   }
+  .hero__availability {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-top: var(--sp-5);
+    padding: 0.3rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--fg-muted);
+  }
   .hero__actions {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--sp-3);
-    margin-top: var(--sp-6);
+    margin-top: var(--sp-5);
   }
 
   /* ---- Portrait ----------------------------------------------------------- */
@@ -144,7 +163,9 @@ import portrait from '../assets/portrait.png';
     box-shadow:
       var(--shadow-md),
       0 0 0 6px var(--accent-soft);
-    transition: transform 0.3s var(--ease), box-shadow 0.3s var(--ease);
+    transition:
+      transform 0.3s var(--ease),
+      box-shadow 0.3s var(--ease);
   }
   .hero__frame:hover .hero__avatar {
     transform: translateY(-3px);
@@ -187,14 +208,13 @@ import portrait from '../assets/portrait.png';
     }
   }
 
-  /* Mobile: stack, portrait first and centered. */
+  /* Mobile: stack — name and headline first, portrait after. */
   @media (max-width: 720px) {
     .hero__inner {
       grid-template-columns: 1fr;
       gap: var(--sp-7);
     }
     .hero__portrait {
-      order: -1;
       justify-self: center;
     }
     .hero__frame {
@@ -203,7 +223,8 @@ import portrait from '../assets/portrait.png';
   }
 
   @media (prefers-reduced-motion: no-preference) {
-    .dot {
+    /* Only the availability dot pulses; the location badge dot stays static. */
+    .hero__availability .dot {
       animation: hero-pulse 2.4s var(--ease) infinite;
     }
   }

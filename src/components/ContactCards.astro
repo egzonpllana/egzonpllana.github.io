@@ -3,12 +3,7 @@ import { SITE, APP_STORE_DEVELOPER_URL } from '../data/site';
 import { STACK_OVERFLOW } from '../data/stackoverflow';
 
 type IconKey =
-  | 'email'
-  | 'linkedin'
-  | 'github'
-  | 'medium'
-  | 'stackoverflow'
-  | 'appstore';
+  'email' | 'linkedin' | 'github' | 'medium' | 'stackoverflow' | 'appstore';
 
 interface Contact {
   label: string;
@@ -19,12 +14,47 @@ interface Contact {
 }
 
 const CONTACTS: Contact[] = [
-  { label: 'Email', value: SITE.email, href: `mailto:${SITE.email}`, icon: 'email' },
-  { label: 'LinkedIn', value: 'in/egzon-pllana', href: 'https://linkedin.com/in/egzon-pllana', icon: 'linkedin', external: true },
-  { label: 'GitHub', value: '@egzonpllana', href: 'https://github.com/egzonpllana', icon: 'github', external: true },
-  { label: 'Medium', value: '@egzonpllana', href: 'https://medium.com/@egzonpllana', icon: 'medium', external: true },
-  { label: 'Stack Overflow', value: 'egzon-p', href: STACK_OVERFLOW.url, icon: 'stackoverflow', external: true },
-  { label: 'App Store', value: 'Developer page', href: APP_STORE_DEVELOPER_URL, icon: 'appstore', external: true },
+  {
+    label: 'Email',
+    value: SITE.email,
+    href: `mailto:${SITE.email}`,
+    icon: 'email',
+  },
+  {
+    label: 'LinkedIn',
+    value: 'in/egzon-pllana',
+    href: 'https://linkedin.com/in/egzon-pllana',
+    icon: 'linkedin',
+    external: true,
+  },
+  {
+    label: 'GitHub',
+    value: '@egzonpllana',
+    href: 'https://github.com/egzonpllana',
+    icon: 'github',
+    external: true,
+  },
+  {
+    label: 'Medium',
+    value: '@egzonpllana',
+    href: 'https://medium.com/@egzonpllana',
+    icon: 'medium',
+    external: true,
+  },
+  {
+    label: 'Stack Overflow',
+    value: 'egzon-p',
+    href: STACK_OVERFLOW.url,
+    icon: 'stackoverflow',
+    external: true,
+  },
+  {
+    label: 'App Store',
+    value: 'Developer page',
+    href: APP_STORE_DEVELOPER_URL,
+    icon: 'appstore',
+    external: true,
+  },
 ];
 
 const ICONS: Record<IconKey, string> = {
@@ -62,8 +92,11 @@ const ICONS: Record<IconKey, string> = {
         <span class="ccard__text">
           <span class="ccard__label">{c.label}</span>
           <span class="ccard__value">{c.value}</span>
+          {c.external && <span class="sr-only">(opens in new tab)</span>}
         </span>
-        <span class="ccard__arrow" aria-hidden="true">{c.external ? '↗' : '→'}</span>
+        <span class="ccard__arrow" aria-hidden="true">
+          {c.external ? '↗' : '→'}
+        </span>
       </a>
     ))
   }
@@ -85,11 +118,13 @@ const ICONS: Record<IconKey, string> = {
     border-radius: var(--radius);
     background: var(--surface);
     color: var(--fg);
-    transition: border-color 0.18s var(--ease), transform 0.18s var(--ease),
+    transition:
+      border-color 0.18s var(--ease),
+      transform 0.18s var(--ease),
       box-shadow 0.18s var(--ease);
   }
   .ccard:hover {
-    border-color: var(--accent);
+    border-color: var(--border-strong);
     transform: translateY(-3px);
     box-shadow: var(--shadow-md);
   }
@@ -115,7 +150,7 @@ const ICONS: Record<IconKey, string> = {
   }
   .ccard__label {
     font-family: var(--font-mono);
-    font-size: 0.68rem;
+    font-size: var(--fs-2xs);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--fg-faint);
@@ -130,7 +165,9 @@ const ICONS: Record<IconKey, string> = {
   .ccard__arrow {
     margin-left: auto;
     color: var(--fg-faint);
-    transition: color 0.18s var(--ease), transform 0.18s var(--ease);
+    transition:
+      color 0.18s var(--ease),
+      transform 0.18s var(--ease);
   }
   .ccard:hover .ccard__arrow {
     color: var(--accent);

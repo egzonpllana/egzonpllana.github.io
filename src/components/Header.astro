@@ -2,11 +2,13 @@
 import { NAV, SITE } from '../data/site';
 import ThemeToggle from './ThemeToggle.astro';
 
-const currentPath = Astro.url.pathname;
+// Compare with trailing slashes normalized so /articles/foo/ matches /articles/.
+const currentPath = Astro.url.pathname.replace(/\/$/, '') + '/';
 
 function isActive(href: string): boolean {
   if (href === '/') return currentPath === '/';
-  return currentPath === href || currentPath.startsWith(href + '/');
+  const normalized = href.replace(/\/$/, '') + '/';
+  return currentPath === normalized || currentPath.startsWith(normalized);
 }
 ---
 
@@ -78,7 +80,7 @@ function isActive(href: string): boolean {
     font-family: var(--font-mono);
     font-size: var(--fs-sm);
     font-weight: 500;
-    color: var(--accent);
+    color: var(--accent-text);
   }
   .nav {
     margin-inline-start: auto;
@@ -97,7 +99,9 @@ function isActive(href: string): boolean {
     font-size: var(--fs-sm);
     font-weight: 520;
     color: var(--fg-muted);
-    transition: color 0.16s var(--ease), background 0.16s var(--ease);
+    transition:
+      color 0.16s var(--ease),
+      background 0.16s var(--ease);
   }
   .nav__link:hover {
     color: var(--fg);
@@ -129,7 +133,9 @@ function isActive(href: string): boolean {
     margin-inline: auto;
     background: var(--fg);
     border-radius: 2px;
-    transition: transform 0.2s var(--ease), opacity 0.2s var(--ease);
+    transition:
+      transform 0.2s var(--ease),
+      opacity 0.2s var(--ease);
   }
   .nav-toggle[aria-expanded='true'] span:nth-child(1) {
     transform: translateY(7px) rotate(45deg);
@@ -149,13 +155,23 @@ function isActive(href: string): boolean {
       border-bottom: 1px solid var(--border);
       transform: translateY(-8px);
       opacity: 0;
+      /* visibility keeps closed-menu links out of the tab order */
+      visibility: hidden;
       pointer-events: none;
-      transition: opacity 0.2s var(--ease), transform 0.2s var(--ease);
+      transition:
+        opacity 0.2s var(--ease),
+        transform 0.2s var(--ease),
+        visibility 0s 0.2s;
     }
     .nav.is-open {
       opacity: 1;
       transform: none;
+      visibility: visible;
       pointer-events: auto;
+      transition:
+        opacity 0.2s var(--ease),
+        transform 0.2s var(--ease),
+        visibility 0s;
     }
     .nav__list {
       flex-direction: column;
@@ -178,15 +194,28 @@ function isActive(href: string): boolean {
     const toggle = document.getElementById('nav-toggle');
     const nav = document.querySelector('.nav');
     if (!toggle || !nav) return;
-    toggle.addEventListener('click', () => {
-      const open = nav.classList.toggle('is-open');
+
+    const setOpen = (open) => {
+      nav.classList.toggle('is-open', open);
       toggle.setAttribute('aria-expanded', String(open));
+    };
+
+    toggle.addEventListener('click', () => {
+      setOpen(!nav.classList.contains('is-open'));
     });
-    nav.querySelectorAll('a').forEach((a) =>
-      a.addEventListener('click', () => {
-        nav.classList.remove('is-open');
-        toggle.setAttribute('aria-expanded', 'false');
-      })
-    );
+    nav
+      .querySelectorAll('a')
+      .forEach((a) => a.addEventListener('click', () => setOpen(false)));
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && nav.classList.contains('is-open')) {
+        setOpen(false);
+        toggle.focus();
+      }
+    });
+    document.addEventListener('click', (e) => {
+      if (!nav.classList.contains('is-open')) return;
+      if (nav.contains(e.target) || toggle.contains(e.target)) return;
+      setOpen(false);
+    });
   })();
 </script>

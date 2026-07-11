@@ -20,7 +20,7 @@ const photoSquare = await sharp(SRC)
   .resize(photoD, photoD, { fit: 'cover', position: 'centre' })
   .toBuffer();
 const photoMask = Buffer.from(
-  `<svg width="${photoD}" height="${photoD}"><circle cx="${photoD / 2}" cy="${photoD / 2}" r="${photoD / 2}" fill="#fff"/></svg>`
+  `<svg width="${photoD}" height="${photoD}"><circle cx="${photoD / 2}" cy="${photoD / 2}" r="${photoD / 2}" fill="#fff"/></svg>`,
 );
 const circularPhoto = await sharp(photoSquare)
   .composite([{ input: photoMask, blend: 'dest-in' }])
@@ -31,13 +31,18 @@ const circularPhoto = await sharp(photoSquare)
 const ring = Buffer.from(
   `<svg width="${SIZE}" height="${SIZE}">
      <circle cx="${SIZE / 2}" cy="${SIZE / 2}" r="${outerR}" fill="${GREEN}"/>
-   </svg>`
+   </svg>`,
 );
 
 // 3) compose on a transparent canvas
 const offset = Math.round((SIZE - photoD) / 2);
 await sharp({
-  create: { width: SIZE, height: SIZE, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  create: {
+    width: SIZE,
+    height: SIZE,
+    channels: 4,
+    background: { r: 0, g: 0, b: 0, alpha: 0 },
+  },
 })
   .composite([
     { input: ring },

@@ -3,7 +3,7 @@ title: 'From Network Chaos to Cached Harmony'
 description: 'How I replaced scattered, redundant contact API calls with a multi-layered, reactive caching architecture in a SwiftUI app using Clean Architecture.'
 date: 2025-08-11
 tags: ['Swift', 'iOS', 'Clean Architecture', 'Caching', 'Combine']
-heroImage: '/articles/covers/from-network-chaos-to-cached-harmony.png'
+heroImage: '../../assets/covers/from-network-chaos-to-cached-harmony.png'
 ---
 
 ## The Problem: Network Request Hell
