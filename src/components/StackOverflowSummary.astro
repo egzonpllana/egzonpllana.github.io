@@ -14,40 +14,61 @@ const pts = series.map((v, i) => {
   const y = H - ((v - min) / range) * (H - 6) - 3;
   return [x, y] as const;
 });
-const linePath = pts.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
+const linePath = pts
+  .map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`)
+  .join(' ');
 const areaPath = `${linePath} L${W} ${H} L0 ${H} Z`;
 
 const fmt = (n: number) => n.toLocaleString('en-US');
-const nice = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k` : `${n}`);
-const yTicks = [max, min + range / 2, min].map((v) => Math.round(v / 100) * 100);
+const nice = (n: number) =>
+  n >= 1000 ? `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k` : `${n}`;
+const yTicks = [max, min + range / 2, min].map(
+  (v) => Math.round(v / 100) * 100,
+);
 ---
 
 <div class="so-grid">
   <!-- Reputation -->
   <a class="so-panel" href={SO.url} target="_blank" rel="noopener noreferrer">
-    <span class="so-panel__label">Reputation</span>
+    <span class="so-panel__label"
+      >Reputation <span class="sr-only">(opens in new tab)</span></span
+    >
     <div class="so-rep">
       <div class="so-rep__left">
         <div class="so-rep__num">{fmt(SO.reputation)}</div>
-        <span class="so-chip so-chip--green">+{SO.reputationDelta}</span>
+        <span class="so-chip so-chip--green" title="Recent reputation gain">
+          +{SO.reputationDelta}<span class="sr-only">
+            recent reputation gain</span
+          >
+        </span>
       </div>
       <div class="so-chart">
         <div class="so-chart__yaxis">
           {yTicks.map((t) => <span>{nice(t)}</span>)}
         </div>
         <div class="so-chart__plot">
-          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden="true">
+          <svg
+            viewBox={`0 0 ${W} ${H}`}
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
             <defs>
               <linearGradient id="so-fill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stop-color="var(--so-green)" stop-opacity="0.28" />
-                <stop offset="1" stop-color="var(--so-green)" stop-opacity="0" />
+                <stop
+                  offset="0"
+                  stop-color="var(--so-green)"
+                  stop-opacity="0.28"></stop>
+                <stop offset="1" stop-color="var(--so-green)" stop-opacity="0"
+                ></stop>
               </linearGradient>
             </defs>
-            <line x1="0" y1="3" x2={W} y2="3" class="so-grid-line" />
-            <line x1="0" y1={H / 2} x2={W} y2={H / 2} class="so-grid-line" />
-            <line x1="0" y1={H - 3} x2={W} y2={H - 3} class="so-grid-line" />
-            <path d={areaPath} fill="url(#so-fill)" />
-            <path d={linePath} class="so-line" fill="none" />
+            <line x1="0" y1="3" x2={W} y2="3" class="so-grid-line"></line>
+            <line x1="0" y1={H / 2} x2={W} y2={H / 2} class="so-grid-line"
+            ></line>
+            <line x1="0" y1={H - 3} x2={W} y2={H - 3} class="so-grid-line"
+            ></line>
+            <path d={areaPath} fill="url(#so-fill)"></path>
+            <path d={linePath} class="so-line" fill="none"></path>
           </svg>
           <div class="so-chart__xaxis">
             {SO.years.map((y) => <span>{y}</span>)}
@@ -69,24 +90,35 @@ const yTicks = [max, min + range / 2, min].map((v) => Math.round(v / 100) * 100)
   </a>
 
   <!-- Badges -->
-  <a class="so-panel" href={`${SO.url}?tab=badges`} target="_blank" rel="noopener noreferrer">
+  <a
+    class="so-panel"
+    href={`${SO.url}?tab=badges`}
+    target="_blank"
+    rel="noopener noreferrer"
+  >
     <div class="so-panel__head">
-      <span class="so-panel__label">Badges</span>
+      <span class="so-panel__label"
+        >Badges <span class="sr-only">(opens in new tab)</span></span
+      >
       <span class="so-panel__count">{SO.badgesTotal} total</span>
     </div>
     <div class="so-badges">
-      {SO.topBadges.map((b) => (
-        <span class={`so-badge so-badge--${b.tier}`}>
-          <span class="dot" />
-          {b.name}
-          {b.count > 1 && <span class="so-badge__x">×{b.count}</span>}
-        </span>
-      ))}
+      {
+        SO.topBadges.map((b) => (
+          <span class={`so-badge so-badge--${b.tier}`}>
+            <span class="dot" />
+            {b.name}
+            {b.count > 1 && <span class="so-badge__x">×{b.count}</span>}
+          </span>
+        ))
+      }
     </div>
     <div class="so-rep__foot so-rep__foot--badges">
       <div class="so-foot-block so-foot-block--grow">
         <span class="so-mini-label">Next badge</span>
-        <span class="so-named-badge"><span class="dot dot--bronze"></span>{SO.nextBadge.name}</span>
+        <span class="so-named-badge"
+          ><span class="dot dot--bronze"></span>{SO.nextBadge.name}</span
+        >
       </div>
       <span class="so-priv-rep">{SO.nextBadge.progress}</span>
     </div>
@@ -94,23 +126,27 @@ const yTicks = [max, min + range / 2, min].map((v) => Math.round(v / 100) * 100)
 
   <!-- Impact -->
   <a class="so-panel" href={SO.url} target="_blank" rel="noopener noreferrer">
-    <span class="so-panel__label">Impact</span>
+    <span class="so-panel__label"
+      >Impact <span class="sr-only">(opens in new tab)</span></span
+    >
     <div class="so-impact">
       <div class="so-stat">
         <span class="so-stat__num">{SO.impact.peopleReached}</span>
         <span class="so-stat__label">people reached</span>
       </div>
       <div class="so-stat">
-        <span class="so-stat__num">{SO.impact.postsEdited}</span>
-        <span class="so-stat__label">post edited</span>
-      </div>
-      <div class="so-stat">
-        <span class="so-stat__num">{SO.impact.helpfulFlags}</span>
-        <span class="so-stat__label">helpful flag</span>
-      </div>
-      <div class="so-stat">
         <span class="so-stat__num">{fmt(SO.impact.votesCast)}</span>
         <span class="so-stat__label">votes cast</span>
+      </div>
+      <div class="so-stat">
+        <span class="so-stat__num">{SO.badgesTotal}</span>
+        <span class="so-stat__label">badges earned</span>
+      </div>
+      <div class="so-stat">
+        <span class="so-stat__num"
+          >{SO.topBadges.filter((b) => b.tier === 'gold').length}</span
+        >
+        <span class="so-stat__label">gold badges</span>
       </div>
     </div>
   </a>
@@ -118,10 +154,14 @@ const yTicks = [max, min + range / 2, min].map((v) => Math.round(v / 100) * 100)
 
 <style>
   .so-grid {
-    --so-green: #3fb950;
+    /* Dark enough for readable small text on the light theme. */
+    --so-green: #217a3c;
     display: grid;
     grid-template-columns: 1.4fr 1fr 1fr;
     gap: var(--sp-4);
+  }
+  :global(:root[data-theme='dark']) .so-grid {
+    --so-green: #3fb950;
   }
   @media (max-width: 880px) {
     .so-grid {
@@ -137,7 +177,9 @@ const yTicks = [max, min + range / 2, min].map((v) => Math.round(v / 100) * 100)
     border-radius: var(--radius);
     background: var(--surface);
     color: var(--fg);
-    transition: border-color 0.18s var(--ease), transform 0.18s var(--ease),
+    transition:
+      border-color 0.18s var(--ease),
+      transform 0.18s var(--ease),
       box-shadow 0.18s var(--ease);
   }
   .so-panel:hover {
@@ -194,7 +236,7 @@ const yTicks = [max, min + range / 2, min].map((v) => Math.round(v / 100) * 100)
     flex-direction: column;
     justify-content: space-between;
     font-family: var(--font-mono);
-    font-size: 0.62rem;
+    font-size: var(--fs-2xs);
     color: var(--fg-faint);
     height: 70px;
     text-align: right;
@@ -223,7 +265,7 @@ const yTicks = [max, min + range / 2, min].map((v) => Math.round(v / 100) * 100)
     display: flex;
     justify-content: space-between;
     font-family: var(--font-mono);
-    font-size: 0.62rem;
+    font-size: var(--fs-2xs);
     color: var(--fg-faint);
     margin-top: 0.25rem;
   }
@@ -261,7 +303,7 @@ const yTicks = [max, min + range / 2, min].map((v) => Math.round(v / 100) * 100)
     padding: 0.15rem 0.5rem;
     border-radius: 6px;
     background: color-mix(in srgb, var(--accent) 12%, transparent);
-    color: var(--accent);
+    color: var(--accent-text);
     align-self: flex-start;
   }
   .so-tag b {

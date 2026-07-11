@@ -3,7 +3,7 @@ title: 'Building the Airbnb Host Passport view in Swift 5.9 on iOS'
 description: 'Recreating the Airbnb Host Passport as a flippable, book-like multi-page view in UIKit using transparent views and CATransform3D 3D rotations.'
 date: 2024-08-17
 tags: ['Swift', 'iOS', 'UIKit', '3D Animation', 'Core Animation']
-heroImage: '/articles/covers/airbnb-host-passport-view-swift.png'
+heroImage: '../../assets/covers/airbnb-host-passport-view-swift.png'
 ---
 
 In this interesting challenge, we delve into creating a flippable page effect using UIKit, exploring the nuances of achieving a realistic page-turning animation. The Airbnb Host Passport view is like the book view we are going to build, but with a single page on it. To make it more advanced than just a passport view with a single tap to open it, we have implemented a view that is like a book, with multiple pages.

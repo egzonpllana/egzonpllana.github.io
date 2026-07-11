@@ -1,0 +1,85 @@
+---
+import { getCollection } from 'astro:content';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import SectionHeading from '../../components/SectionHeading.astro';
+import ArticleCard from '../../components/ArticleCard.astro';
+import { readingTime } from '../../lib/reading-time';
+import { articleSlug, tagSlug } from '../../lib/slug';
+
+export async function getStaticPaths() {
+  const published = (await getCollection('articles')).filter(
+    (a) => !a.data.draft,
+  );
+  published.sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+
+  const byTag = new Map<string, { tag: string; articles: typeof published }>();
+  for (const article of published) {
+    for (const tag of article.data.tags) {
+      const slug = tagSlug(tag);
+      const bucket = byTag.get(slug);
+      if (bucket) bucket.articles.push(article);
+      else byTag.set(slug, { tag, articles: [article] });
+    }
+  }
+
+  return [...byTag.entries()].map(([slug, { tag, articles }]) => ({
+    params: { tag: slug },
+    props: { tag, articles },
+  }));
+}
+
+const { tag, articles } = Astro.props;
+const withReadingTime = articles.map((a) => ({
+  ...a,
+  readingTime: readingTime(a.body ?? ''),
+}));
+---
+
+<BaseLayout
+  title={`Articles tagged “${tag}”`}
+  description={`Articles by Egzon Pllana tagged ${tag} — Swift, SDK design, and iOS architecture.`}
+>
+  <section class="section">
+    <div class="container">
+      <SectionHeading
+        as="h1"
+        number="—"
+        title={`Tagged: ${tag}`}
+        description={`${withReadingTime.length} article${withReadingTime.length === 1 ? '' : 's'} tagged “${tag}”.`}
+      />
+      <a class="tag-back link-accent" href="/articles/">
+        <span aria-hidden="true">←</span> All articles
+      </a>
+      <div class="articles-grid">
+        {
+          withReadingTime.map((a, i) => (
+            <ArticleCard
+              title={a.data.title}
+              description={a.data.description}
+              date={a.data.date}
+              readingTime={a.readingTime}
+              tags={a.data.tags}
+              slug={articleSlug(a.id)}
+              image={a.data.heroImage}
+              index={i}
+            />
+          ))
+        }
+      </div>
+    </div>
+  </section>
+</BaseLayout>
+
+<style>
+  .articles-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: var(--sp-4);
+    align-items: stretch;
+  }
+  .tag-back {
+    display: inline-block;
+    font-size: var(--fs-sm);
+    margin-bottom: var(--sp-5);
+  }
+</style>

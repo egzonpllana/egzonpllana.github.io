@@ -1,8 +1,25 @@
 ---
 import '../styles/prose.css';
+import type { ImageMetadata } from 'astro';
+import { Image, getImage } from 'astro:assets';
 import BaseLayout from './BaseLayout.astro';
 import ArticleActions from '../components/ArticleActions.astro';
 import { formatDate, isoDate } from '../lib/format-date';
+import { tagSlug } from '../lib/slug';
+
+interface Heading {
+  depth: number;
+  slug: string;
+  text: string;
+}
+
+interface RelatedArticle {
+  title: string;
+  description: string;
+  slug: string;
+  date: Date;
+  readingTime: number;
+}
 
 interface Props {
   title: string;
@@ -11,13 +28,35 @@ interface Props {
   updated?: Date;
   tags: string[];
   readingTime: number;
-  heroImage?: string;
-  ogImage?: string;
+  heroImage?: ImageMetadata;
+  ogImage?: ImageMetadata;
   repoUrl?: string;
+  headings?: Heading[];
+  related?: RelatedArticle[];
 }
 
-const { title, description, date, updated, tags, readingTime, heroImage, ogImage, repoUrl } =
-  Astro.props;
+const {
+  title,
+  description,
+  date,
+  updated,
+  tags,
+  readingTime,
+  heroImage,
+  ogImage,
+  repoUrl,
+  headings = [],
+  related = [],
+} = Astro.props;
+
+// Social preview: a compressed ~1200px variant instead of the original PNG.
+const ogAsset = ogImage ?? heroImage;
+const og = ogAsset
+  ? await getImage({ src: ogAsset, width: 1200, format: 'jpeg', quality: 85 })
+  : undefined;
+
+const tocEntries = headings.filter((h) => h.depth === 2);
+const showToc = tocEntries.length >= 3;
 ---
 
 <BaseLayout
@@ -25,10 +64,19 @@ const { title, description, date, updated, tags, readingTime, heroImage, ogImage
   description={description}
   type="article"
   publishedDate={date}
-  image={ogImage ?? heroImage}
+  updatedDate={updated}
+  tags={tags}
+  image={og?.src}
+  imageWidth={typeof og?.attributes.width === 'number'
+    ? og.attributes.width
+    : undefined}
+  imageHeight={typeof og?.attributes.height === 'number'
+    ? og.attributes.height
+    : undefined}
+  imageAlt={`${title} — article cover`}
 >
   <article class="article container">
-    <a class="article__back link-accent" href="/articles">
+    <a class="article__back link-accent" href="/articles/">
       <span aria-hidden="true">←</span> All articles
     </a>
 
@@ -37,12 +85,14 @@ const { title, description, date, updated, tags, readingTime, heroImage, ogImage
         <time datetime={isoDate(date)}>{formatDate(date)}</time>
         <span aria-hidden="true">·</span>
         <span>{readingTime} min read</span>
-        {updated && (
-          <>
-            <span aria-hidden="true">·</span>
-            <span>Updated {formatDate(updated)}</span>
-          </>
-        )}
+        {
+          updated && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span>Updated {formatDate(updated)}</span>
+            </>
+          )
+        }
       </div>
       <h1 class="article__title">{title}</h1>
       <p class="article__lede">{description}</p>
@@ -50,7 +100,11 @@ const { title, description, date, updated, tags, readingTime, heroImage, ogImage
         tags.length > 0 && (
           <ul class="article__tags">
             {tags.map((tag) => (
-              <li class="tag">{tag}</li>
+              <li>
+                <a class="tag" href={`/tags/${tagSlug(tag)}/`}>
+                  {tag}
+                </a>
+              </li>
             ))}
           </ul>
         )
@@ -60,8 +114,33 @@ const { title, description, date, updated, tags, readingTime, heroImage, ogImage
     {
       heroImage && (
         <figure class="article__hero">
-          <img src={heroImage} alt={`${title} cover`} loading="eager" decoding="async" />
+          <Image
+            src={heroImage}
+            alt=""
+            widths={[720, 1440]}
+            sizes="(max-width: 760px) 100vw, 720px"
+            format="webp"
+            quality={85}
+            loading="eager"
+            fetchpriority="high"
+            decoding="async"
+          />
         </figure>
+      )
+    }
+
+    {
+      showToc && (
+        <nav class="article__toc" aria-label="Table of contents">
+          <span class="article__toc-label">On this page</span>
+          <ol>
+            {tocEntries.map((h) => (
+              <li>
+                <a href={`#${h.slug}`}>{h.text}</a>
+              </li>
+            ))}
+          </ol>
+        </nav>
       )
     }
 
@@ -72,6 +151,30 @@ const { title, description, date, updated, tags, readingTime, heroImage, ogImage
     <div class="article__actions article__actions--bottom">
       <ArticleActions repoUrl={repoUrl} showShare />
     </div>
+
+    {
+      related.length > 0 && (
+        <aside class="article__related" aria-labelledby="related-heading">
+          <h2 id="related-heading" class="article__related-title">
+            Read next
+          </h2>
+          <ul class="article__related-list">
+            {related.map((r) => (
+              <li>
+                <a class="article__related-link" href={`/articles/${r.slug}/`}>
+                  <span class="article__related-name">{r.title}</span>
+                  <span class="article__related-meta">
+                    <time datetime={isoDate(r.date)}>{formatDate(r.date)}</time>
+                    <span aria-hidden="true">·</span>
+                    {r.readingTime} min read
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </aside>
+      )
+    }
   </article>
 </BaseLayout>
 
@@ -120,6 +223,44 @@ const { title, description, date, updated, tags, readingTime, heroImage, ogImage
         }
       }
     });
+  })();
+</script>
+
+<script is:inline>
+  // Copy-to-clipboard button on every code block.
+  (() => {
+    const init = () => {
+      document.querySelectorAll('.prose pre').forEach((pre) => {
+        if (pre.parentElement?.classList.contains('codeblock')) return;
+        // Keyboard users can scroll wide code horizontally.
+        pre.setAttribute('tabindex', '0');
+
+        const wrap = document.createElement('div');
+        wrap.className = 'codeblock';
+        pre.replaceWith(wrap);
+        wrap.appendChild(pre);
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'codeblock__copy';
+        btn.setAttribute('aria-label', 'Copy code');
+        btn.textContent = 'Copy';
+        btn.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(pre.innerText);
+            btn.textContent = 'Copied!';
+          } catch (err) {
+            btn.textContent = 'Failed';
+          }
+          setTimeout(() => {
+            btn.textContent = 'Copy';
+          }, 1600);
+        });
+        wrap.appendChild(btn);
+      });
+    };
+    if (document.readyState !== 'loading') init();
+    else document.addEventListener('DOMContentLoaded', init);
   })();
 </script>
 
@@ -181,5 +322,130 @@ const { title, description, date, updated, tags, readingTime, heroImage, ogImage
     list-style: none;
     padding: 0;
     margin-top: var(--sp-5);
+  }
+
+  /* Table of contents */
+  .article__toc {
+    margin-bottom: var(--sp-7);
+    padding: var(--sp-4) var(--sp-5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-subtle);
+  }
+  .article__toc-label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    margin-bottom: var(--sp-3);
+  }
+  .article__toc ol {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+  .article__toc a {
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
+  }
+  .article__toc a:hover {
+    color: var(--accent-text);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  /* Read next */
+  .article__related {
+    margin-top: var(--sp-7);
+    padding-top: var(--sp-6);
+    border-top: 1px solid var(--border);
+  }
+  .article__related-title {
+    font-size: var(--fs-lg);
+    margin-bottom: var(--sp-4);
+  }
+  .article__related-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+  }
+  .article__related-link {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: var(--sp-4) var(--sp-5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    transition:
+      border-color 0.18s var(--ease),
+      transform 0.18s var(--ease),
+      box-shadow 0.18s var(--ease);
+  }
+  .article__related-link:hover {
+    border-color: var(--border-strong);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+  }
+  .article__related-name {
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .article__related-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--fg-faint);
+  }
+</style>
+
+<style is:global>
+  /* Copy-code wrapper (elements are injected by script, so styles are global). */
+  .codeblock {
+    position: relative;
+  }
+  .prose .codeblock + * {
+    margin-top: var(--sp-5);
+  }
+  .codeblock__copy {
+    position: absolute;
+    top: 0.55rem;
+    right: 0.55rem;
+    padding: 0.25rem 0.6rem;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    opacity: 0;
+    transition:
+      opacity 0.16s var(--ease),
+      color 0.16s var(--ease),
+      border-color 0.16s var(--ease);
+  }
+  .codeblock:hover .codeblock__copy,
+  .codeblock__copy:focus-visible,
+  .prose pre:focus-visible + .codeblock__copy {
+    opacity: 1;
+  }
+  .codeblock__copy:hover {
+    color: var(--accent-text);
+    border-color: var(--accent);
+  }
+  @media (hover: none) {
+    .codeblock__copy {
+      opacity: 1;
+    }
   }
 </style>

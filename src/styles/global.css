@@ -10,24 +10,30 @@
   --surface-hover: #f2f4f7;
   --fg: #0d1117;
   --fg-muted: #5b6472;
-  --fg-faint: #8a94a3;
+  --fg-faint: #6e7787;
   --border: #e6e9ee;
   --border-strong: #d4d9e0;
   --accent: #11a14e;
+  /* Accent dark enough for 4.5:1 as small text / button fill on light bg. */
+  --accent-text: #0b7a3b;
   --accent-fg: #ffffff;
   --accent-soft: rgba(46, 224, 106, 0.1);
   --selection: rgba(46, 224, 106, 0.2);
-  --shadow-sm: 0 1px 2px rgba(13, 17, 23, 0.04), 0 1px 3px rgba(13, 17, 23, 0.06);
+  --shadow-sm:
+    0 1px 2px rgba(13, 17, 23, 0.04), 0 1px 3px rgba(13, 17, 23, 0.06);
   --shadow-md: 0 4px 14px rgba(13, 17, 23, 0.07);
   --code-bg: #f6f8fa;
 
   /* Typography */
-  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system,
-    'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo,
-    Consolas, monospace;
+  --font-sans:
+    'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    Roboto, Helvetica, Arial, sans-serif;
+  --font-mono:
+    'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas,
+    monospace;
 
   /* Modular type scale (~1.2) */
+  --fs-2xs: 0.68rem;
   --fs-xs: 0.78rem;
   --fs-sm: 0.875rem;
   --fs-base: 1rem;
@@ -66,10 +72,11 @@
   --surface-hover: #19202d;
   --fg: #e8ecf3;
   --fg-muted: #9aa6b8;
-  --fg-faint: #6b7688;
+  --fg-faint: #7b86a0;
   --border: #1e2632;
   --border-strong: #2a3442;
   --accent: #2ee06a;
+  --accent-text: #2ee06a;
   --accent-fg: #052310;
   --accent-soft: rgba(46, 224, 106, 0.13);
   --selection: rgba(46, 224, 106, 0.26);
@@ -177,13 +184,26 @@ main {
   color: var(--fg-faint);
 }
 
+/* Visually hidden, available to assistive tech. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Skip link */
 .skip-link {
   position: absolute;
   left: var(--sp-4);
   top: -3rem;
   z-index: 100;
-  background: var(--accent);
+  background: var(--accent-text);
   color: var(--accent-fg);
   padding: var(--sp-2) var(--sp-4);
   border-radius: var(--radius-sm);
@@ -207,7 +227,9 @@ main {
   border: 1px solid var(--border-strong);
   background: var(--surface);
   color: var(--fg);
-  transition: background 0.18s var(--ease), border-color 0.18s var(--ease),
+  transition:
+    background 0.18s var(--ease),
+    border-color 0.18s var(--ease),
     transform 0.18s var(--ease);
 }
 .btn:hover {
@@ -218,14 +240,14 @@ main {
   transform: translateY(1px);
 }
 .btn--primary {
-  background: var(--accent);
+  background: var(--accent-text);
   color: var(--accent-fg);
-  border-color: var(--accent);
+  border-color: var(--accent-text);
 }
 .btn--primary:hover {
   filter: brightness(1.06);
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-text);
+  border-color: var(--accent-text);
 }
 .btn .arrow {
   transition: transform 0.18s var(--ease);
@@ -235,7 +257,7 @@ main {
 }
 
 .link-accent {
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 540;
 }
 .link-accent:hover {
@@ -247,7 +269,7 @@ main {
 .tag {
   display: inline-block;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--fs-2xs);
   letter-spacing: 0.02em;
   padding: 0.18rem 0.5rem;
   border-radius: 999px;
@@ -255,25 +277,44 @@ main {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
 }
+a.tag {
+  transition:
+    border-color 0.16s var(--ease),
+    color 0.16s var(--ease),
+    background 0.16s var(--ease);
+}
+a.tag:hover {
+  color: var(--accent-text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
 
 /* ===========================================================================
    Scroll-reveal + entrance animations
    ========================================================================== */
 @media (prefers-reduced-motion: no-preference) {
-  [data-reveal] {
+  /* Cross-document view transitions: fade between pages, zero JS. */
+  @view-transition {
+    navigation: auto;
+  }
+
+  /* The hidden state is gated behind html.js (set pre-paint) so content
+     stays visible when JavaScript is disabled or fails to run. */
+  .js [data-reveal] {
     opacity: 0;
     transform: translateY(20px);
-    transition: opacity 0.7s var(--ease) var(--d, 0ms),
+    transition:
+      opacity 0.7s var(--ease) var(--d, 0ms),
       transform 0.7s var(--ease) var(--d, 0ms);
     will-change: opacity, transform;
   }
-  [data-reveal='left'] {
+  .js [data-reveal='left'] {
     transform: translateX(-22px);
   }
-  [data-reveal='scale'] {
+  .js [data-reveal='scale'] {
     transform: scale(0.96);
   }
-  [data-reveal].is-visible {
+  .js [data-reveal].is-visible {
     opacity: 1;
     transform: none;
   }

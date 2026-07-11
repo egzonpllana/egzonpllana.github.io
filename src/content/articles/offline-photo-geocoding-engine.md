@@ -3,7 +3,7 @@ title: 'How I Built an Offline Photo Geocoding Engine That Clusters 8,000 Photos
 description: 'Replacing Apple CLGeocoder with embedded GeoNames data, a K-D Tree, and a chain expansion algorithm to geocode and cluster thousands of photos offline in seconds.'
 date: 2026-04-10
 tags: ['Swift', 'iOS', 'Geocoding', 'K-D Tree', 'Spatial Search']
-heroImage: '/articles/covers/offline-photo-geocoding-engine.png'
+heroImage: '../../assets/covers/offline-photo-geocoding-engine.png'
 repoUrl: 'https://github.com/egzonpllana/geo-clustering-ios'
 ---
 

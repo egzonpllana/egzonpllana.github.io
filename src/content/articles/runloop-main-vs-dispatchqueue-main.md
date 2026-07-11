@@ -3,7 +3,7 @@ title: 'The important difference between RunLoop.main and DispatchQueue.main'
 description: 'Why a Combine pipeline can pause UI updates during scrolling, and how the choice between RunLoop.main and DispatchQueue.main on receive(on:) affects value delivery.'
 date: 2024-10-09
 tags: ['Swift', 'Combine', 'iOS', 'Concurrency', 'SwiftUI']
-heroImage: '/articles/covers/runloop-main-vs-dispatchqueue-main.png'
+heroImage: '../../assets/covers/runloop-main-vs-dispatchqueue-main.png'
 ---
 
 This article comes after so many hours debugging why a Combine publisher is causing UI animations to stop/pause when I scroll other the content, mostly in SwiftUI views?…. The answer is pretty simple, you decide how to receive Combine published values, more exactly in which scheduler/thread.

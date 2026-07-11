@@ -15,7 +15,9 @@ const touch = `<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" 
     font-family="monospace" font-size="78" font-weight="700" fill="#2ee06a" letter-spacing="-3">EP</text>
   <rect x="123" y="112" width="26" height="8" rx="4" fill="#2ee06a"/>
 </svg>`;
-await sharp(Buffer.from(touch)).png().toFile(join(root, 'apple-touch-icon.png'));
+await sharp(Buffer.from(touch))
+  .png()
+  .toFile(join(root, 'apple-touch-icon.png'));
 
 const fav = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
   <rect width="64" height="64" rx="14" fill="#0b0e14"/>
@@ -24,7 +26,10 @@ const fav = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" view
     font-family="monospace" font-size="28" font-weight="700" fill="#2ee06a" letter-spacing="-1">EP</text>
   <rect x="44" y="40" width="9" height="3" rx="1.5" fill="#2ee06a"/>
 </svg>`;
-await sharp(Buffer.from(fav)).resize(64, 64).png().toFile(join(root, 'favicon.ico'));
+await sharp(Buffer.from(fav))
+  .resize(64, 64)
+  .png()
+  .toFile(join(root, 'favicon.ico'));
 
 const og = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <defs>
@@ -40,6 +45,8 @@ const og = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" vi
   <text x="80" y="400" font-family="sans-serif" font-size="38" font-weight="500" fill="#2ee06a">Senior iOS Engineer · SDK &amp; Mobile Architect</text>
   <text x="80" y="470" font-family="monospace" font-size="26" fill="#9aa6b8">10+ years · Swift 6 · 10 open-source SDKs · App Store apps</text>
 </svg>`;
-await sharp(Buffer.from(og)).png().toFile(join(root, 'og', 'default-og.png'));
+await sharp(Buffer.from(og))
+  .png()
+  .toFile(join(root, 'og', 'default-og.png'));
 
 console.log('assets generated');

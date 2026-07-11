@@ -3,7 +3,7 @@ title: 'Building a generic, thread-safe Networking Layer in Swift 6 with Interce
 description: 'Build a generic, thread-safe networking layer in Swift 6 using the EventHorizon package, with async/await, Sendable, and network interceptors.'
 date: 2024-08-25
 tags: ['Swift', 'Async Await', 'Sendable', 'Generics', 'Networking']
-heroImage: '/articles/covers/thread-safe-networking-layer-swift-6-interceptors.png'
+heroImage: '../../assets/covers/thread-safe-networking-layer-swift-6-interceptors.png'
 repoUrl: 'https://github.com/egzonpllana/event-horizon-ios'
 ---
 

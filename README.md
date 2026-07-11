@@ -15,8 +15,10 @@ npm run dev      # http://localhost:4321
 ## Build
 
 ```bash
-npm run build    # outputs static site to ./dist
+npm run build    # outputs static site to ./dist (and prunes unreferenced images)
 npm run preview  # preview the production build
+npm run check    # astro check (types)
+npm run format   # prettier --write
 ```
 
 The `dist/` folder is a plain static site — deploy it to Vercel, Netlify, Cloudflare Pages, GitHub Pages, or any static host. No adapter or server required.
@@ -31,13 +33,16 @@ title: 'Your title'
 description: 'One-line summary used on cards and meta tags.'
 date: 2026-06-29
 tags: ['Swift', 'SDK Design']
+heroImage: '../../assets/covers/your-file-name.png'
 draft: false
 ---
 
 Your content…
 ```
 
-The filename becomes the URL slug (`/articles/your-file-name`). The newest article auto-appears as the "latest" on the homepage; the rest are listed at `/articles`. Set `draft: true` to keep a file out of the build.
+The filename becomes the URL slug (`/articles/your-file-name/`). The newest article auto-appears as the "latest" on the homepage; the rest are listed at `/articles/`. Set `draft: true` to keep a file out of the build.
+
+Cover images live in `src/assets/covers/` and go through Astro's image pipeline (resized, converted to WebP, and reused as the social-preview image), so drop in the original PNG — no manual optimization needed. Tags automatically get their own listing pages under `/tags/<tag>/`.
 
 ## Editing content
 
@@ -48,7 +53,7 @@ The filename becomes the URL slug (`/articles/your-file-name`). The newest artic
 
 ## App icons
 
-App icons live in `public/apps/`. Refresh them with:
+App icons live in `src/assets/apps/` and are resized at build time. Refresh them with:
 
 ```bash
 node scripts/fetch-app-icons.mjs

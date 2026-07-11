@@ -1,0 +1,118 @@
+---
+import { PROFILE } from '../data/profile';
+---
+
+<ol class="xp">
+  {
+    PROFILE.experience.map((job, i) => (
+      <li class="xp__item" data-reveal style={`--d:${i * 60}ms`}>
+        <span class="xp__period">{job.period}</span>
+        <span class="xp__marker" aria-hidden="true" />
+        <div class="xp__body">
+          <h3 class="xp__role">{job.position}</h3>
+          <p class="xp__company">
+            {job.url ? (
+              <a href={job.url} target="_blank" rel="noopener noreferrer">
+                {job.company}
+                <span class="sr-only">(opens in new tab)</span>
+                <span aria-hidden="true">↗</span>
+              </a>
+            ) : (
+              job.company
+            )}
+            <span class="xp__location">{job.location}</span>
+          </p>
+        </div>
+      </li>
+    ))
+  }
+</ol>
+
+<ul class="xp-skills" aria-label="Core skills">
+  {PROFILE.skills.map((skill) => <li class="tag">{skill}</li>)}
+</ul>
+
+<style>
+  .xp {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .xp__item {
+    position: relative;
+    display: grid;
+    grid-template-columns: 150px 20px 1fr;
+    gap: var(--sp-4);
+    padding-block: var(--sp-5);
+  }
+  .xp__item + .xp__item {
+    border-top: 1px solid var(--border);
+  }
+  .xp__period {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--fg-faint);
+    padding-top: 0.2rem;
+    white-space: nowrap;
+  }
+  .xp__marker {
+    position: relative;
+    width: 9px;
+    height: 9px;
+    margin-top: 0.45rem;
+    border-radius: 50%;
+    border: 2px solid var(--accent);
+    background: var(--bg);
+  }
+  .xp__item:first-child .xp__marker {
+    background: var(--accent);
+  }
+  .xp__role {
+    font-size: var(--fs-md);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .xp__company {
+    margin-top: var(--sp-1);
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--sp-3);
+  }
+  .xp__company a {
+    color: var(--fg);
+    font-weight: 560;
+  }
+  .xp__company a:hover {
+    color: var(--accent-text);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .xp__location {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--fg-faint);
+  }
+  .xp-skills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    list-style: none;
+    padding: 0;
+    margin-top: var(--sp-6);
+  }
+
+  @media (max-width: 640px) {
+    .xp__item {
+      grid-template-columns: 1fr;
+      gap: var(--sp-2);
+    }
+    .xp__marker {
+      display: none;
+    }
+  }
+</style>

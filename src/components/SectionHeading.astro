@@ -5,9 +5,18 @@ interface Props {
   id?: string;
   description?: string;
   descFull?: boolean;
+  /** Heading level — use "h1" for the page title on standalone pages. */
+  as?: 'h1' | 'h2';
 }
 
-const { number, title, id, description, descFull = false } = Astro.props;
+const {
+  number,
+  title,
+  id,
+  description,
+  descFull = false,
+  as: Tag = 'h2',
+} = Astro.props;
 ---
 
 <div class="section-heading" id={id} data-reveal>
@@ -15,10 +24,15 @@ const { number, title, id, description, descFull = false } = Astro.props;
     <span class="section-heading__num">{number}</span>
     <span class="section-heading__rule"></span>
   </div>
-  <h2 class="section-heading__title">{title}</h2>
+  <Tag class="section-heading__title">{title}</Tag>
   {
     description && (
-      <p class:list={['section-heading__desc', { 'section-heading__desc--full': descFull }]}>
+      <p
+        class:list={[
+          'section-heading__desc',
+          { 'section-heading__desc--full': descFull },
+        ]}
+      >
         {description}
       </p>
     )
@@ -39,7 +53,7 @@ const { number, title, id, description, descFull = false } = Astro.props;
     font-family: var(--font-mono);
     font-size: var(--fs-sm);
     font-weight: 600;
-    color: var(--accent);
+    color: var(--accent-text);
     letter-spacing: 0.05em;
   }
   .section-heading__rule {

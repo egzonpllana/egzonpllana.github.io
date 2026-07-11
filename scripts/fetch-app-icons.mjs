@@ -1,11 +1,11 @@
-// Downloads App Store icons into public/apps/ via the iTunes lookup API.
+// Downloads App Store icons into src/assets/apps/ via the iTunes lookup API.
 // Run: node scripts/fetch-app-icons.mjs
 import { writeFile, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const OUT = join(__dirname, '..', 'public', 'apps');
+const OUT = join(__dirname, '..', 'src', 'assets', 'apps');
 
 const APPS = [
   { slug: 'engramr', id: '1506049485' },

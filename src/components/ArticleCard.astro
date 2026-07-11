@@ -1,5 +1,8 @@
 ---
+import type { ImageMetadata } from 'astro';
+import { Image } from 'astro:assets';
 import { formatDate, isoDate } from '../lib/format-date';
+import { tagSlug } from '../lib/slug';
 
 interface Props {
   title: string;
@@ -9,7 +12,7 @@ interface Props {
   tags: string[];
   slug: string;
   featured?: boolean;
-  image?: string;
+  image?: ImageMetadata;
   index?: number;
 }
 
@@ -24,11 +27,14 @@ const {
   image,
   index = 0,
 } = Astro.props;
-const href = `/articles/${slug}`;
+const href = `/articles/${slug}/`;
 ---
 
 <article
-  class:list={['acard', { 'acard--featured': featured, 'acard--media': !!image }]}
+  class:list={[
+    'acard',
+    { 'acard--featured': featured, 'acard--media': !!image },
+  ]}
   data-reveal
   style={`--d:${(index % 3) * 80}ms`}
 >
@@ -37,36 +43,49 @@ const href = `/articles/${slug}`;
   {
     image && (
       <div class="acard__media">
-        <img src={image} alt={`${title} cover`} loading="lazy" decoding="async" />
+        <Image
+          src={image}
+          alt=""
+          widths={[480, 960]}
+          sizes="(max-width: 640px) 92vw, 480px"
+          format="webp"
+          quality={80}
+          loading="lazy"
+          decoding="async"
+        />
       </div>
     )
   }
 
   <div class="acard__body">
-  <div class="acard__meta">
-    {featured && <span class="acard__flag">Latest</span>}
-    <time datetime={isoDate(date)}>{formatDate(date)}</time>
-    <span class="acard__dot" aria-hidden="true">·</span>
-    <span>{readingTime} min read</span>
-  </div>
+    <div class="acard__meta">
+      {featured && <span class="acard__flag">Latest</span>}
+      <time datetime={isoDate(date)}>{formatDate(date)}</time>
+      <span class="acard__dot" aria-hidden="true">·</span>
+      <span>{readingTime} min read</span>
+    </div>
 
-  <h3 class="acard__title">{title}</h3>
-  <p class="acard__desc">{description}</p>
+    <h3 class="acard__title">{title}</h3>
+    <p class="acard__desc">{description}</p>
 
-  <div class="acard__footer">
-    {
-      tags.length > 0 && (
-        <ul class="acard__tags">
-          {tags.slice(0, 3).map((tag) => (
-            <li class="tag">{tag}</li>
-          ))}
-        </ul>
-      )
-    }
-    <span class="acard__read link-accent">
-      Read article <span aria-hidden="true">→</span>
-    </span>
-  </div>
+    <div class="acard__footer">
+      {
+        tags.length > 0 && (
+          <ul class="acard__tags">
+            {tags.slice(0, 3).map((tag) => (
+              <li>
+                <a class="tag" href={`/tags/${tagSlug(tag)}/`}>
+                  {tag}
+                </a>
+              </li>
+            ))}
+          </ul>
+        )
+      }
+      <span class="acard__read link-accent" aria-hidden="true">
+        Read article <span>→</span>
+      </span>
+    </div>
   </div>
 </article>
 
@@ -80,7 +99,9 @@ const href = `/articles/${slug}`;
     border-radius: var(--radius);
     background: var(--surface);
     box-shadow: var(--shadow-sm);
-    transition: border-color 0.18s var(--ease), transform 0.18s var(--ease),
+    transition:
+      border-color 0.18s var(--ease),
+      transform 0.18s var(--ease),
       box-shadow 0.18s var(--ease);
   }
   .acard:hover {
@@ -135,7 +156,7 @@ const href = `/articles/${slug}`;
     color: var(--fg-faint);
   }
   .acard__flag {
-    color: var(--accent);
+    color: var(--accent-text);
     border: 1px solid var(--accent);
     border-radius: 999px;
     padding: 0.05rem 0.5rem;
@@ -167,9 +188,13 @@ const href = `/articles/${slug}`;
     list-style: none;
     padding: 0;
   }
-  .acard__read {
+  /* Tag links are real links — lift them above the stretched card link. */
+  .acard__tags .tag {
     position: relative;
     z-index: 2;
+  }
+  /* Plain label: clicks fall through to the stretched card link below. */
+  .acard__read {
     font-size: var(--fs-sm);
     white-space: nowrap;
   }

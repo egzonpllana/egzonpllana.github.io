@@ -9,12 +9,29 @@ interface Props {
   title: string;
   description?: string;
   image?: string;
+  imageWidth?: number;
+  imageHeight?: number;
+  imageAlt?: string;
   type?: 'website' | 'article';
   publishedDate?: Date;
+  updatedDate?: Date;
+  tags?: string[];
 }
 
-const { title, description, image, type, publishedDate } = Astro.props;
-const fullTitle = title === SITE.name ? title : `${title} — ${SITE.name}`;
+const {
+  title,
+  description,
+  image,
+  imageWidth,
+  imageHeight,
+  imageAlt,
+  type,
+  publishedDate,
+  updatedDate,
+  tags,
+} = Astro.props;
+const isSiteTitle = title === SITE.name || title === SITE.title;
+const fullTitle = isSiteTitle ? title : `${title} — ${SITE.name}`;
 ---
 
 <!doctype html>
@@ -22,25 +39,37 @@ const fullTitle = title === SITE.name ? title : `${title} — ${SITE.name}`;
   <head>
     <BaseHead
       title={fullTitle}
+      ogTitle={title}
       description={description}
       image={image}
+      imageWidth={imageWidth}
+      imageHeight={imageHeight}
+      imageAlt={imageAlt}
       type={type}
       publishedDate={publishedDate}
+      updatedDate={updatedDate}
+      tags={tags}
     />
     <script is:inline>
-      // No-flash theme: run before paint.
+      // No-flash theme: run before paint. Also marks JS availability so
+      // scroll-reveal styles only hide content when JS will reveal it.
       (() => {
+        document.documentElement.classList.add('js');
+        let theme = 'light';
         try {
-          const stored = localStorage.getItem('theme');
-          const theme =
-            stored ||
+          theme =
+            localStorage.getItem('theme') ||
             (window.matchMedia('(prefers-color-scheme: dark)').matches
               ? 'dark'
               : 'light');
-          document.documentElement.dataset.theme = theme;
-        } catch (e) {
-          document.documentElement.dataset.theme = 'light';
-        }
+        } catch (e) {}
+        document.documentElement.dataset.theme = theme;
+        // Keep the browser chrome color in sync with a manual theme override.
+        const color = theme === 'dark' ? '#0b0e14' : '#ffffff';
+        document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
+          m.setAttribute('content', color);
+          m.removeAttribute('media');
+        });
       })();
     </script>
   </head>
@@ -53,26 +82,15 @@ const fullTitle = title === SITE.name ? title : `${title} — ${SITE.name}`;
     <Footer />
 
     <script is:inline>
-      // Re-apply theme after view-transition swaps so dark mode never flashes.
-      document.addEventListener('astro:after-swap', () => {
-        try {
-          const stored = localStorage.getItem('theme');
-          const theme =
-            stored ||
-            (window.matchMedia('(prefers-color-scheme: dark)').matches
-              ? 'dark'
-              : 'light');
-          document.documentElement.dataset.theme = theme;
-        } catch (e) {}
-      });
-
       // Scroll-reveal: fade/slide elements in as they enter the viewport.
       (() => {
         const reduce = window.matchMedia(
-          '(prefers-reduced-motion: reduce)'
+          '(prefers-reduced-motion: reduce)',
         ).matches;
         const reveal = () => {
-          const els = document.querySelectorAll('[data-reveal]:not(.is-visible)');
+          const els = document.querySelectorAll(
+            '[data-reveal]:not(.is-visible)',
+          );
           if (reduce || !('IntersectionObserver' in window)) {
             els.forEach((el) => el.classList.add('is-visible'));
             return;
@@ -86,11 +104,10 @@ const fullTitle = title === SITE.name ? title : `${title} — ${SITE.name}`;
                 }
               });
             },
-            { rootMargin: '0px 0px -8% 0px', threshold: 0.08 }
+            { rootMargin: '0px 0px -8% 0px', threshold: 0.08 },
           );
           els.forEach((el) => io.observe(el));
         };
-        document.addEventListener('astro:page-load', reveal);
         if (document.readyState !== 'loading') reveal();
         else document.addEventListener('DOMContentLoaded', reveal);
       })();

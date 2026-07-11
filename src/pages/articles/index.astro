@@ -7,7 +7,7 @@ import { readingTime } from '../../lib/reading-time';
 import { articleSlug } from '../../lib/slug';
 
 const published = (await getCollection('articles')).filter(
-  (a) => !a.data.draft
+  (a) => !a.data.draft,
 );
 published.sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
 
@@ -24,6 +24,7 @@ const articles = published.map((a) => ({
   <section class="section">
     <div class="container">
       <SectionHeading
+        as="h1"
         number="—"
         title="Articles"
         description="Writing on Swift 6 concurrency, SDK architecture, and shipping production iOS frameworks."

@@ -3,7 +3,7 @@ title: 'EventHorizon — A thread-safe networking layer in Swift with Sendable a
 description: 'EventHorizon is a lightweight, thread-safe Swift package for building a clean, type-safe network communication layer with Swift 6, Sendable and async/await.'
 date: 2025-04-09
 tags: ['iOS', 'Swift', 'Networking', 'Concurrency', 'async-await']
-heroImage: '/articles/covers/eventhorizon-thread-safe-networking-swift.png'
+heroImage: '../../assets/covers/eventhorizon-thread-safe-networking-swift.png'
 repoUrl: 'https://github.com/egzonpllana/event-horizon-ios'
 ---
 

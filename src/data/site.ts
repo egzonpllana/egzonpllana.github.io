@@ -14,17 +14,30 @@ export const SITE = {
 
 export const NAV: NavItem[] = [
   { label: 'Portfolio', href: '/' },
-  { label: 'Articles', href: '/articles' },
-  { label: 'AI Today', href: '/ai-today' },
-  { label: 'Contact', href: '/contact' },
+  { label: 'Articles', href: '/articles/' },
+  { label: 'Talks', href: '/ai-today/' },
+  { label: 'Contact', href: '/contact/' },
 ];
 
 export const SOCIALS: SocialLink[] = [
-  { label: 'LinkedIn', url: 'https://linkedin.com/in/egzon-pllana', icon: 'linkedin' },
+  {
+    label: 'LinkedIn',
+    url: 'https://linkedin.com/in/egzon-pllana',
+    icon: 'linkedin',
+  },
   { label: 'GitHub', url: 'https://github.com/egzonpllana', icon: 'github' },
   { label: 'Medium', url: 'https://medium.com/@egzonpllana', icon: 'medium' },
-  { label: 'Stack Overflow', url: 'https://stackoverflow.com/users/7987502/egzon-p', icon: 'stackoverflow' },
-  { label: 'App Store', url: 'https://apps.apple.com/us/developer/egzon-pllana/id1315313322', icon: 'appstore' },
+  {
+    label: 'Stack Overflow',
+    url: 'https://stackoverflow.com/users/7987502/egzon-p',
+    icon: 'stackoverflow',
+  },
+  {
+    label: 'App Store',
+    url: 'https://apps.apple.com/us/developer/egzon-pllana/id1315313322',
+    icon: 'appstore',
+  },
 ];
 
-export const APP_STORE_DEVELOPER_URL = 'https://apps.apple.com/us/developer/egzon-pllana/id1315313322';
+export const APP_STORE_DEVELOPER_URL =
+  'https://apps.apple.com/us/developer/egzon-pllana/id1315313322';
