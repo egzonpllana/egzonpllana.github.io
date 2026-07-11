@@ -42,11 +42,13 @@ export interface App {
 }
 
 export interface ExperienceItem {
-  company: string;
+  company?: string;
   position: string;
   location: string;
   period: string;
   url?: string;
+  /** Extra line, e.g. early technologies for the university/foundation entry. */
+  note?: string;
 }
 
 export interface Profile {

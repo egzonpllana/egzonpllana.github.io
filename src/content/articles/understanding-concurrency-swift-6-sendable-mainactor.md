@@ -75,7 +75,7 @@ func fetchData() async -> (String, Int) {
 - **Non-blocking I/O:** When you are performing network requests, disk reads/writes, or any task where waiting for a response could otherwise freeze the UI or delay other operations.
 - **Concurrency Control:** When you need to perform multiple tasks concurrently without running them in separate threads manually. This helps in simplifying error handling and state management.
 
-## MainActor — What it is and when to use it
+## MainActor - What it is and when to use it
 
 The code in the methods interacts directly with the UI (e.g., updating UI elements like lists, labels, or progress bars).
 

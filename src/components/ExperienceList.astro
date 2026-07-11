@@ -11,17 +11,19 @@ import { PROFILE } from '../data/profile';
         <div class="xp__body">
           <h3 class="xp__role">{job.position}</h3>
           <p class="xp__company">
-            {job.url ? (
-              <a href={job.url} target="_blank" rel="noopener noreferrer">
-                {job.company}
-                <span class="sr-only">(opens in new tab)</span>
-                <span aria-hidden="true">↗</span>
-              </a>
-            ) : (
-              job.company
-            )}
+            {job.company &&
+              (job.url ? (
+                <a href={job.url} target="_blank" rel="noopener noreferrer">
+                  {job.company}
+                  <span class="sr-only">(opens in new tab)</span>
+                  <span aria-hidden="true">↗</span>
+                </a>
+              ) : (
+                job.company
+              ))}
             <span class="xp__location">{job.location}</span>
           </p>
+          {job.note && <p class="xp__note">{job.note}</p>}
         </div>
       </li>
     ))
@@ -96,6 +98,11 @@ import { PROFILE } from '../data/profile';
     font-family: var(--font-mono);
     font-size: var(--fs-xs);
     color: var(--fg-faint);
+  }
+  .xp__note {
+    margin-top: var(--sp-2);
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
   }
   .xp-skills {
     display: flex;

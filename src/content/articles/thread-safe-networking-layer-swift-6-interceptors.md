@@ -11,7 +11,7 @@ In this article, we will be using EventHorizon Swift Package, a networking archi
 
 ## Let's begin
 
-To make sure your project aligns with these changes, select project Target, go to Build Settings tab > under "All & Combined," search for "Swift 6" or find the "Swift Compiler — Upcoming Features" section and enable these settings as you want and XCode will throw errors or warnings.
+To make sure your project aligns with these changes, select project Target, go to Build Settings tab > under "All & Combined," search for "Swift 6" or find the "Swift Compiler - Upcoming Features" section and enable these settings as you want and XCode will throw errors or warnings.
 
 > There will be no future in Swift development without async await and Sendable protocol.
 

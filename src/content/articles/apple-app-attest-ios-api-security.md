@@ -1,5 +1,5 @@
 ---
-title: 'Implementing Apple App Attest for iOS API Security — No More Static Secrets'
+title: 'Implementing Apple App Attest for iOS API Security - No More Static Secrets'
 description: 'How Apple App Attest replaces static shared secrets with per-device hardware keys in the Secure Enclave to secure iOS API requests.'
 date: 2026-02-13
 tags: ['Swift', 'Security', 'Apple', 'Certificate Attestation', 'iOS']
@@ -8,11 +8,11 @@ heroImage: '../../assets/covers/apple-app-attest-ios-api-security.png'
 
 ## Why Static Secrets Don't Work
 
-The most common approach to signing API requests in iOS apps is embedding a shared secret in the binary — an API key, an HMAC secret, a token. The app uses it to sign requests, the backend verifies the signature.
+The most common approach to signing API requests in iOS apps is embedding a shared secret in the binary - an API key, an HMAC secret, a token. The app uses it to sign requests, the backend verifies the signature.
 
 The problem: every device ships with the same secret. And that secret lives in app memory.
 
-HMAC-SHA256 with XOR obfuscation? A determined attacker with Frida or Hopper extracts the XOR key and the obfuscated bytes in minutes. Encrypted plists, hardcoded strings, environment variables baked at build time — same story. If the secret exists in the binary, it can be read.
+HMAC-SHA256 with XOR obfuscation? A determined attacker with Frida or Hopper extracts the XOR key and the obfuscated bytes in minutes. Encrypted plists, hardcoded strings, environment variables baked at build time - same story. If the secret exists in the binary, it can be read.
 
 Once extracted, the attacker forges signed requests from any HTTP client. Your mobile app is bypassed entirely. Your backend thinks it's talking to a real user.
 
@@ -135,9 +135,9 @@ We followed Clean Architecture with three layers:
 
 ```
 Domain/
-  AppAttestState.swift          — State enum
-  AppAttestError.swift          — Error enum
-  AppAttestServicing.swift      — Protocol
+  AppAttestState.swift          - State enum
+  AppAttestError.swift          - Error enum
+  AppAttestServicing.swift      - Protocol
 Data/
   AppAttestKeyStoring.swift     - Keychain protocol
   KeychainAppAttestRepository.swift - Keychain implementation
@@ -147,7 +147,7 @@ Infrastructure/
   AttestationGatingInterceptor.swift        - Blocks requests until attested
 ```
 
-The Domain layer defines the contract. The Data layer handles persistence. The Infrastructure layer does the actual work. No layer reaches into another — dependencies point inward.
+The Domain layer defines the contract. The Data layer handles persistence. The Infrastructure layer does the actual work. No layer reaches into another - dependencies point inward.
 
 ## Attestation: One-Time Per Device
 
@@ -175,7 +175,7 @@ actor AppAttestService: AppAttestServicing {
 }
 ```
 
-If a key ID exists in the Keychain, we skip everything — zero network calls, zero Apple server hits. The device was already attested.
+If a key ID exists in the Keychain, we skip everything - zero network calls, zero Apple server hits. The device was already attested.
 
 For first-time attestation:
 
@@ -274,7 +274,7 @@ struct AttestationGatingInterceptor: NetworkInterceptorProtocol {
 
 If the user taps "Sign In" while attestation is in progress, the request waits. The loader spinner already covers the UX. Once attested, the request proceeds and gets signed.
 
-If attestation failed, the request throws — it is never sent. No unsigned request can reach the backend.
+If attestation failed, the request throws - it is never sent. No unsigned request can reach the backend.
 
 ## Interceptor Chain Order
 
@@ -293,18 +293,18 @@ func makeAuthorized() -> APIClient {
 }
 ```
 
-1. NetworkAware — check connectivity
-2. AttestationGating — block until attested
-3. TokenRefreshing — handle 401s / token expiry
-4. Auth — add Bearer token
-5. AppAttestRequestSigning — sign the final request
-6. Retry — retry on failure (re-signs with fresh timestamp)
+1. NetworkAware - check connectivity
+2. AttestationGating - block until attested
+3. TokenRefreshing - handle 401s / token expiry
+4. Auth - add Bearer token
+5. AppAttestRequestSigning - sign the final request
+6. Retry - retry on failure (re-signs with fresh timestamp)
 
 Signing comes after auth so the request is in its final form. Retry comes last so failed requests get re-signed with a new timestamp.
 
 ## Why EventHorizon Made This Easy
 
-The networking layer is built on EventHorizon, a Swift networking library I built. EventHorizon provides a `NetworkInterceptorProtocol` with both sync and async variants — interceptors can modify outgoing requests, inspect incoming responses, and throw errors to abort the pipeline.
+The networking layer is built on EventHorizon, a Swift networking library I built. EventHorizon provides a `NetworkInterceptorProtocol` with both sync and async variants - interceptors can modify outgoing requests, inspect incoming responses, and throw errors to abort the pipeline.
 
 Adding App Attest meant writing two structs that conform to this protocol and inserting them into the existing interceptor array. The gating interceptor blocks requests until attestation completes. The signing interceptor signs them with the Secure Enclave.
 
@@ -340,7 +340,7 @@ private func waitForAttestation() async throws -> String {
 }
 ```
 
-All waiters are resumed at once when attestation completes — success or failure. The 30-second timeout prevents indefinite blocking.
+All waiters are resumed at once when attestation completes - success or failure. The 30-second timeout prevents indefinite blocking.
 
 Actor isolation guarantees thread safety without locks or queues.
 
@@ -350,15 +350,15 @@ The key ID is stored in a shared Keychain access group. When the Share Extension
 
 ## Backend: Two Endpoints Required
 
-App Attest is not iOS-only — the backend needs two new endpoints to complete the attestation handshake:
+App Attest is not iOS-only - the backend needs two new endpoints to complete the attestation handshake:
 
-`POST /apple/attest-init` — Returns a session ID and a one-time server-generated nonce. The session ID links this init request to the subsequent verify request. The app includes the nonce in the attestation request to Apple. Without it, an attacker could capture a valid attestation object and replay it. The nonce proves the attestation is fresh. Store it server-side with a short TTL (e.g. 60 seconds).
+`POST /apple/attest-init` - Returns a session ID and a one-time server-generated nonce. The session ID links this init request to the subsequent verify request. The app includes the nonce in the attestation request to Apple. Without it, an attacker could capture a valid attestation object and replay it. The nonce proves the attestation is fresh. Store it server-side with a short TTL (e.g. 60 seconds).
 
-`POST /apple/attest` — Receives the session ID and the Base64-encoded CBOR attestation object. The backend uses the session ID to retrieve the nonce, validates the attestation against Apple's root certificate, checks the nonce matches, and extracts the public key and key ID from the attestation.
+`POST /apple/attest` - Receives the session ID and the Base64-encoded CBOR attestation object. The backend uses the session ID to retrieve the nonce, validates the attestation against Apple's root certificate, checks the nonce matches, and extracts the public key and key ID from the attestation.
 
 The public key is stored mapped to the key ID. From this point on, the backend uses it to verify every assertion the device sends in `X-Signature`.
 
-Both endpoints must be unsigned — the device hasn't completed attestation yet, so it can't sign requests. All other endpoints require three headers:
+Both endpoints must be unsigned - the device hasn't completed attestation yet, so it can't sign requests. All other endpoints require three headers:
 
 - `X-Signature` (the assertion),
 - `X-Timestamp` (RFC 3339 UTC), and
@@ -374,14 +374,14 @@ If you ship a fallback signing mechanism alongside App Attest, an attacker will 
 
 ## Key Takeaways
 
-- **Static shared secrets are fundamentally broken.** XOR, encryption, obfuscation — they slow attackers down, they don't stop them. The problem is the shared secret model, not the obfuscation technique.
+- **Static shared secrets are fundamentally broken.** XOR, encryption, obfuscation - they slow attackers down, they don't stop them. The problem is the shared secret model, not the obfuscation technique.
 - **App Attest moves the private key into hardware.** The Secure Enclave is a different trust boundary than app memory. The key cannot be read or exported.
 - **The interceptor pattern makes signing transparent.** Business logic doesn't know about attestation. Network layer handles it.
-- **Actors are the right tool for attestation state.** Single attestation, multiple waiters, timeout handling — thread-safe by design, no manual locking.
+- **Actors are the right tool for attestation state.** Single attestation, multiple waiters, timeout handling - thread-safe by design, no manual locking.
 - **No fallback is a security decision, not a limitation.** A fallback path is an attack surface.
 
 ## References
 
-- **Safeguard your accounts, devices, and transactions** — WWDC21 session covering App Attest, DeviceCheck, and fraud prevention strategies.
-- **Establishing Your App's Integrity** — Apple's main walkthrough for implementing App Attest on the client side.
-- **Validating Apps That Connect to Your Server** — Backend verification guide for validating attestation objects and assertions.
+- **Safeguard your accounts, devices, and transactions** - WWDC21 session covering App Attest, DeviceCheck, and fraud prevention strategies.
+- **Establishing Your App's Integrity** - Apple's main walkthrough for implementing App Attest on the client side.
+- **Validating Apps That Connect to Your Server** - Backend verification guide for validating attestation objects and assertions.

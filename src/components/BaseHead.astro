@@ -7,7 +7,7 @@ import { SITE } from '../data/site';
 
 interface Props {
   title: string;
-  /** Raw page title for social cards (no "— site name" suffix). */
+  /** Raw page title for social cards (no "- site name" suffix). */
   ogTitle?: string;
   description?: string;
   image?: string;
@@ -130,7 +130,7 @@ const jsonLd = isHome
 <link
   rel="alternate"
   type="application/rss+xml"
-  title={`${SITE.name} — Articles`}
+  title={`${SITE.name} - Articles`}
   href={new URL('rss.xml', Astro.site ?? Astro.url).toString()}
 />
 

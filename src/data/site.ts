@@ -1,10 +1,10 @@
 import type { NavItem, SocialLink } from '../types';
 
 export const SITE = {
-  /** Production canonical URL — swap if you point a custom domain here. */
+  /** Production canonical URL - swap if you point a custom domain here. */
   url: 'https://egzonpllana.github.io',
   name: 'Egzon Pllana',
-  title: 'Egzon Pllana — Senior iOS Engineer & SDK Architect',
+  title: 'Egzon Pllana - Senior iOS Engineer & SDK Architect',
   description:
     'Senior iOS engineer and SDK architect. I build production Swift SDKs and ship App Store apps. Articles on Swift 6 concurrency, SDK design, and iOS architecture.',
   author: 'Egzon Pllana',

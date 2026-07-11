@@ -99,7 +99,7 @@
 }
 
 /* Dual-theme Shiki: swap only the token COLOR by data-theme (defaultColor:false).
-   Never apply per-token background — that paints a rectangle behind each token.
+   Never apply per-token background - that paints a rectangle behind each token.
    The block background comes solely from .prose pre (--code-bg) above. */
 .prose pre.astro-code {
   color: var(--shiki-light);

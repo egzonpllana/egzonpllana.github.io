@@ -7,11 +7,11 @@ heroImage: '../../assets/covers/six-problems-with-nslocalizedstring.png'
 repoUrl: 'https://github.com/egzonpllana/localization-engine-ios'
 ---
 
-If you've shipped an iOS app in more than one language, you know the pain. You start with `NSLocalizedString`, and it works — until it doesn't.
+If you've shipped an iOS app in more than one language, you know the pain. You start with `NSLocalizedString`, and it works - until it doesn't.
 
-I'm the developer behind Engramr — Reminders and Alarms app, an app that currently ships in 14 languages. What started as a straightforward localization setup gradually turned into a engineering problem that Apple's built-in tools simply don't solve.
+I'm the developer behind Engramr - Reminders and Alarms app, an app that currently ships in 14 languages. What started as a straightforward localization setup gradually turned into a engineering problem that Apple's built-in tools simply don't solve.
 
-So I built LocalizationEngine — an open-source Swift Package that handles runtime language switching, OTA translation updates, pluralization, named substitutions, SwiftUI and UIKit support, with zero external dependencies. iOS 16+, Swift 5.9+.
+So I built LocalizationEngine - an open-source Swift Package that handles runtime language switching, OTA translation updates, pluralization, named substitutions, SwiftUI and UIKit support, with zero external dependencies. iOS 16+, Swift 5.9+.
 
 This article is about why it exists and what problems it solves. For integration steps and code examples, check the GitHub repository.
 
@@ -25,7 +25,7 @@ Every iOS developer has written this line:
 label.text = NSLocalizedString("home_reminders_tab", comment: "")
 ```
 
-Now imagine a typo: `"home_remindrs_tab"`. No compiler error. No runtime crash. The user just sees the raw key on screen, and you won't know until someone reports it — or worse, until it shows up in an App Store screenshot.
+Now imagine a typo: `"home_remindrs_tab"`. No compiler error. No runtime crash. The user just sees the raw key on screen, and you won't know until someone reports it - or worse, until it shows up in an App Store screenshot.
 
 Multiply that across 50 screens and hundreds of keys. You're essentially programming with magic strings and hoping for the best.
 
@@ -39,7 +39,7 @@ Apple's `Localizable.strings` system resolves bundles at process launch. Want an
 
 ### 4. Fixing a Typo Means Waiting for App Store Review
 
-You spot a translation error. A single wrong word in Japanese. The fix takes 10 seconds — but shipping it takes days. Your options? Wait for review, or pay $100–500/month for services like Lokalise or Phrase.
+You spot a translation error. A single wrong word in Japanese. The fix takes 10 seconds - but shipping it takes days. Your options? Wait for review, or pay $100–500/month for services like Lokalise or Phrase.
 
 ### 5. Domain Logic Gets Polluted
 
@@ -47,7 +47,7 @@ Your `Category` model shouldn't know about `NSLocalizedString`. But when a store
 
 ### 6. You Can't Test What You Can't See
 
-How do you verify that every key has a translation in every supported language? How do you test that your domain localizers produce the right keys? With raw strings, you can't — not meaningfully.
+How do you verify that every key has a translation in every supported language? How do you test that your domain localizers produce the right keys? With raw strings, you can't - not meaningfully.
 
 ## The Journey: From Wrapper to Architecture
 
@@ -69,7 +69,7 @@ enum CommonKey: String, CaseIterable {
 }
 ```
 
-Try typing `.cancl` — it won't compile. The compiler is now your localization linter, for free.
+Try typing `.cancl` - it won't compile. The compiler is now your localization linter, for free.
 
 Each feature area gets its own enum. A developer working on reminders only sees `RemindersKey`. No scrolling through 500 keys. Every key maps to a dot-separated string in your String Catalog: `"common.cancel"`, `"reminders.category_work"`.
 
@@ -87,7 +87,7 @@ cell.textLabel?.text = L10n.profile.localized
 
 `.localized` returns a plain `String`. No custom views. No wrappers. It works anywhere a `String` works.
 
-## Live Language Switching — No Restart
+## Live Language Switching - No Restart
 
 This was the feature that started the whole project. The SDK's `LocalizationManager` is an `ObservableObject` with a `@Published bundle` property. When the user switches language:
 
@@ -98,7 +98,7 @@ This was the feature that started the whole project. The SDK's `LocalizationMana
 
 That's it. No notification center plumbing. No manual refresh calls. SwiftUI's reactive pipeline handles the propagation automatically. The entire app updates in a single frame.
 
-For UIKit, the SDK provides `LocalizationObserver` — a closure that fires on the main thread whenever the language changes. Plug it into `viewDidLoad`, update your labels, done.
+For UIKit, the SDK provides `LocalizationObserver` - a closure that fires on the main thread whenever the language changes. Plug it into `viewDidLoad`, update your labels, done.
 
 ## OTA: Update Translations Without an App Release
 
@@ -106,7 +106,7 @@ This is the headline feature, and the one that saves real money.
 
 The idea is simple: upload `.strings` files to S3, a CDN, or any URL. The app downloads them on launch, caches to disk, and `NSLocalizedString` resolves from the cached bundle natively. If the download fails, bundled translations are the fallback.
 
-You implement one protocol — `TranslationFetchProviding` — with your preferred networking stack. The SDK handles everything else: versioned disk caching, ETag conditional requests (skip re-download when nothing changed), minimum fetch intervals, parallel prefetch of multiple languages, and atomic writes.
+You implement one protocol - `TranslationFetchProviding` - with your preferred networking stack. The SDK handles everything else: versioned disk caching, ETag conditional requests (skip re-download when nothing changed), minimum fetch intervals, parallel prefetch of multiple languages, and atomic writes.
 
 No Lokalise. No Phrase. No Crowdin subscription. Your own S3 bucket and a 20-line fetch provider.
 
@@ -125,7 +125,7 @@ The SDK solves this by writing each download to a UUID-stamped subdirectory. Eve
 | Key missing in active language | Falls back to English automatically |
 | No internet on first launch | Bundled translations, OTA retries next launch |
 
-Users never see raw keys. The two-tier resolution — active bundle, then fallback language — guarantees it.
+Users never see raw keys. The two-tier resolution - active bundle, then fallback language - guarantees it.
 
 ## Pluralization and Named Substitutions
 
@@ -147,19 +147,19 @@ Text(L10n.greeting.localized(substitutions: [
 ]))
 ```
 
-Translators can rearrange `%{name}` and `%{count}` freely — they're order-independent.
+Translators can rearrange `%{name}` and `%{count}` freely - they're order-independent.
 
 ## The Architecture: Five Modules, Zero Dependencies
 
 The SDK is a Swift Package split into focused modules with strict dependency direction:
 
-- **LocalizationCore** — The engine: manager, protocols, bundle resolution, language switching. No UI framework dependency.
-- **LocalizationSwiftUI** — `LocalizedText` view and `.localizationManager()` environment modifier.
-- **LocalizationUIKit** — `LocalizationObserver` for reactive UIKit updates.
-- **LocalizationOTA** — Fetch, cache, and resolve OTA translations.
-- **LocalizationEngine** — Umbrella module. One `import` gives you everything.
+- **LocalizationCore** - The engine: manager, protocols, bundle resolution, language switching. No UI framework dependency.
+- **LocalizationSwiftUI** - `LocalizedText` view and `.localizationManager()` environment modifier.
+- **LocalizationUIKit** - `LocalizationObserver` for reactive UIKit updates.
+- **LocalizationOTA** - Fetch, cache, and resolve OTA translations.
+- **LocalizationEngine** - Umbrella module. One `import` gives you everything.
 
-Every component is protocol-driven: bundle provider, storage backend, fetch provider, cache — all swappable. Swap `UserDefaults` for Keychain storage. Replace the main bundle provider with your OTA provider. Inject mocks for testing. The SDK doesn't care.
+Every component is protocol-driven: bundle provider, storage backend, fetch provider, cache - all swappable. Swap `UserDefaults` for Keychain storage. Replace the main bundle provider with your OTA provider. Inject mocks for testing. The SDK doesn't care.
 
 The package knows nothing about your app's keys. Your app defines its vocabulary through enums. The package just resolves them.
 
@@ -197,7 +197,7 @@ That's it. The picker updates automatically (thanks to `CaseIterable`). The reso
 ## Honest Downsides
 
 - **UserDefaults for persistence.** Language preference is stored in `UserDefaults`. Works for single-user apps but isn't suitable for multi-profile scenarios.
-- **OTA requires hosting.** You need an S3 bucket or CDN, plus a type conforming to `TranslationFetchProviding`. The SDK handles caching and resolution — you handle hosting and networking.
+- **OTA requires hosting.** You need an S3 bucket or CDN, plus a type conforming to `TranslationFetchProviding`. The SDK handles caching and resolution - you handle hosting and networking.
 - **Initial setup isn't instant.** Defining type-safe key enums takes more upfront work than throwing `NSLocalizedString` calls everywhere. The payoff is downstream: no typo bugs, full testability, instant discoverability.
 
 ## Key Takeaways
@@ -216,4 +216,4 @@ That's it. The picker updates automatically (thanks to `CaseIterable`). The reso
 
 > **Test behavior, not compilation.** Catalog sync tests catch missing translations. OTA integration tests prove the full pipeline with real I/O.
 
-The SDK is open-source: [LocalizationEngine on GitHub](https://github.com/egzonpllana/localization-engine-ios). The full architecture ships in Engramr — Reminders & Alarms, available on the App Store.
+The SDK is open-source: [LocalizationEngine on GitHub](https://github.com/egzonpllana/localization-engine-ios). The full architecture ships in Engramr - Reminders & Alarms, available on the App Store.

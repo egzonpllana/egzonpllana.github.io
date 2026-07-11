@@ -46,15 +46,15 @@ The result? Unnecessary network traffic, slower user experience, increased serve
 
 I completely redesigned the contact data flow using Clean Architecture principles, introducing several key layers:
 
-1. **Repository Layer** — Single source of truth with in-memory caching
-2. **Use Case Layer** — Business logic coordination
-3. **Signal Service** — Event-driven cache invalidation
-4. **Cache Management Service** — Centralized cache lifecycle
-5. **Reactive Publishers** — Real-time UI updates
+1. **Repository Layer** - Single source of truth with in-memory caching
+2. **Use Case Layer** - Business logic coordination
+3. **Signal Service** - Event-driven cache invalidation
+4. **Cache Management Service** - Centralized cache lifecycle
+5. **Reactive Publishers** - Real-time UI updates
 
 Let's dive into each layer:
 
-### Layer 1: The Repository — Your Data's Single Source of Truth
+### Layer 1: The Repository - Your Data's Single Source of Truth
 
 The `ContactsRepository` is where the magic begins. It maintains an in-memory cache and decides whether to serve cached data or fetch fresh data:
 
@@ -114,7 +114,7 @@ final class ContactsRepository: ContactsRepositoryProtocol {
 - **Offline resilience:** Cached data remains available even when network fails
 - **Loading state management:** Centralized loading states prevent UI flickering
 
-### Layer 2: The Use Case — Business Logic Orchestration
+### Layer 2: The Use Case - Business Logic Orchestration
 
 The `ContactsUseCase` sits between the repository and presentation layer, handling business rules:
 
@@ -150,7 +150,7 @@ This layer ensures that:
 - Business rules are centralized
 - Testing becomes easier with clear boundaries
 
-### Layer 3: The Signal Service — Event-Driven Cache Invalidation
+### Layer 3: The Signal Service - Event-Driven Cache Invalidation
 
 Here's where it gets really interesting. The `SignalService` broadcasts events when contact data changes, ensuring all parts of the app stay synchronized:
 
@@ -302,9 +302,9 @@ This architecture transforms a common iOS app problem into a competitive advanta
 
 The investment in building these foundational layers pays dividends across your entire application. Every new feature that needs contact data gets these benefits for free, and your users get a consistently fast, smooth experience.
 
-> The best part? This pattern is reusable across any data type in your app — contacts, user profiles, settings, media, you name it!
+> The best part? This pattern is reusable across any data type in your app - contacts, user profiles, settings, media, you name it!
 
-That was it! Thank you for diving into this article on building stronger app layers with Clean Architecture in mind. I hope it's inspired you to explore the finer details of this powerful approach and how it can transform your projects. Until next time — keep crafting clean, scalable code!
+That was it! Thank you for diving into this article on building stronger app layers with Clean Architecture in mind. I hope it's inspired you to explore the finer details of this powerful approach and how it can transform your projects. Until next time - keep crafting clean, scalable code!
 
 ## Let's Connect
 

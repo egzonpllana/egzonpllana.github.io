@@ -1,4 +1,4 @@
-/** Stack Overflow profile summary — update these from your SO profile. */
+/** Stack Overflow profile summary - update these from your SO profile. */
 export const STACK_OVERFLOW = {
   url: 'https://stackoverflow.com/users/7987502/egzon-p',
   reputation: 4808,

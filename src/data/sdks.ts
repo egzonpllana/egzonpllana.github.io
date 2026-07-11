@@ -11,7 +11,7 @@ export const SDKS: Sdk[] = [
     displayName: 'InteractiveImageView',
     repoUrl: 'https://github.com/egzonpllana/interactive-image-view-ios',
     description:
-      'A simple UIView to interact with an image: scroll, zoom, pinch and crop — drop-in and configurable.',
+      'A simple UIView to interact with an image: scroll, zoom, pinch and crop - drop-in and configurable.',
     tags: ['UIKit', 'Image', 'Gestures', 'Crop'],
     stars: 49,
     language: 'Swift',
@@ -31,7 +31,7 @@ export const SDKS: Sdk[] = [
     displayName: 'MemoryProfiler',
     repoUrl: 'https://github.com/egzonpllana/memory-profiler-ios',
     description:
-      'Real-time memory monitoring, leak detection, and usage analytics for iOS apps — instrument without Instruments.',
+      'Real-time memory monitoring, leak detection, and usage analytics for iOS apps - instrument without Instruments.',
     tags: ['Profiling', 'Leaks', 'Diagnostics'],
     stars: 41,
     language: 'Swift',
@@ -61,7 +61,7 @@ export const SDKS: Sdk[] = [
     displayName: 'PhaseShift',
     repoUrl: 'https://github.com/egzonpllana/phaseshift-ios',
     description:
-      'Elegant modal presentation with custom phase-shift transition animations — a lightweight Swift package.',
+      'Elegant modal presentation with custom phase-shift transition animations - a lightweight Swift package.',
     tags: ['SwiftUI', 'Transitions', 'Animation'],
     stars: 11,
     language: 'Swift',
@@ -81,7 +81,7 @@ export const SDKS: Sdk[] = [
     displayName: 'GeoClustering',
     repoUrl: 'https://github.com/egzonpllana/geo-clustering-ios',
     description:
-      'Offline geospatial clustering engine — groups thousands of geotagged photos into labeled travel events in seconds via a K-D tree over an embedded GeoNames database.',
+      'Offline geospatial clustering engine - groups thousands of geotagged photos into labeled travel events in seconds via a K-D tree over an embedded GeoNames database.',
     tags: ['Geospatial', 'K-D Tree', 'Offline-First', 'Performance'],
     stars: 1,
     language: 'Swift',
