@@ -8,30 +8,11 @@ import portrait from '../assets/portrait.png';
 <section class="hero">
   <div class="container">
     <div class="hero__inner">
-      <div class="hero__content">
+      <div class="hero__intro">
         <h1 class="hero__name anim-in" style="--d:120ms">{PROFILE.name}</h1>
         <p class="hero__headline anim-in" style="--d:200ms">
           {PROFILE.headline}
         </p>
-        <p class="hero__summary anim-in" style="--d:280ms">{PROFILE.summary}</p>
-
-        <div class="hero__statement anim-in" style="--d:360ms">
-          <span class="hero__statement-label">// focus</span>
-          <p>{PROFILE.statement}</p>
-        </div>
-
-        <p class="hero__availability anim-in" style="--d:400ms">
-          <span class="dot" aria-hidden="true"></span>
-          {PROFILE.availability}
-        </p>
-
-        <div class="hero__actions anim-in" style="--d:440ms">
-          <a class="btn btn--primary" href="/contact/">
-            Get in touch <span class="arrow">→</span>
-          </a>
-          <a class="btn" href="#sdks">View the SDKs</a>
-          <SocialLinks size={18} />
-        </div>
       </div>
 
       <aside class="hero__portrait anim-in" style="--d:200ms">
@@ -52,6 +33,28 @@ import portrait from '../assets/portrait.png';
           </figcaption>
         </figure>
       </aside>
+
+      <div class="hero__rest">
+        <p class="hero__summary anim-in" style="--d:280ms">{PROFILE.summary}</p>
+
+        <div class="hero__statement anim-in" style="--d:360ms">
+          <span class="hero__statement-label">// focus</span>
+          <p>{PROFILE.statement}</p>
+        </div>
+
+        <p class="hero__availability anim-in" style="--d:400ms">
+          <span class="dot" aria-hidden="true"></span>
+          {PROFILE.availability}
+        </p>
+
+        <div class="hero__actions anim-in" style="--d:440ms">
+          <a class="btn btn--primary" href="/contact/">
+            Get in touch <span class="arrow">→</span>
+          </a>
+          <a class="btn" href="#sdks">View the SDKs</a>
+          <SocialLinks size={18} />
+        </div>
+      </div>
     </div>
   </div>
 </section>
@@ -70,10 +73,20 @@ import portrait from '../assets/portrait.png';
   .hero__inner {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
     align-items: center;
-    gap: var(--sp-8);
+    column-gap: var(--sp-8);
   }
-  .hero__content {
+  /* Intro (name + headline) and the rest of the copy stack in the left column;
+     the portrait spans both rows on the right, vertically centered. */
+  .hero__intro {
+    grid-column: 1;
+    grid-row: 1;
+    max-width: 680px;
+  }
+  .hero__rest {
+    grid-column: 1;
+    grid-row: 2;
     max-width: 680px;
   }
   .hero__name {
@@ -132,7 +145,10 @@ import portrait from '../assets/portrait.png';
 
   /* ---- Portrait ----------------------------------------------------------- */
   .hero__portrait {
+    grid-column: 2;
+    grid-row: 1 / 3;
     justify-self: end;
+    align-self: center;
   }
   .hero__frame {
     position: relative;
@@ -208,14 +224,26 @@ import portrait from '../assets/portrait.png';
     }
   }
 
-  /* Mobile: stack - name and headline first, portrait after. */
+  /* Mobile: stack as intro (name + headline), then portrait, then the rest. */
   @media (max-width: 720px) {
     .hero__inner {
-      grid-template-columns: 1fr;
-      gap: var(--sp-7);
+      display: flex;
+      flex-direction: column;
+      gap: var(--sp-6);
+    }
+    .hero__intro {
+      order: 1;
     }
     .hero__portrait {
-      justify-self: center;
+      order: 2;
+      align-self: center;
+    }
+    .hero__rest {
+      order: 3;
+    }
+    /* Flex gap handles the spacing above the summary on mobile. */
+    .hero__summary {
+      margin-top: 0;
     }
     .hero__frame {
       width: 200px;
