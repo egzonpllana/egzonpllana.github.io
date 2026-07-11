@@ -67,7 +67,21 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     }
   </div>
 
-  <!-- ===== CONTROLS ===== -->
+  <!-- ===== TRANSCRIPT ===== -->
+  <div class="ai-transcript">
+    <span class="ai-transcript__eyebrow">
+      <svg viewBox="0 0 24 24" aria-hidden="true"
+        ><path d="M12 3a4 4 0 0 0-4 4v3a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4z"
+        ></path><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg
+      >
+      Transcript
+    </span>
+    <p class="ai-transcript__text" data-ai-transcript aria-live="polite">
+      {SLIDES[0].transcript}
+    </p>
+  </div>
+
+  <!-- ===== CONTROLS (under the transcript) ===== -->
   <div class="ai-controls" role="group" aria-label="Slideshow controls">
     <div class="ai-progress"><i data-ai-fill></i></div>
     <div class="ai-controls__bar">
@@ -89,36 +103,7 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
           ><path d="M9 6l6 6-6 6"></path></svg
         >
       </button>
-      <div class="ai-dots" role="group" aria-label="Go to slide">
-        {
-          SLIDES.map((slide) => (
-            <button
-              class:list={['ai-dot', { 'is-active': slide.n === 1 }]}
-              data-ai-dot={slide.n}
-              type="button"
-              aria-label={`Go to slide ${slide.n}`}
-              aria-current={slide.n === 1 ? 'true' : undefined}
-            >
-              <span aria-hidden="true" />
-            </button>
-          ))
-        }
-      </div>
     </div>
-  </div>
-
-  <!-- ===== TRANSCRIPT ===== -->
-  <div class="ai-transcript">
-    <span class="ai-transcript__eyebrow">
-      <svg viewBox="0 0 24 24" aria-hidden="true"
-        ><path d="M12 3a4 4 0 0 0-4 4v3a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4z"
-        ></path><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg
-      >
-      Transcript
-    </span>
-    <p class="ai-transcript__text" data-ai-transcript aria-live="polite">
-      {SLIDES[0].transcript}
-    </p>
   </div>
 </div>
 
@@ -134,7 +119,6 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
 
       const stage = root.querySelector('#ai-stage');
       const slides = Array.from(root.querySelectorAll('.ai-slide'));
-      const dots = Array.from(root.querySelectorAll('[data-ai-dot]'));
       const prevBtn = root.querySelector('[data-ai-prev]');
       const nextBtn = root.querySelector('[data-ai-next]');
       const counter = root.querySelector('[data-ai-counter]');
@@ -159,12 +143,6 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
           sl.classList.toggle('is-active', on);
           sl.setAttribute('aria-hidden', on ? 'false' : 'true');
         });
-        dots.forEach((d, i) => {
-          const on = i === current;
-          d.classList.toggle('is-active', on);
-          if (on) d.setAttribute('aria-current', 'true');
-          else d.removeAttribute('aria-current');
-        });
         if (fill) fill.style.width = ((current + 1) / total) * 100 + '%';
         if (counter)
           counter.innerHTML = '<b>' + pad(current + 1) + '</b> / ' + pad(total);
@@ -186,7 +164,6 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
 
       if (nextBtn) nextBtn.addEventListener('click', next);
       if (prevBtn) prevBtn.addEventListener('click', prev);
-      dots.forEach((d, i) => d.addEventListener('click', () => show(i)));
 
       // Keyboard - only while focus is inside the slideshow, so page-level
       // arrow-key scrolling and other widgets are never hijacked.
@@ -449,38 +426,6 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     color: var(--accent-text);
     font-weight: 600;
   }
-  .ai-dots {
-    display: flex;
-    align-items: center;
-    margin-left: auto;
-    flex-wrap: wrap;
-  }
-  /* 24x24 hit target around an 8px visual dot (WCAG 2.5.8). */
-  .ai-dot {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    border-radius: 999px;
-    background: none;
-  }
-  .ai-dot span {
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    background: var(--fg-faint);
-    transition:
-      background 0.16s var(--ease),
-      transform 0.16s var(--ease);
-  }
-  .ai-dot:hover span {
-    background: var(--fg-muted);
-  }
-  .ai-dot.is-active span {
-    background: var(--accent);
-    transform: scale(1.35);
-  }
 
   /* ===== TRANSCRIPT ===== */
   .ai-transcript {
@@ -542,12 +487,6 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
   @media (max-width: 640px) {
     .ai-slide__num {
       display: none;
-    }
-    .ai-dots {
-      width: 100%;
-      margin-left: 0;
-      margin-top: var(--sp-2);
-      justify-content: center;
     }
   }
 </style>
