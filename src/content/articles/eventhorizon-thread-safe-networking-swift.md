@@ -1,5 +1,5 @@
 ---
-title: 'EventHorizon — A thread-safe networking layer in Swift with Sendable and async-await'
+title: 'EventHorizon - A thread-safe networking layer in Swift with Sendable and async-await'
 description: 'EventHorizon is a lightweight, thread-safe Swift package for building a clean, type-safe network communication layer with Swift 6, Sendable and async/await.'
 date: 2025-04-09
 tags: ['iOS', 'Swift', 'Networking', 'Concurrency', 'async-await']
@@ -25,13 +25,13 @@ The name EventHorizon represents the package's role as the ultimate control poin
 
 EventHorizon includes a set of built-in interceptors, but you can create and inject your custom interceptors as needed.
 
-- `AuthInterceptor` — Injects an authorization token into network requests.
-- `LoggingInterceptor` — Logs request and response details for debugging.
-- `RequestTimeoutInterceptor` — Configures custom timeout intervals for requests.
-- `HeaderInjectorInterceptor` — Adds custom headers to outgoing requests.
-- `RetryInterceptor` — Automatically retries failed requests based on status codes.
+- `AuthInterceptor` - Injects an authorization token into network requests.
+- `LoggingInterceptor` - Logs request and response details for debugging.
+- `RequestTimeoutInterceptor` - Configures custom timeout intervals for requests.
+- `HeaderInjectorInterceptor` - Adds custom headers to outgoing requests.
+- `RetryInterceptor` - Automatically retries failed requests based on status codes.
 
-## Networking Layer — Data Flow
+## Networking Layer - Data Flow
 
 ### API Layer components
 
@@ -136,7 +136,7 @@ let apiClient = APIClient(
 
 - EventHorizon package: [https://github.com/egzonpllana/EventHorizon](https://github.com/egzonpllana/EventHorizon)
 - Real app example: [https://github.com/egzonpllana/NetworkLayerSwift6](https://github.com/egzonpllana/NetworkLayerSwift6)
-- The meaning behind this package name — EventHorizon: [https://www.space.com/black-holes-event-horizon-explained.html](https://www.space.com/black-holes-event-horizon-explained.html)
+- The meaning behind this package name - EventHorizon: [https://www.space.com/black-holes-event-horizon-explained.html](https://www.space.com/black-holes-event-horizon-explained.html)
 
 ## Let's Connect
 

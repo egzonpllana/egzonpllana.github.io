@@ -17,7 +17,7 @@ Let me take you through the journey of how I went from achieving 85% memory redu
 
 While casually exploring the app, I noticed something off: the RAM footprint would jump 10–15MB with every tab switch. Ten minutes of typical usage and memory bloated from 196MB to over 300MB. No downward trend. Just continuous accumulation.
 
-That's a massive red flag for memory leaks — especially in production-grade apps where memory pressure can quickly become app-killer territory.
+That's a massive red flag for memory leaks - especially in production-grade apps where memory pressure can quickly become app-killer territory.
 
 Here's a breakdown of what I was seeing:
 
@@ -42,7 +42,7 @@ So I built one.
 
 ## Solution: A Custom Memory Profiler for Swift Apps
 
-I needed to observe memory usage during app lifecycle events — especially tab switches — without the latency of Instruments or Xcode debugging. So I created a real-time memory monitoring service using low-level system APIs.
+I needed to observe memory usage during app lifecycle events - especially tab switches - without the latency of Instruments or Xcode debugging. So I created a real-time memory monitoring service using low-level system APIs.
 
 Here's what I implemented:
 
@@ -52,7 +52,7 @@ I used `mach_task_basic_info` to access the app's resident memory size and paire
 
 ### Automatic Threshold Alerts
 
-By default, the profiler sets a warning threshold at 70% of physical memory — a common best practice. It logs a warning if memory exceeds that.
+By default, the profiler sets a warning threshold at 70% of physical memory - a common best practice. It logs a warning if memory exceeds that.
 
 ### Leak Pattern Detection
 
@@ -60,7 +60,7 @@ It is structured to track peak memory usage, record historical data, and prepare
 
 ### Timer-Driven Sampling
 
-Every 60 seconds, the profiler captures current stats and logs trends — lightweight enough for debug builds and safe for Swift Packages.
+Every 60 seconds, the profiler captures current stats and logs trends - lightweight enough for debug builds and safe for Swift Packages.
 
 ## Key App Fixes Beyond the Profiler
 
@@ -187,14 +187,14 @@ Once I integrated the profiler and resolved the root causes, the improvements we
 
 - Tab switching memory impact dropped from 10–15MB to just 1–2MB.
 - Total memory usage after 10 minutes stabilized around 211MB, instead of ballooning past 310MB.
-- Responsiveness issues completely disappeared — the app remained fluid even under stress.
+- Responsiveness issues completely disappeared - the app remained fluid even under stress.
 - Leak patterns, previously triggered by multiple sources, were fully eliminated.
 
 These optimizations not only made the app more stable but also gave me a repeatable system for catching regressions before they escalate. The app now maintains stable memory usage, and the profiler gives me confidence every new build won't regress.
 
 ## Why I Open-Sourced It
 
-I didn't build this for fun (though it was fun). I built it because I needed visibility into a system-level issue that was otherwise invisible until too late. And I figured other iOS devs might be dealing with the same problem — unknowingly shipping apps with slow-growing leaks.
+I didn't build this for fun (though it was fun). I built it because I needed visibility into a system-level issue that was otherwise invisible until too late. And I figured other iOS devs might be dealing with the same problem - unknowingly shipping apps with slow-growing leaks.
 
 So I open-sourced it.
 
@@ -227,15 +227,15 @@ And yes, it's safe to use in Swift Packages, doesn't require UIKit, and respects
 
 ## Final Thoughts
 
-Memory issues in SwiftUI aren't always obvious — especially with its declarative magic. But they're real. When you see gradual memory climbs during usage, don't just blame Instruments for being slow — build tools that work for you.
+Memory issues in SwiftUI aren't always obvious - especially with its declarative magic. But they're real. When you see gradual memory climbs during usage, don't just blame Instruments for being slow - build tools that work for you.
 
 This profiler helped me stabilize performance, eliminate leaks, and ship confidently.
 
 Try it, fork it, improve it.
 
-> Let's build apps that run lean — not leak.
+> Let's build apps that run lean - not leak.
 
-Let me know what you think in the comments — and if you use this in your app, I'd love to hear your results.
+Let me know what you think in the comments - and if you use this in your app, I'd love to hear your results.
 
 Follow me here and on GitHub for more dev tools and performance insights.
 

@@ -6,9 +6,9 @@ export const PROFILE: Profile = {
   location: 'Kosovo (Europe) · Remote',
   availability: 'Open to senior / staff iOS & SDK roles',
   summary:
-    'Engineer with 15 years across the field — over 10 of them focused on iOS and Swift — built on a foundation in electronics. I design protocol-first, fully testable Swift packages engineered for Swift 6 strict concurrency (actors, Sendable, async/await), shipping production frameworks across FinTech and HealthTech while owning architecture, review, and production quality end to end.',
+    'Engineer with 15 years across the field - over 10 of them focused on iOS and Swift - built on a foundation in electronics. I design protocol-first, fully testable Swift packages engineered for Swift 6 strict concurrency (actors, Sendable, async/await), shipping production frameworks across FinTech and HealthTech while owning architecture, review, and production quality end to end.',
   statement:
-    'I build mostly SDKs — the layer other engineers depend on. Networking, dependency injection, navigation, geospatial, audio DSP, and 3D capture: small public APIs over carefully engineered internals, each with a clean architecture and a real test suite.',
+    'I build mostly SDKs - the layer other engineers depend on. Networking, dependency injection, navigation, geospatial, audio DSP, and 3D capture: small public APIs over carefully engineered internals, each with a clean architecture and a real test suite.',
   experience: [
     {
       company: 'Raiffeisen Bank International AG',
@@ -37,6 +37,12 @@ export const PROFILE: Profile = {
       location: 'Kosovo',
       period: '05/2017 – 10/2019',
       url: 'http://thesocialplus.com',
+    },
+    {
+      position: 'Electronics & Computer Engineering',
+      location: 'University · Kosovo',
+      period: '2011',
+      note: 'Where it started - first real code in C++, Assembly, HTML & CSS, on a foundation in electronics.',
     },
   ],
   skills: [

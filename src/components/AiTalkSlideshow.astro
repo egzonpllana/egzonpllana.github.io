@@ -14,7 +14,7 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     tabindex="0"
     role="region"
     aria-roledescription="carousel"
-    aria-label="Talk slides — use the arrow keys to change slides"
+    aria-label="Talk slides - use the arrow keys to change slides"
   >
     {
       SLIDES.map((slide) => (
@@ -188,7 +188,7 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
       if (prevBtn) prevBtn.addEventListener('click', prev);
       dots.forEach((d, i) => d.addEventListener('click', () => show(i)));
 
-      // Keyboard — only while focus is inside the slideshow, so page-level
+      // Keyboard - only while focus is inside the slideshow, so page-level
       // arrow-key scrolling and other widgets are never hijacked.
       root.addEventListener('keydown', (e) => {
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
@@ -199,7 +199,7 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
         e.key === 'ArrowRight' ? next() : prev();
       });
 
-      // Touch: swipe left/right anywhere; on mobile, Stories-style tap zones —
+      // Touch: swipe left/right anywhere; on mobile, Stories-style tap zones -
       // left third goes back, the rest advances.
       const isMobile = () => window.matchMedia('(max-width: 640px)').matches;
       let x0 = null,
@@ -247,7 +247,7 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     margin-top: var(--sp-6);
   }
 
-  /* ===== STAGE — active slide sizes the stage; others overlay for cross-fade ===== */
+  /* ===== STAGE - active slide sizes the stage; others overlay for cross-fade ===== */
   .ai-stage {
     position: relative;
     border: 1px solid var(--border);

@@ -16,27 +16,27 @@ import readHabit from '../assets/apps/read-habit.png';
  */
 export const APPS: App[] = [
   {
-    name: 'Engramr — Reminders & Alarms',
+    name: 'Engramr - Reminders & Alarms',
     category: 'Productivity',
     blurb:
-      'Smart reminders and alarms that sync across iPhone, iPad, Mac and Apple Watch — keep your day simple and stress-free.',
+      'Smart reminders and alarms that sync across iPhone, iPad, Mac and Apple Watch - keep your day simple and stress-free.',
     appStoreUrl:
       'https://apps.apple.com/us/app/engramr-reminders-alarms/id1506049485',
     icon: engramr,
     featured: true,
   },
   {
-    name: 'Eat Once — Body Rhythm',
+    name: 'Eat Once - Body Rhythm',
     category: 'Food & Drink',
     blurb:
-      'Not all foods are meant to be eaten at the same frequency — eat in rhythm with your body.',
+      'Not all foods are meant to be eaten at the same frequency - eat in rhythm with your body.',
     appStoreUrl:
       'https://apps.apple.com/us/app/eat-once-body-rhythm/id6762008329',
     icon: eatOnce,
     featured: true,
   },
   {
-    name: 'Fish Care — AI Planner',
+    name: 'Fish Care - AI Planner',
     category: 'Lifestyle',
     blurb:
       'Build and manage a complete care routine for your fish, with smart scheduling across feeding, water and tank tasks.',
@@ -46,7 +46,7 @@ export const APPS: App[] = [
     featured: true,
   },
   {
-    name: 'PlantCare — AI Planner',
+    name: 'PlantCare - AI Planner',
     category: 'Lifestyle',
     blurb:
       'The all-in-one app for keeping your plants thriving with tailored care schedules and reminders.',
@@ -55,7 +55,7 @@ export const APPS: App[] = [
     icon: plantcare,
   },
   {
-    name: 'Feed My Dog — AI Meal Planner',
+    name: 'Feed My Dog - AI Meal Planner',
     category: 'Food & Drink',
     blurb:
       'Smart, breed-tailored meal plans based on your dog’s unique profile.',
@@ -64,7 +64,7 @@ export const APPS: App[] = [
     icon: feedMyDog,
   },
   {
-    name: 'Feed My Cat — AI Meal Planner',
+    name: 'Feed My Cat - AI Meal Planner',
     category: 'Lifestyle',
     blurb: 'AI-generated, breed-tailored meal plans for your cat.',
     appStoreUrl:
@@ -72,7 +72,7 @@ export const APPS: App[] = [
     icon: feedMyCat,
   },
   {
-    name: 'Walk My Dog — AI Smart Planner',
+    name: 'Walk My Dog - AI Smart Planner',
     category: 'Lifestyle',
     blurb: 'AI-generated, breed-tailored walk plans for your dog.',
     appStoreUrl:
@@ -80,7 +80,7 @@ export const APPS: App[] = [
     icon: walkMyDog,
   },
   {
-    name: 'Read Habit — AI Planner',
+    name: 'Read Habit - AI Planner',
     category: 'Books',
     blurb:
       'Build and maintain a consistent reading habit with smart planning tools.',

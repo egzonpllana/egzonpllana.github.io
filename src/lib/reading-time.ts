@@ -1,6 +1,6 @@
 /**
  * Estimate reading time in whole minutes from a markdown body (~200 wpm).
- * Fenced code blocks are dropped first — they are scanned, not read, and
+ * Fenced code blocks are dropped first - they are scanned, not read, and
  * counting them as prose inflates estimates on code-heavy articles.
  */
 export function readingTime(text: string): number {

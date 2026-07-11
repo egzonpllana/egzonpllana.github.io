@@ -37,13 +37,13 @@ const withReadingTime = articles.map((a) => ({
 
 <BaseLayout
   title={`Articles tagged “${tag}”`}
-  description={`Articles by Egzon Pllana tagged ${tag} — Swift, SDK design, and iOS architecture.`}
+  description={`Articles by Egzon Pllana tagged ${tag} - Swift, SDK design, and iOS architecture.`}
 >
   <section class="section">
     <div class="container">
       <SectionHeading
         as="h1"
-        number="—"
+        number="-"
         title={`Tagged: ${tag}`}
         description={`${withReadingTime.length} article${withReadingTime.length === 1 ? '' : 's'} tagged “${tag}”.`}
       />

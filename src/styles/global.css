@@ -3,7 +3,7 @@
    Light is the default on :root; dark overrides under [data-theme="dark"].
    ========================================================================== */
 :root {
-  /* Color — light */
+  /* Color - light */
   --bg: #ffffff;
   --bg-subtle: #f7f8fa;
   --surface: #ffffff;

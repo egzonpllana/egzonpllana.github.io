@@ -7,11 +7,11 @@ heroImage: '../../assets/covers/from-0-to-1000-unit-tests-di-framework.png'
 repoUrl: 'https://github.com/egzonpllana/orbitcore-ios'
 ---
 
-If you've built an iOS app with more than three screens, you've felt the pain. You start passing dependencies through initializers, and it works — until your app graph gets deep enough that every view model needs six parameters, half of which exist only to forward them further down.
+If you've built an iOS app with more than three screens, you've felt the pain. You start passing dependencies through initializers, and it works - until your app graph gets deep enough that every view model needs six parameters, half of which exist only to forward them further down.
 
-I'm the developer behind Engramr — Reminders & Alarms, an app built with Clean Architecture across domain, data, and presentation layers. What started as clean init injection gradually turned into a wiring problem that Swift's type system alone doesn't solve.
+I'm the developer behind Engramr - Reminders & Alarms, an app built with Clean Architecture across domain, data, and presentation layers. What started as clean init injection gradually turned into a wiring problem that Swift's type system alone doesn't solve.
 
-So I built OrbitCore — an open-source Swift Package that handles dependency registration, scoped resolution, thread-safe lazy injection, and test container swapping, with zero external dependencies. iOS 16+, Swift 6.0+.
+So I built OrbitCore - an open-source Swift Package that handles dependency registration, scoped resolution, thread-safe lazy injection, and test container swapping, with zero external dependencies. iOS 16+, Swift 6.0+.
 
 This article is about why it exists and what problems it solves. For integration steps and code examples, check the GitHub repository.
 
@@ -54,17 +54,17 @@ Want to mock `UserService` in tests? With static singletons, you need conditiona
 
 ### 4. Lazy Properties Aren't Thread-Safe
 
-Swift's `lazy var` is not thread-safe. If two threads access an uninitialized lazy property simultaneously, you get double initialization — or worse, a crash. In a dependency injection context where services are resolved on first access, this is a real problem, not a theoretical one.
+Swift's `lazy var` is not thread-safe. If two threads access an uninitialized lazy property simultaneously, you get double initialization - or worse, a crash. In a dependency injection context where services are resolved on first access, this is a real problem, not a theoretical one.
 
 ### 5. No Scoping Means No Memory Strategy
 
 Should your analytics service live forever? Probably. Should a temporary image cache? Probably not. Without explicit scoping, every dependency has the same lifecycle: birth at registration, death at app termination.
 
-You can't express "keep this alive while someone references it, then release it automatically." You can't express "create a fresh instance every time." You get one behavior — permanent — and hope for the best.
+You can't express "keep this alive while someone references it, then release it automatically." You can't express "create a fresh instance every time." You get one behavior - permanent - and hope for the best.
 
 ## The Journey: From Protocol to Container
 
-The first version was just `ContainerProtocol` — a protocol with `register` and `resolve`. Five lines of interface. It worked for hello-world examples but broke immediately under real conditions:
+The first version was just `ContainerProtocol` - a protocol with `register` and `resolve`. Five lines of interface. It worked for hello-world examples but broke immediately under real conditions:
 
 - Resolving a dependency inside a builder deadlocked the container
 - Concurrent access during app launch caused race conditions
@@ -91,15 +91,15 @@ container.register(with: .weak) { _ in
 }
 ```
 
-`.default` is for transient objects — view models, controllers, request-scoped services. Every `resolve()` call runs the builder fresh.
+`.default` is for transient objects - view models, controllers, request-scoped services. Every `resolve()` call runs the builder fresh.
 
-`.strong` is for true singletons — logging, analytics, network clients. One instance, cached in a dictionary, returned on every resolve.
+`.strong` is for true singletons - logging, analytics, network clients. One instance, cached in a dictionary, returned on every resolve.
 
 `.weak` is the interesting one. It uses `NSMapTable` with `.weakMemory` value options. The container caches the instance, but holds it weakly. While your view controller or view model keeps a strong reference, the cache returns the same instance. The moment all external references are released, the entry auto-nils. Next resolve creates a fresh one.
 
 No manual cache invalidation. No reference counting. The runtime handles it.
 
-## Thread-Safe Resolution — Without Deadlocks
+## Thread-Safe Resolution - Without Deadlocks
 
 This was the hardest problem, and the one most DI containers get wrong. Consider this registration:
 
@@ -110,9 +110,9 @@ container.register(with: .strong) { container in
 }
 ```
 
-The builder for `UserService` calls `container.resolve()` to get its dependency. If the container uses a simple `NSLock`, this deadlocks — the lock is already held by the outer `resolve()` call.
+The builder for `UserService` calls `container.resolve()` to get its dependency. If the container uses a simple `NSLock`, this deadlocks - the lock is already held by the outer `resolve()` call.
 
-OrbitCore uses `NSRecursiveLock`. The same thread can acquire it multiple times without deadlocking. Nested resolution chains — no matter how deep — work correctly.
+OrbitCore uses `NSRecursiveLock`. The same thread can acquire it multiple times without deadlocking. Nested resolution chains - no matter how deep - work correctly.
 
 ```swift
 private let lock = NSRecursiveLock()
@@ -144,7 +144,7 @@ No initializer parameters. No wiring. The container resolves each dependency on 
 
 Under the hood, `@Injected` solves two problems:
 
-**Lazy resolution.** Dependencies aren't resolved at init time — they're resolved on first property access via Swift's `lazy var`. This means registration order doesn't matter, and circular dependencies don't crash at construction time.
+**Lazy resolution.** Dependencies aren't resolved at init time - they're resolved on first property access via Swift's `lazy var`. This means registration order doesn't matter, and circular dependencies don't crash at construction time.
 
 **Thread-safe first access.** Swift's `lazy var` isn't thread-safe. Two threads hitting an uninitialized `@Injected` property simultaneously could trigger double resolution. The wrapper guards access with `NSLock`:
 
@@ -165,7 +165,7 @@ Under the hood, `@Injected` solves two problems:
 }
 ```
 
-Note: `NSLock`, not `NSRecursiveLock`. A property wrapper should never recursively access itself. Using the lighter lock is an intentional design choice — it's faster and makes invalid access patterns crash loudly instead of silently re-entering.
+Note: `NSLock`, not `NSRecursiveLock`. A property wrapper should never recursively access itself. Using the lighter lock is an intentional design choice - it's faster and makes invalid access patterns crash loudly instead of silently re-entering.
 
 For eager resolution (resolve at init, not first access):
 
@@ -237,13 +237,13 @@ final class MockUserService: UserServiceProtocol, @unchecked Sendable {
 }
 ```
 
-With those two pieces in place — `TestContainer` and a mock with a `Call` enum — you verify behavior, call sequences, and side effects through Equatable assertions. The next section is what makes it scale.
+With those two pieces in place - `TestContainer` and a mock with a `Call` enum - you verify behavior, call sequences, and side effects through Equatable assertions. The next section is what makes it scale.
 
 ## Unit Tests at Scale: The Helpers Behind 1,000+ Tests
 
 The `TestContainer` above is the foundation. What turns it into a suite that scales is three small helpers and a single design decision about where the seam lives.
 
-Across two years and multiple apps and SDKs built on this pattern, the test count has crossed 1,000+. The reason it kept scaling — instead of buckling under setUp/tearDown overhead — is that adding test #1,001 costs the same as adding test #11.
+Across two years and multiple apps and SDKs built on this pattern, the test count has crossed 1,000+. The reason it kept scaling - instead of buckling under setUp/tearDown overhead - is that adding test #1,001 costs the same as adding test #11.
 
 ### Three helpers, one seam
 
@@ -264,11 +264,11 @@ func insertTestDependencies(_ dependencies: Any...) {
 }
 ```
 
-Because the seam is a single static property — `ContainerHolder.container` — there's exactly one thing to swap. No scattered `setMockA(...)`, `setMockB(...)`, `setMockC(...)` calls. No accidental leakage from one test to the next. Tests can run in parallel and in any order because none of them share state with any other.
+Because the seam is a single static property - `ContainerHolder.container` - there's exactly one thing to swap. No scattered `setMockA(...)`, `setMockB(...)`, `setMockC(...)` calls. No accidental leakage from one test to the next. Tests can run in parallel and in any order because none of them share state with any other.
 
 ### A real ViewModel test
 
-This is what a typical test in the suite actually looks like — two mocks, state assertions, and call-sequence verification, all in one readable block:
+This is what a typical test in the suite actually looks like - two mocks, state assertions, and call-sequence verification, all in one readable block:
 
 ```swift
 final class UsersViewModelTests: XCTestCase {
@@ -308,21 +308,21 @@ final class UsersViewModelTests: XCTestCase {
 }
 ```
 
-This particular SUT uses init injection, so the mocks go straight into the initializer and `removeTestDependencies()` is just hygiene. When the SUT instead uses `@Injected` properties, the only change is in setUp: call `createTestDependencies(mockUserService, mockLoggingService)` so the property wrappers resolve from the test graph. Same pattern, same helpers — the wiring path doesn't change the test.
+This particular SUT uses init injection, so the mocks go straight into the initializer and `removeTestDependencies()` is just hygiene. When the SUT instead uses `@Injected` properties, the only change is in setUp: call `createTestDependencies(mockUserService, mockLoggingService)` so the property wrappers resolve from the test graph. Same pattern, same helpers - the wiring path doesn't change the test.
 
 ### Why it scales
 
 Three earlier design choices in OrbitCore are doing the heavy lifting here:
 
-- **Protocol-first dependencies** — every service is mockable by construction. No wrapping, no test-only subclasses, no `@testable` workarounds beyond what XCTest already gives you.
-- **Flat-array `TestContainer`** — no factories, no retain policies, no thread-safety plumbing in tests. Type-match lookup is enough because tests don't need lifecycle semantics.
-- **`ContainerHolder` as a single seam** — one swap point per test instead of scattered registrations across `AppDelegate`, view controllers, and child coordinators.
+- **Protocol-first dependencies** - every service is mockable by construction. No wrapping, no test-only subclasses, no `@testable` workarounds beyond what XCTest already gives you.
+- **Flat-array `TestContainer`** - no factories, no retain policies, no thread-safety plumbing in tests. Type-match lookup is enough because tests don't need lifecycle semantics.
+- **`ContainerHolder` as a single seam** - one swap point per test instead of scattered registrations across `AppDelegate`, view controllers, and child coordinators.
 
 Together, those three add up to the same boilerplate cost for every test in the suite. Adding test #1,001 takes the same time as adding test #11.
 
 ## Reset: Selective Teardown for Logout Flows
 
-User logs out. You need to clear every cached service — user data, session tokens, cached content — but keep infrastructure services alive: logging, analytics, crash reporting.
+User logs out. You need to clear every cached service - user data, session tokens, cached content - but keep infrastructure services alive: logging, analytics, crash reporting.
 
 ```swift
 container.reset(ignoreDependencies: [
@@ -341,19 +341,19 @@ OrbitCore is a Swift Package with strict separation:
 
 **Core:**
 
-- `ContainerProtocol` — Public interface. 5 methods. Protocol-driven for testability.
-- `Container` — Default implementation. NSRecursiveLock, factory storage, three-policy resolution.
-- `ContainerRetainPolicy` — Enum: `.default`, `.strong`, `.weak`.
-- `ContainerError` — Single error case: `.missingFactoryMethod`. No overengineering.
-- `ContainerHolder` — Static singleton access point. `nonisolated(unsafe)` for Swift 6.
+- `ContainerProtocol` - Public interface. 5 methods. Protocol-driven for testability.
+- `Container` - Default implementation. NSRecursiveLock, factory storage, three-policy resolution.
+- `ContainerRetainPolicy` - Enum: `.default`, `.strong`, `.weak`.
+- `ContainerError` - Single error case: `.missingFactoryMethod`. No overengineering.
+- `ContainerHolder` - Static singleton access point. `nonisolated(unsafe)` for Swift 6.
 
 **Property Wrappers:**
 
-- `@Injected` — Lazy, thread-safe, Sendable-constrained resolution.
+- `@Injected` - Lazy, thread-safe, Sendable-constrained resolution.
 
 **Extensions:**
 
-- `ProcessInfo.isTesting` — XCTest environment detection.
+- `ProcessInfo.isTesting` - XCTest environment detection.
 
 The package knows nothing about your services. Your app registers its own types. The package just resolves them.
 
@@ -367,10 +367,10 @@ The package knows nothing about your services. Your app registers its own types.
 
 OrbitCore ships with full Swift 6 strict concurrency compliance:
 
-- `ContainerError: Sendable` — errors can cross isolation boundaries
-- `@Injected<T: Sendable>` — generic constraint ensures resolved types are sendable
-- `ContainerHolder` uses `nonisolated(unsafe)` — required for static mutable state, with thread-safety managed by the caller
-- Test mocks use `@unchecked Sendable` — appropriate for test-only code
+- `ContainerError: Sendable` - errors can cross isolation boundaries
+- `@Injected<T: Sendable>` - generic constraint ensures resolved types are sendable
+- `ContainerHolder` uses `nonisolated(unsafe)` - required for static mutable state, with thread-safety managed by the caller
+- Test mocks use `@unchecked Sendable` - appropriate for test-only code
 
 No warnings. No workarounds. No `@preconcurrency` imports.
 
@@ -387,11 +387,11 @@ private var weakInstances = NSMapTable<NSString, AnyObject>(
 
 `.weakMemory` means the map table does not retain its values. When the last strong reference to a cached instance is released, the entry auto-nils. On next `resolve()`, the container finds nil, runs the builder fresh, and caches the new instance.
 
-This is how you express "shared while needed, released when not" — without manual invalidation, timers, or reference counting. The Objective-C runtime does the bookkeeping for you.
+This is how you express "shared while needed, released when not" - without manual invalidation, timers, or reference counting. The Objective-C runtime does the bookkeeping for you.
 
 Use case: an image processing pipeline that multiple view models share during a flow. While the flow is active, they share one instance. When the user navigates away and all view models are deallocated, the pipeline releases automatically. Next time someone needs it, a fresh one is created.
 
-## String(reflecting:) — The Type Key Nobody Talks About
+## String(reflecting:) - The Type Key Nobody Talks About
 
 How does the container know which factory to invoke for `resolve<UserService>()`?
 
@@ -405,7 +405,7 @@ let key = String(reflecting: T.self)
 - `String(reflecting: UserService.self)` → `"MyApp.UserService"`
 - `String(reflecting: Array<String>.self)` → `"Swift.Array<Swift.String>"`
 
-It handles generics, nested types, and module namespacing. It's deterministic and unique per type. No `ObjectIdentifier`, no custom hashing, no type erasure — just the type's canonical name as a string.
+It handles generics, nested types, and module namespacing. It's deterministic and unique per type. No `ObjectIdentifier`, no custom hashing, no type erasure - just the type's canonical name as a string.
 
 This also makes `reset(ignoreDependencies:)` work intuitively: you pass the same `String(reflecting:)` output to specify which types to preserve.
 
@@ -418,7 +418,7 @@ This also makes `reset(ignoreDependencies:)` work intuitively: you pass the same
 
 ## Key Takeaways
 
-> **Declare lifecycle intent explicitly.** Three retain policies eliminate the "everything is a singleton" trap. `.default`, `.strong`, `.weak` — pick one. Your future self will thank you.
+> **Declare lifecycle intent explicitly.** Three retain policies eliminate the "everything is a singleton" trap. `.default`, `.strong`, `.weak` - pick one. Your future self will thank you.
 
 > **Use NSRecursiveLock for nested resolution.** Builders that resolve other dependencies are the common case, not the edge case. A simple lock deadlocks. A recursive lock handles it cleanly.
 
@@ -432,4 +432,4 @@ This also makes `reset(ignoreDependencies:)` work intuitively: you pass the same
 
 > **280 lines is enough.** A DI container doesn't need to be a framework. It needs to register, resolve, scope, and get out of the way.
 
-The SDK is open-source: OrbitCore on GitHub, with a full example iOS app showing the test helpers, mocks, and ViewModel patterns from this article. The full architecture ships in Engramr — Reminders & Alarms, available on the App Store.
+The SDK is open-source: OrbitCore on GitHub, with a full example iOS app showing the test helpers, mocks, and ViewModel patterns from this article. The full architecture ships in Engramr - Reminders & Alarms, available on the App Store.

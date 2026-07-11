@@ -7,13 +7,13 @@ heroImage: '../../assets/covers/offline-photo-geocoding-engine.png'
 repoUrl: 'https://github.com/egzonpllana/geo-clustering-ios'
 ---
 
-Apple's `CLGeocoder` takes 1.3 seconds per request and is rate-limited to 50 requests per minute. For a photo organizer that needs to geocode thousands of photos and cluster them into trips by city, this meant waiting nearly 3 hours. So I replaced it with an embedded geographic database, a K-D Tree, and a chain expansion algorithm — all running offline in seconds.
+Apple's `CLGeocoder` takes 1.3 seconds per request and is rate-limited to 50 requests per minute. For a photo organizer that needs to geocode thousands of photos and cluster them into trips by city, this meant waiting nearly 3 hours. So I replaced it with an embedded geographic database, a K-D Tree, and a chain expansion algorithm - all running offline in seconds.
 
 This article covers every engineering decision: why brute force doesn't work, how a spatial tree turns O(N) into O(log N), why "nearest city" isn't enough, and how a chain algorithm captures an entire 5-day trip from a single seed photo.
 
 ## The Problem With CLGeocoder
 
-Apple provides `CLGeocoder` for reverse geocoding — converting GPS coordinates to city names. It works, but:
+Apple provides `CLGeocoder` for reverse geocoding - converting GPS coordinates to city names. It works, but:
 
 - **Rate limited:** 50 requests per 60 seconds, with a mandatory 1.3-second delay between calls
 - **Max ~45 calls per session:** After that, requests silently fail
@@ -25,15 +25,15 @@ For a library with 8,000 photos producing 500+ event clusters, this meant 45+ se
 
 ### The Dataset
 
-GeoNames is an open geographic database. I use `cities1000.txt` — 167,000 cities worldwide with population > 1,000. After trimming to only needed columns (name, latitude, longitude, country code, population), it compresses to a ~6MB TSV file embedded in the app bundle.
+GeoNames is an open geographic database. I use `cities1000.txt` - 167,000 cities worldwide with population > 1,000. After trimming to only needed columns (name, latitude, longitude, country code, population), it compresses to a ~6MB TSV file embedded in the app bundle.
 
-Why `cities1000` and not `cities15000` (33K cities, pop > 15K)? The smaller dataset missed real cities. Bujanovac, Serbia (~18K residents) wasn't in it. Neither was Obiliq, Kosovo (12K). Photos in these cities resolved to the nearest larger city — often wrong. The 5x increase in dataset size (1.2MB → 6MB) is worth correct results worldwide.
+Why `cities1000` and not `cities15000` (33K cities, pop > 15K)? The smaller dataset missed real cities. Bujanovac, Serbia (~18K residents) wasn't in it. Neither was Obiliq, Kosovo (12K). Photos in these cities resolved to the nearest larger city - often wrong. The 5x increase in dataset size (1.2MB → 6MB) is worth correct results worldwide.
 
 ### The K-D Tree: O(log N) Instead of O(N)
 
 A brute-force scan of 167K cities for the nearest one is O(N) per photo. With 8,000 photos, that's 167K × 8K = 1.3 billion distance calculations. Even at nanosecond speeds, this takes seconds.
 
-A K-D Tree (K-Dimensional Tree) partitions the 2D coordinate space into a binary tree. Finding the nearest neighbor takes O(log N) — about 17 comparisons instead of 167,000. Geocoding all 8,000 photos takes a few seconds total.
+A K-D Tree (K-Dimensional Tree) partitions the 2D coordinate space into a binary tree. Finding the nearest neighbor takes O(log N) - about 17 comparisons instead of 167,000. Geocoding all 8,000 photos takes a few seconds total.
 
 I use Bersaelor's KDTree Swift library, embedded directly in the package (no external dependency). Each city conforms to `KDTreePoint` with latitude/longitude as dimensions and Haversine distance for `squaredDistance`:
 
@@ -55,11 +55,11 @@ struct GeoCityPoint: KDTreePoint {
 }
 ```
 
-The tree is built once at initialization (~100ms for 167K cities) and is immutable — no synchronization needed for concurrent reads.
+The tree is built once at initialization (~100ms for 167K cities) and is immutable - no synchronization needed for concurrent reads.
 
 ## Why "Nearest City" Isn't Enough: The Suburb Problem
 
-Pure nearest-neighbor geocoding produces results like "Lurup, Germany" instead of "Hamburg, Germany." Lurup is a Hamburg district — its city center is closer to the photo's coordinates than Hamburg's center, so the K-D Tree returns it. But no user wants to see "Lurup" when they were in Hamburg.
+Pure nearest-neighbor geocoding produces results like "Lurup, Germany" instead of "Hamburg, Germany." Lurup is a Hamburg district - its city center is closer to the photo's coordinates than Hamburg's center, so the K-D Tree returns it. But no user wants to see "Lurup" when they were in Hamburg.
 
 The opposite problem exists too: Ferizaj (60K pop, standalone city) is 33km from Pristina (550K). A naive "pick the biggest city nearby" approach would incorrectly label Ferizaj photos as Pristina.
 
@@ -77,11 +77,11 @@ The metropolis threshold is the key insight. It prevents small cities from absor
 
 ### Coordinate-Quantized Cache
 
-Photos taken at similar locations resolve to the same city. A cache keyed by quantized coordinates (~110m grid) avoids redundant suburb detection. For 200 Hamburg photos, only ~50 unique grid cells exist — 150 cache hits save `nearestK(30)` + distance calculations each.
+Photos taken at similar locations resolve to the same city. A cache keyed by quantized coordinates (~110m grid) avoids redundant suburb detection. For 200 Hamburg photos, only ~50 unique grid cells exist - 150 cache hits save `nearestK(30)` + distance calculations each.
 
 ## Smart Clustering: From Photos to Events
 
-Geocoding gives us city names. But we also need to group photos into discrete events — "Hamburg, May 9–12" and "Hamburg, June 3–5" should be separate trips, not one giant bucket.
+Geocoding gives us city names. But we also need to group photos into discrete events - "Hamburg, May 9–12" and "Hamburg, June 3–5" should be separate trips, not one giant bucket.
 
 ### Phase 1: Time + Distance Splitting
 
@@ -104,9 +104,9 @@ After geocoding, clusters with the same resolved city name within 48h merge. Two
 
 This is the critical step. After geocoding determines cluster names and anchor coordinates, each cluster's photo set is rebuilt using a chain algorithm:
 
-1. Use the city center coordinates as the anchor (not a random photo's GPS — prevents border-area photos from pulling in neighboring cities)
+1. Use the city center coordinates as the anchor (not a random photo's GPS - prevents border-area photos from pulling in neighboring cities)
 2. Find all library photos within 50km of the city center
-3. Verify each photo geocodes to the same city name — a photo 45km from Hamburg center that's actually closer to Bremen gets rejected
+3. Verify each photo geocodes to the same city name - a photo 45km from Hamburg center that's actually closer to Bremen gets rejected
 4. Chain with 24h gap (explained below)
 5. Sweep no-GPS photos within the established date range
 
@@ -114,13 +114,13 @@ The city-name verification is the key insight that prevents cross-city contamina
 
 ### The Pre-Computed Dictionary Optimization
 
-The naive approach — calling `nearestCity()` for each photo in each cluster's filter — is O(photos × clusters × log N). With 8K photos and 500 clusters, that's 4 million K-D Tree lookups.
+The naive approach - calling `nearestCity()` for each photo in each cluster's filter - is O(photos × clusters × log N). With 8K photos and 500 clusters, that's 4 million K-D Tree lookups.
 
 Instead, I pre-compute a `[localIdentifier: cityDisplayName]` dictionary for ALL GPS photos once:
 
 8,000 photos × O(log 167K) = ~8,000 lookups ≈ 100ms
 
-The per-cluster filter then does a dictionary lookup — O(1). Total: O(M log N) pre-compute + O(M) per cluster, instead of O(M × C × log N). This turned a 30-second freeze into a 100ms operation.
+The per-cluster filter then does a dictionary lookup - O(1). Total: O(M log N) pre-compute + O(M) per cluster, instead of O(M × C × log N). This turned a 30-second freeze into a 100ms operation.
 
 ## Chain Expansion: Capturing Entire Trips
 
@@ -144,7 +144,7 @@ After the chain establishes the trip's date range using GPS-confirmed photos, a 
 Seed: May 9 21:17 (Hamburg port photo)
 Chain forward:  May 9 → May 10 → May 11 → May 12 (no 24h gaps)
 Chain backward: May 9 → May 9 14:22 (arrival photos)
-Result: May 9 14:22 to May 12 13:17 — entire trip captured
+Result: May 9 14:22 to May 12 13:17 - entire trip captured
 ```
 
 ## Performance Summary
@@ -161,7 +161,7 @@ Compare to CLGeocoder: 45+ seconds for 45 lookups, then you're rate-limited.
 
 ## The SDK
 
-The entire engine is extracted into a reusable Swift Package — `GeoClusteringSDK`. Zero external dependencies. Zero network calls. Fully offline.
+The entire engine is extracted into a reusable Swift Package - `GeoClusteringSDK`. Zero external dependencies. Zero network calls. Fully offline.
 
 All parameters are configurable:
 
@@ -198,9 +198,9 @@ let sdk = GeoClusteringService(configuration: config)
 
 ## References & Links
 
-- **GeoClusteringSDK** — the open-source Swift Package described in this article
-- [Apple CLGeocoder Documentation](https://developer.apple.com/documentation/corelocation/clgeocoder) — Apple's built-in reverse geocoding API
-- [GeoNames](https://www.geonames.org/) — open geographic database providing the `cities1000.txt` dataset
-- [KDTree Swift Library](https://github.com/Bersaelor/KDTree) — K-D Tree implementation used for spatial search
-- [K-D Tree (Wikipedia)](https://en.wikipedia.org/wiki/K-d_tree) — background on the K-Dimensional Tree data structure
-- [Haversine Formula (Wikipedia)](https://en.wikipedia.org/wiki/Haversine_formula) — the distance formula used for geographic coordinate calculations
+- **GeoClusteringSDK** - the open-source Swift Package described in this article
+- [Apple CLGeocoder Documentation](https://developer.apple.com/documentation/corelocation/clgeocoder) - Apple's built-in reverse geocoding API
+- [GeoNames](https://www.geonames.org/) - open geographic database providing the `cities1000.txt` dataset
+- [KDTree Swift Library](https://github.com/Bersaelor/KDTree) - K-D Tree implementation used for spatial search
+- [K-D Tree (Wikipedia)](https://en.wikipedia.org/wiki/K-d_tree) - background on the K-Dimensional Tree data structure
+- [Haversine Formula (Wikipedia)](https://en.wikipedia.org/wiki/Haversine_formula) - the distance formula used for geographic coordinate calculations

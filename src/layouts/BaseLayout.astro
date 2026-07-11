@@ -31,7 +31,7 @@ const {
   tags,
 } = Astro.props;
 const isSiteTitle = title === SITE.name || title === SITE.title;
-const fullTitle = isSiteTitle ? title : `${title} — ${SITE.name}`;
+const fullTitle = isSiteTitle ? title : `${title} - ${SITE.name}`;
 ---
 
 <!doctype html>

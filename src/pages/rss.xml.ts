@@ -14,7 +14,7 @@ export async function GET(context: APIContext) {
   const selfUrl = new URL('rss.xml', site).toString();
 
   return rss({
-    title: `${SITE.name} — Articles`,
+    title: `${SITE.name} - Articles`,
     description: SITE.description,
     site,
     xmlns: { atom: 'http://www.w3.org/2005/Atom' },
