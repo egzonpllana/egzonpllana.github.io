@@ -293,11 +293,6 @@ a.tag:hover {
    Scroll-reveal + entrance animations
    ========================================================================== */
 @media (prefers-reduced-motion: no-preference) {
-  /* Cross-document view transitions: fade between pages, zero JS. */
-  @view-transition {
-    navigation: auto;
-  }
-
   /* The hidden state is gated behind html.js (set pre-paint) so content
      stays visible when JavaScript is disabled or fails to run. */
   .js [data-reveal] {
