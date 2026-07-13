@@ -60,6 +60,37 @@
   border: 1px solid var(--border);
 }
 
+.prose figure.bf-figure {
+  margin-block: var(--sp-6);
+}
+
+.prose figure.bf-figure .bf-scroll {
+  max-width: 700px;
+  margin-inline: auto;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.prose figure.bf-figure svg {
+  display: block;
+  width: 100%;
+  min-width: 600px;
+  height: auto;
+  padding: var(--sp-4);
+  box-sizing: border-box;
+}
+
+.prose figure.bf-figure figcaption {
+  margin-top: var(--sp-3);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  text-align: center;
+}
+
 .prose hr {
   border: none;
   border-top: 1px solid var(--border);
