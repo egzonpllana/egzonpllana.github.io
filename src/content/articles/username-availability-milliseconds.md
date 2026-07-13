@@ -190,6 +190,14 @@ The entire design optimizes for cheap, instant answers to "does this exist?" Tha
 
 You cannot hide "taken" from a legitimate user, they need it. But you can make mass harvesting expensive: rate-limit per IP and per session, require an authenticated or token-bearing request, and treat the endpoint as attack surface rather than a static asset. The honest framing is that "available" versus "taken" is information disclosure by design, so the real question is how much of it you are willing to hand out for free.
 
+## The real bottleneck is the wire
+
+Step back and look at the latency budget. The Bloom probe is a handful of memory reads, nanoseconds. The indexed lookup is microseconds to a few milliseconds. A cache hit is sub-millisecond. Add it all up and the server-side work is a rounding error next to the one thing nobody optimized away: the network round-trip. The request has to travel to the server and the answer has to travel back, and on a normal connection that is tens of milliseconds, an order of magnitude more than everything the server does combined.
+
+The instinct to blame TCP is right, with one refinement. The full handshake, `SYN`, `SYN-ACK`, `ACK`, and the TLS negotiation layered on top, is a per-connection cost, not a per-check cost. The browser keeps the connection alive and reuses it, so a debounced availability request usually rides an already-open, already-encrypted socket. What you pay on every check is one round-trip time, plus a little for headers and the tiny payload. So the bottleneck is latency, the propagation delay across the wire, and the handshake only bites on the very first request. This is exactly why the two changes that most improve the "instant" feel are not database tricks at all: debouncing, so you send one request instead of ten, and edge proximity, so that one round-trip is short.
+
+Which reframes what all the server-side cleverness is actually for. For a single check, the index and the Bloom filter optimize microseconds that the network then dwarfs. Their real job is scale: when billions of accounts are checked millions of times a second, the index keeps each lookup cheap and the Bloom filter keeps most of them off the database and disk entirely, so the system stays fast under load instead of melting. That is also why a Bloom filter is overkill at small scale, a few thousand rows fit in memory and any lookup is already instant, but indispensable once both the dataset and the query volume are large. It never makes one check faster than the network. It makes millions of them survivable.
+
 ## The one-line version
 
 If you remember nothing else: **the millisecond feel is an engineering illusion built from an index, a Bloom filter, and edge proximity, while the actual guarantee that no two people share a username is a single unique constraint enforced at insert time.** Speed and correctness look like one feature. They are two, and they live in completely different places.
