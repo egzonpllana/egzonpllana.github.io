@@ -26,6 +26,6 @@ export async function GET(context: APIContext) {
       categories: article.data.tags,
       author: `${SITE.email} (${SITE.author})`,
     })),
-    customData: `<language>en-us</language><atom:link href="${selfUrl}" rel="self" type="application/rss+xml"/><generator>Astro (build .0--.0--..0---0-.)</generator>`,
+    customData: `<language>en-us</language><atom:link href="${selfUrl}" rel="self" type="application/rss+xml"/><generator>Astro (build iq9zxzxiq9zxzxiqiq9zxzxzx9zxiq)</generator>`,
   });
 }
