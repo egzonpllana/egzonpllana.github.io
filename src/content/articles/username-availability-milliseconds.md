@@ -1,7 +1,7 @@
 ---
 title: 'How Big-Name Companies Check Username Availability in Milliseconds'
 description: 'It is not a search, it is a keyed existence lookup. How indexes, Bloom filters, and caches make the check instant, and why correctness lives somewhere else entirely.'
-date: 2026-07-13
+date: 2026-07-14
 tags: ['Systems Design', 'Bloom Filters', 'Databases', 'Caching', 'Distributed Systems']
 heroImage: '../../assets/covers/username-availability-milliseconds.png'
 ---
@@ -156,6 +156,12 @@ So what happens when a username is freed, by account deletion or a rename? Its b
 Here is the nice part: it does not break correctness, for exactly the reason from earlier. A "possibly taken" answer only triggers a real indexed lookup, and that lookup correctly reports the freed name as available. The user can still claim it. All you have lost is the free fast-path for that one name, which quietly degrades to a normal database check. A stale bit costs a round-trip, never a wrong answer.
 
 If you do want the memory back, you have two standard options. A **counting Bloom filter** replaces each bit with a small counter, incremented on insert and decremented on delete, at roughly four times the memory. Or, simplest at scale, you **periodically rebuild** the filter from the database, which is the source of truth anyway. A nightly rebuild reclaims every freed name at once and resets the drift to zero.
+
+## The operational wrinkle
+
+There is a second, quieter consequence of where the filter lives. Because it sits in each server's RAM, it vanishes on restart and drifts as new users register. The standard pattern follows directly from everything above: the database remains the source of truth, and each app server periodically rebuilds or reloads the filter from it, or from a serialized snapshot on disk or S3, so a freshly booted server does not start blind.
+
+Between rebuilds, new registrations get inserted into the live filter immediately. Inserts are safe and idempotent, setting the same bits twice changes nothing, so every server can apply them on the fly; only deletes are impossible. Deleted usernames leave stale `1` bits behind until the next rebuild, which just means a few extra false positives falling through to the database. Same story as before: the answer is never wrong, only occasionally slower.
 
 ## On the cache: how big, and can it be slower than the DB?
 
