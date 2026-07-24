@@ -1,0 +1,108 @@
+---
+/** Numbered pipeline rail: one row per phase, with the parameters it reads. */
+interface Phase {
+  title: string;
+  body: string;
+  params?: { name: string; value: string }[];
+}
+
+interface Props {
+  phases: Phase[];
+}
+
+const { phases } = Astro.props;
+const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
+---
+
+<div class="rail">
+  {
+    phases.map((phase, i) => (
+      <div class="rail__row" data-reveal style={`--d:${(i % 3) * 60}ms`}>
+        <span class="rail__num">{pad(i + 1)}</span>
+        <div class="rail__body">
+          <h4 class="rail__title">{phase.title}</h4>
+          <p class="rail__text">{phase.body}</p>
+          {phase.params && phase.params.length > 0 && (
+            <div class="rail__params">
+              {phase.params.map((p) => (
+                <span class="rail__param">
+                  {p.name} <b>{p.value}</b>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    ))
+  }
+</div>
+
+<style>
+  .rail {
+    display: flex;
+    flex-direction: column;
+    margin-block: var(--sp-6);
+  }
+  .rail__row {
+    display: grid;
+    grid-template-columns: 42px 1fr;
+    gap: var(--sp-4);
+    padding-block: var(--sp-5);
+    border-top: 1px solid var(--border);
+  }
+  .rail__row:last-child {
+    border-bottom: 1px solid var(--border);
+  }
+  .rail__num {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--accent-text);
+    padding-top: 0.2rem;
+  }
+  .rail__num::after {
+    content: '';
+    display: block;
+    width: 1px;
+    height: calc(100% - 1.4rem);
+    margin: 0.6rem auto 0;
+    background: linear-gradient(
+      180deg,
+      var(--accent),
+      color-mix(in srgb, var(--accent) 0%, transparent)
+    );
+  }
+  .rail__row:last-child .rail__num::after {
+    display: none;
+  }
+  .rail__title {
+    font-size: var(--fs-base);
+    margin: 0;
+  }
+  .rail__text {
+    font-size: var(--fs-sm);
+    line-height: 1.6;
+    color: var(--fg-muted);
+    margin: 0.4rem 0 0;
+  }
+  .rail__params {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+  }
+  .rail__param {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-muted);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.22rem 0.5rem;
+    white-space: nowrap;
+  }
+  .rail__param b {
+    color: var(--accent-text);
+    font-weight: 600;
+  }
+</style>

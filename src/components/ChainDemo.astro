@@ -1,0 +1,566 @@
+---
+/**
+ * Chain expansion demo: from one seed photo, the trip grows along the time
+ * axis. Compares a fixed +/-12h window against chained 24h neighbour links,
+ * then sweeps the photos that carry no GPS at all.
+ */
+
+// [day of month, hour, has GPS]
+const ITEMS: [number, number, number][] = [
+  [9, 14.2, 1],
+  [9, 15.0, 1],
+  [9, 16.4, 0],
+  [9, 18.1, 1],
+  [9, 21.3, 1],
+  [10, 8.5, 1],
+  [10, 9.4, 0],
+  [10, 11.2, 1],
+  [10, 13.5, 1],
+  [10, 15.1, 1],
+  [10, 17.8, 1],
+  [10, 20.2, 0],
+  [10, 22.0, 1],
+  [11, 9.5, 1],
+  [11, 10.8, 1],
+  [11, 12.0, 1],
+  [11, 14.1, 0],
+  [11, 15.3, 1],
+  [11, 18.6, 1],
+  [11, 20.1, 1],
+  [12, 8.0, 1],
+  [12, 10.5, 1],
+  [12, 13.2, 1],
+  [12, 13.9, 0],
+  [12, 16.4, 1],
+  [12, 19.5, 1],
+  [12, 22.0, 1],
+  [13, 9.0, 1],
+  [13, 11.4, 0],
+  [13, 12.5, 1],
+  [13, 15.0, 1],
+  [16, 12.0, 1],
+  [16, 13.4, 1],
+  [17, 11.0, 1],
+];
+
+const SEED_INDEX = 4; // May 9, 21:18 - the one photo the user starts from
+---
+
+<figure class="ce" data-chain-demo data-reveal>
+  <div class="ce__frame">
+    <div class="ce__top">
+      <span class="ce__label">one seed photo · 5-day trip</span>
+      <div class="ce__controls">
+        <div class="ce__chips" role="group" aria-label="Expansion strategy">
+          <button type="button" class="ce__chip" data-mode="window">
+            fixed ±12h
+          </button>
+          <button type="button" class="ce__chip is-on" data-mode="chain">
+            chain 24h
+          </button>
+        </div>
+        <button type="button" class="ce__replay" data-replay>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+            <path
+              d="M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1v2.5H8"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"></path>
+          </svg>
+          Replay
+        </button>
+      </div>
+    </div>
+
+    <p class="ce__caption" data-caption>
+      <span class="ce__pulse" aria-hidden="true"></span>
+      <span data-caption-text>Scroll on - it runs itself.</span>
+    </p>
+
+    <div class="ce__stage">
+      <div class="ce__band" data-band>
+        <span class="ce__seedline" data-seedline></span>
+      </div>
+      <div class="ce__ticks" data-ticks></div>
+    </div>
+
+    <ul class="ce__legend">
+      <li><i class="ce__key ce__key--seed"></i>seed photo</li>
+      <li><i class="ce__key ce__key--in"></i>captured</li>
+      <li><i class="ce__key ce__key--sweep"></i>no GPS, swept by date range</li>
+      <li><i class="ce__key ce__key--out"></i>left out</li>
+    </ul>
+  </div>
+  <figcaption>
+    Both strategies start from the same single photo. The fixed window can only
+    reach 12 hours either side of it; chain expansion walks the sorted timeline
+    and keeps going as long as each neighbour is within 24 hours of the last
+    included photo, so one photo pulls in the whole trip.
+  </figcaption>
+</figure>
+
+<script is:inline define:vars={{ ITEMS, SEED_INDEX }}>
+  (() => {
+    function initChainDemo() {
+      const root = document.querySelector('[data-chain-demo]');
+      if (!root || root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const band = root.querySelector('[data-band]');
+      const ticksEl = root.querySelector('[data-ticks]');
+      const seedLine = root.querySelector('[data-seedline]');
+      const captionEl = root.querySelector('[data-caption]');
+      const captionText = root.querySelector('[data-caption-text]');
+      const replayBtn = root.querySelector('[data-replay]');
+      if (!band) return;
+
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+
+      const MONTH = 'May';
+      const items = ITEMS.map((it, i) => ({
+        i,
+        t: it[0] * 24 + it[1],
+        day: it[0],
+        hour: it[1],
+        gps: it[2] === 1,
+      }));
+      const T_MIN = 9 * 24 - 4;
+      const T_MAX = 17 * 24 + 4;
+      // Keep the first and last marks clear of the band edges.
+      const PAD = 4;
+      const pct = (t) => PAD + ((t - T_MIN) / (T_MAX - T_MIN)) * (100 - 2 * PAD);
+      const seed = items[SEED_INDEX];
+
+      const gpsItems = items.filter((it) => it.gps);
+      const noGps = items.filter((it) => !it.gps);
+
+      let mode = 'chain';
+      let timers = [];
+      let playing = false;
+      let hasRun = false;
+
+      function later(fn, ms) {
+        timers.push(setTimeout(fn, reduce ? 0 : ms));
+      }
+      function clearTimers() {
+        timers.forEach(clearTimeout);
+        timers = [];
+      }
+      function setCaption(html, done) {
+        captionText.innerHTML = html;
+        captionEl.classList.toggle('is-done', !!done);
+      }
+
+      // Dots
+      [9, 10, 11, 12, 13, 16, 17].forEach((d) => {
+        const el = document.createElement('span');
+        el.className = 'ce__tick';
+        el.textContent = `${MONTH} ${d}`;
+        el.style.left = `${pct(d * 24 + 12).toFixed(3)}%`;
+        ticksEl.appendChild(el);
+      });
+
+      function jitter(i) {
+        const x = Math.sin(i * 91.7) * 43758.5453;
+        return x - Math.floor(x);
+      }
+      items.forEach((it) => {
+        const el = document.createElement('span');
+        el.className = it.gps ? 'ce__dot' : 'ce__dot ce__dot--nogps';
+        el.style.left = `${pct(it.t).toFixed(3)}%`;
+        el.style.top = `${18 + jitter(it.i) * 48}px`;
+        band.appendChild(el);
+        it.el = el;
+      });
+      seedLine.style.left = `${pct(seed.t).toFixed(3)}%`;
+
+      function resetDots() {
+        items.forEach((it) => {
+          it.el.classList.remove('is-in', 'is-seed', 'is-sweep');
+        });
+      }
+
+      // Fixed window: only photos within +/-12h of the seed itself.
+      function windowSteps() {
+        return gpsItems
+          .filter((it) => it !== seed && Math.abs(it.t - seed.t) <= 12)
+          .sort((a, b) => Math.abs(a.t - seed.t) - Math.abs(b.t - seed.t));
+      }
+
+      // Chain: walk outward, each hop must be within 24h of the last included.
+      function chainSteps() {
+        const sorted = gpsItems.slice().sort((a, b) => a.t - b.t);
+        const at = sorted.indexOf(seed);
+        const steps = [];
+        let last = seed.t;
+        for (let k = at + 1; k < sorted.length; k++) {
+          if (sorted[k].t - last > 24) break;
+          last = sorted[k].t;
+          steps.push(sorted[k]);
+        }
+        last = seed.t;
+        for (let k = at - 1; k >= 0; k--) {
+          if (last - sorted[k].t > 24) break;
+          last = sorted[k].t;
+          steps.push(sorted[k]);
+        }
+        return steps;
+      }
+
+      function run() {
+        if (playing) return;
+        playing = true;
+        hasRun = true;
+        clearTimers();
+        resetDots();
+
+        const chain = mode === 'chain';
+        const steps = chain ? chainSteps() : windowSteps();
+        const stride = reduce ? 0 : 70;
+
+        setCaption(
+          `Seed - <b>${MONTH} ${seed.day}, ${String(Math.floor(seed.hour)).padStart(2, '0')}:${String(Math.round((seed.hour % 1) * 60)).padStart(2, '0')}</b>`,
+        );
+        seed.el.classList.add('is-seed', 'is-in');
+
+        later(() => {
+          setCaption(
+            chain
+              ? 'Chaining forward and backward - each hop within <b>24h</b> of the last included photo'
+              : 'Fixed window - only photos within <b>±12h</b> of the seed qualify',
+          );
+        }, 700);
+
+        steps.forEach((it, k) => {
+          later(() => it.el.classList.add('is-in'), 900 + k * stride);
+        });
+
+        const endOfChain = 900 + steps.length * stride + 300;
+
+        if (chain) {
+          const included = [seed].concat(steps);
+          const lo = Math.min.apply(
+            null,
+            included.map((x) => x.t),
+          );
+          const hi = Math.max.apply(
+            null,
+            included.map((x) => x.t),
+          );
+          const swept = noGps.filter((it) => it.t >= lo && it.t <= hi);
+
+          later(() => {
+            setCaption(
+              'Sweeping photos with no GPS that fall inside the established date range',
+            );
+            swept.forEach((it, k) =>
+              later(() => it.el.classList.add('is-sweep'), k * stride),
+            );
+          }, endOfChain);
+
+          const days = included.concat(swept).map((x) => x.day);
+          const firstDay = Math.min.apply(null, days);
+          const lastDay = Math.max.apply(null, days);
+
+          later(
+            () => {
+              setCaption(
+                `Captured <b>${included.length + swept.length} of ${items.length}</b> - the whole trip, ${MONTH} ${firstDay}–${lastDay}, from one photo.`,
+                true,
+              );
+              playing = false;
+            },
+            endOfChain + swept.length * stride + 500,
+          );
+        } else {
+          later(() => {
+            setCaption(
+              `Captured <b>${steps.length + 1} of ${items.length}</b> - the rest of the trip never enters the window.`,
+              true,
+            );
+            playing = false;
+          }, endOfChain);
+        }
+      }
+
+      root.querySelectorAll('[data-mode]').forEach((chip) => {
+        chip.addEventListener('click', () => {
+          root
+            .querySelectorAll('[data-mode]')
+            .forEach((c) => c.classList.remove('is-on'));
+          chip.classList.add('is-on');
+          mode = chip.dataset.mode;
+          playing = false;
+          run();
+        });
+      });
+      replayBtn.addEventListener('click', () => {
+        playing = false;
+        run();
+      });
+
+      const io = new IntersectionObserver(
+        (entries) => {
+          if (entries[0].isIntersecting && !hasRun) {
+            run();
+            io.disconnect();
+          }
+        },
+        { threshold: 0.4 },
+      );
+      io.observe(band);
+    }
+
+    if (document.readyState !== 'loading') initChainDemo();
+    else document.addEventListener('DOMContentLoaded', initChainDemo);
+  })();
+</script>
+
+<style>
+  .ce {
+    margin-block: var(--sp-6);
+  }
+  .ce__frame {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--bg-subtle);
+    padding: var(--sp-5);
+  }
+  .ce__top {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    flex-wrap: wrap;
+  }
+  .ce__label {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+  .ce__controls {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+  }
+  .ce__chips {
+    display: flex;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+  }
+  .ce__chip {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    font-weight: 600;
+    color: var(--fg-muted);
+    padding: 0.28rem 0.7rem;
+    border-radius: 999px;
+    transition:
+      background 0.18s var(--ease),
+      color 0.18s var(--ease);
+  }
+  .ce__chip:hover {
+    background: var(--surface-hover);
+  }
+  .ce__chip.is-on {
+    background: var(--accent-text);
+    color: var(--accent-fg);
+  }
+  .ce__replay {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    font-weight: 600;
+    color: var(--fg-muted);
+    padding: 0.36rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    transition:
+      color 0.18s var(--ease),
+      border-color 0.18s var(--ease);
+  }
+  .ce__replay:hover {
+    color: var(--accent-text);
+    border-color: var(--accent);
+  }
+
+  .ce__caption {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-top: var(--sp-4);
+    min-height: 1.6rem;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+  .ce__caption :global(b) {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .ce__pulse {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--fg-faint);
+    flex: none;
+    animation: ce-pulse 1.4s ease-in-out infinite;
+  }
+  .ce__caption.is-done .ce__pulse {
+    background: var(--accent);
+    animation: none;
+  }
+  @keyframes ce-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  .ce__stage {
+    margin-top: var(--sp-4);
+  }
+  .ce__band {
+    position: relative;
+    height: 92px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .ce__seedline {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--accent);
+    opacity: 0.35;
+  }
+  .ce__ticks {
+    position: relative;
+    height: 20px;
+    margin-top: 6px;
+  }
+  /* Ticks and dots are created by the script, so they carry no scope
+     attribute - their rules have to be global. */
+  .ce :global(.ce__tick) {
+    position: absolute;
+    transform: translateX(-50%);
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-faint);
+    white-space: nowrap;
+  }
+
+  .ce :global(.ce__dot) {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    margin-left: -5px;
+    border-radius: 3px;
+    background: var(--border-strong);
+    transition:
+      background 0.35s var(--ease),
+      box-shadow 0.35s var(--ease),
+      transform 0.35s var(--ease);
+  }
+  .ce :global(.ce__dot--nogps) {
+    background: transparent;
+    border: 1.5px dashed var(--border-strong);
+    border-radius: 50%;
+  }
+  .ce :global(.ce__dot.is-in) {
+    background: var(--accent);
+    border-color: var(--accent);
+    transform: scale(1.15);
+  }
+  .ce :global(.ce__dot.is-sweep) {
+    background: var(--accent-soft);
+    border: 1.5px solid var(--accent);
+    transform: scale(1.15);
+  }
+  .ce :global(.ce__dot.is-seed) {
+    box-shadow: 0 0 0 4px var(--accent-soft);
+    transform: scale(1.35);
+  }
+
+  .ce__legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-4);
+    margin: var(--sp-4) 0 0;
+    padding: 0;
+    list-style: none;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-faint);
+  }
+  .ce__legend li {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .ce__key {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    flex: none;
+  }
+  .ce__key--seed {
+    background: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .ce__key--in {
+    background: var(--accent);
+  }
+  .ce__key--sweep {
+    background: var(--accent-soft);
+    border: 1.5px solid var(--accent);
+    border-radius: 50%;
+  }
+  .ce__key--out {
+    background: var(--border-strong);
+  }
+
+  .ce figcaption {
+    margin-top: var(--sp-3);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+
+  @media (max-width: 620px) {
+    .ce__frame {
+      padding: var(--sp-4);
+    }
+    .ce__controls {
+      margin-left: 0;
+      width: 100%;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ce :global(.ce__dot) {
+      transition: none;
+    }
+    .ce__pulse {
+      animation: none;
+    }
+  }
+</style>

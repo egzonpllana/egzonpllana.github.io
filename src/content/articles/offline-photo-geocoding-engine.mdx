@@ -2,14 +2,49 @@
 title: 'How I Built an Offline Photo Geocoding Engine That Clusters 8,000 Photos in Under 5 Seconds'
 description: 'Replacing Apple CLGeocoder with embedded GeoNames data, a K-D Tree, and a chain expansion algorithm to geocode and cluster thousands of photos offline in seconds.'
 date: 2026-04-10
+updated: 2026-07-25
 tags: ['Swift', 'iOS', 'Geocoding', 'K-D Tree', 'Spatial Search']
 heroImage: '../../assets/covers/offline-photo-geocoding-engine.png'
 repoUrl: 'https://github.com/egzonpllana/geo-clustering-ios'
 ---
 
-Apple's `CLGeocoder` takes 1.3 seconds per request and is rate-limited to 50 requests per minute. For a photo organizer that needs to geocode thousands of photos and cluster them into trips by city, this meant waiting nearly 3 hours. So I replaced it with an embedded geographic database, a K-D Tree, and a chain expansion algorithm - all running offline in seconds.
+import ClusterDemo from '../../components/ClusterDemo.astro';
+import ChainDemo from '../../components/ChainDemo.astro';
+import PhaseRail from '../../components/PhaseRail.astro';
+import StatTiles from '../../components/StatTiles.astro';
+
+Apple's `CLGeocoder` takes 1.3 seconds per request and is rate-limited to 50 requests per minute. For a library of thousands of photos that has to be geocoded and grouped into trips by city, that means waiting nearly 3 hours. So I replaced it with an embedded geographic database, a K-D Tree, and a chain expansion algorithm - all running offline in seconds.
 
 This article covers every engineering decision: why brute force doesn't work, how a spatial tree turns O(N) into O(log N), why "nearest city" isn't enough, and how a chain algorithm captures an entire 5-day trip from a single seed photo.
+
+<StatTiles
+  tiles={[
+    {
+      label: 'Cities embedded',
+      value: 167000,
+      suffix: '+',
+      sub: 'GeoNames cities1000, ~6 MB in the bundle',
+    },
+    {
+      label: 'Geocode lookup',
+      value: 0.01,
+      suffix: 'ms',
+      decimals: 2,
+      sub: 'O(log N) K-D Tree query',
+    },
+    {
+      label: 'Full pipeline',
+      value: 5,
+      suffix: 's',
+      sub: '8,000 photos to ~500 events',
+    },
+    {
+      label: 'Network calls',
+      value: 0,
+      sub: 'Everything resolves on device',
+    },
+  ]}
+/>
 
 ## The Problem With CLGeocoder
 
@@ -19,13 +54,13 @@ Apple provides `CLGeocoder` for reverse geocoding - converting GPS coordinates t
 - **Max ~45 calls per session:** After that, requests silently fail
 - **Network dependent:** Every call is a round-trip to Apple's servers
 
-For a library with 8,000 photos producing 500+ event clusters, this meant 45+ seconds of geocoding with a two-phase UI approach (show placeholder names, then progressively resolve real ones). Users saw "Loading…" for nearly a minute. Unusable.
+For a library with 8,000 photos producing 500+ event clusters, this meant 45+ seconds of geocoding with a two-phase approach: show placeholder names first, then progressively resolve the real ones. Nearly a minute of "Loading…" on screen. Unusable.
 
 ## The Solution: Embedded GeoNames + K-D Tree
 
 ### The Dataset
 
-GeoNames is an open geographic database. I use `cities1000.txt` - 167,000 cities worldwide with population > 1,000. After trimming to only needed columns (name, latitude, longitude, country code, population), it compresses to a ~6MB TSV file embedded in the app bundle.
+GeoNames is an open geographic database. I use `cities1000.txt` - 167,000 cities worldwide with population > 1,000. After trimming to only needed columns (name, latitude, longitude, country code, population), it compresses to a ~6MB TSV file embedded in the bundle.
 
 Why `cities1000` and not `cities15000` (33K cities, pop > 15K)? The smaller dataset missed real cities. Bujanovac, Serbia (~18K residents) wasn't in it. Neither was Obiliq, Kosovo (12K). Photos in these cities resolved to the nearest larger city - often wrong. The 5x increase in dataset size (1.2MB → 6MB) is worth correct results worldwide.
 
@@ -59,7 +94,7 @@ The tree is built once at initialization (~100ms for 167K cities) and is immutab
 
 ## Why "Nearest City" Isn't Enough: The Suburb Problem
 
-Pure nearest-neighbor geocoding produces results like "Lurup, Germany" instead of "Hamburg, Germany." Lurup is a Hamburg district - its city center is closer to the photo's coordinates than Hamburg's center, so the K-D Tree returns it. But no user wants to see "Lurup" when they were in Hamburg.
+Pure nearest-neighbor geocoding produces results like "Lurup, Germany" instead of "Hamburg, Germany." Lurup is a Hamburg district - its city center is closer to the photo's coordinates than Hamburg's center, so the K-D Tree returns it. But no one wants to see "Lurup" when they were in Hamburg.
 
 The opposite problem exists too: Ferizaj (60K pop, standalone city) is 33km from Pristina (550K). A naive "pick the biggest city nearby" approach would incorrectly label Ferizaj photos as Pristina.
 
@@ -82,6 +117,10 @@ Photos taken at similar locations resolve to the same city. A cache keyed by qua
 ## Smart Clustering: From Photos to Events
 
 Geocoding gives us city names. But we also need to group photos into discrete events - "Hamburg, May 9–12" and "Hamburg, June 3–5" should be separate trips, not one giant bucket.
+
+The demo below runs the first two rules of that pipeline live in your browser on a synthetic month of photos. Every dot is a photo placed by capture time; the cards are the events the rules produce.
+
+<ClusterDemo />
 
 ### Phase 1: Time + Distance Splitting
 
@@ -112,6 +151,53 @@ This is the critical step. After geocoding determines cluster names and anchor c
 
 The city-name verification is the key insight that prevents cross-city contamination. Without it, Pristina photos were appearing in Vranje events because they were within 50km of Vranje's cluster anchor.
 
+The whole pipeline, phase by phase, with the parameters each one reads:
+
+<PhaseRail
+  phases={[
+    {
+      title: 'Split on time and distance',
+      body: 'Photos sort chronologically. A new candidate cluster starts whenever the gap to the previous photo exceeds the split threshold, or the Haversine distance jumps past 50 km.',
+      params: [
+        { name: 'splitTimeThreshold', value: '6h' },
+        { name: 'distanceThresholdKm', value: '50' },
+      ],
+    },
+    {
+      title: 'Merge the same place',
+      body: 'Adjacent clusters at the same quantized location merge across gaps up to 48 hours, so an overnight stay survives instead of shattering at every sunrise.',
+      params: [{ name: 'mergeTimeThreshold', value: '48h' }],
+    },
+    {
+      title: 'Resolve cities offline',
+      body: 'Each cluster anchor resolves through the K-D Tree over the bundled GeoNames dataset, with suburb detection folding districts into their metropolis. No network, no rate limits.',
+      params: [
+        { name: 'cities1000.tsv', value: '167,000 cities' },
+        { name: 'suburbRadiusKm', value: '20' },
+        { name: 'metropolisThreshold', value: '100,000' },
+      ],
+    },
+    {
+      title: 'Merge again on the resolved name',
+      body: 'Two clusters at different coordinates that both geocode to the same city name collapse into one event when they fall inside the merge window.',
+      params: [{ name: 'mergeTimeThreshold', value: '48h' }],
+    },
+    {
+      title: 'Rebuild each event by chain',
+      body: 'Anchored on the city center, every library photo within 50 km is verified against the same city name, then chained through 24-hour neighbour links forward and backward.',
+      params: [
+        { name: 'chainGapSeconds', value: '24h' },
+        { name: 'locationThresholdKm', value: '50' },
+      ],
+    },
+    {
+      title: 'Sweep the photos with no GPS',
+      body: 'Once the chain fixes the date range, photos without coordinates that fall inside that window join the event. Nothing gets assigned twice.',
+      params: [{ name: 'includeScreenshots', value: 'configurable' }],
+    },
+  ]}
+/>
+
 ### The Pre-Computed Dictionary Optimization
 
 The naive approach - calling `nearestCity()` for each photo in each cluster's filter - is O(photos × clusters × log N). With 8K photos and 500 clusters, that's 4 million K-D Tree lookups.
@@ -124,7 +210,7 @@ The per-cluster filter then does a dictionary lookup - O(1). Total: O(M log N) p
 
 ## Chain Expansion: Capturing Entire Trips
 
-The original implementation used a fixed ±12-hour window around each event photo. Upload one photo from a 5-day Hamburg trip → only photos within 12 hours matched. 45 out of 163. Wrong.
+The original implementation used a fixed ±12-hour window around each event photo. Start from one photo of a 5-day Hamburg trip → only photos within 12 hours matched. 45 out of 163. Wrong.
 
 ### The Algorithm
 
@@ -134,11 +220,13 @@ Chain expansion works like a flood fill on the time axis:
 2. **Forward pass:** Walk the sorted timeline. If photo N is included and photo N+1 is within 24 hours → include N+1
 3. **Backward pass:** Same, expanding left
 
-Each newly-included photo extends the chain. A 5-day trip where you took at least one photo per day chains together entirely from a single seed.
+Each newly-included photo extends the chain. A 5-day trip where you took at least one photo per day chains together entirely from a single seed. Switch the demo below between the two strategies to see what each one reaches from the same seed photo:
+
+<ChainDemo />
 
 ### No-GPS Photo Sweep
 
-After the chain establishes the trip's date range using GPS-confirmed photos, a final sweep includes photos without GPS (WhatsApp images, saved files, screenshots) that fall within that window. These couldn't pass the location filter (no coordinates to verify), but they're temporally anchored to the trip. The screenshot toggle controls whether screenshots are included in this sweep.
+After the chain establishes the trip's date range using GPS-confirmed photos, a final sweep includes photos without GPS (messaging saves, screenshots, older cameras) that fall within that window. These couldn't pass the location filter (no coordinates to verify), but they're temporally anchored to the trip. A configuration flag controls whether screenshots join that sweep.
 
 ```text
 Seed: May 9 21:17 (Hamburg port photo)
@@ -154,7 +242,7 @@ Result: May 9 14:22 to May 12 13:17 - entire trip captured
 | K-D Tree build (167K cities) | O(N log N) | ~100ms (once) |
 | Single geocode lookup | O(log N) | ~0.01ms |
 | Pre-compute city names (8K photos) | O(M log N) | ~100ms |
-| Per-cluster chain filter | O(M) dict lookup | <1ms |
+| Per-cluster chain filter | O(M) dict lookup | &lt;1ms |
 | Full pipeline (8K photos → 500 events) | O(M log N + M×C) | ~2–5 seconds |
 
 Compare to CLGeocoder: 45+ seconds for 45 lookups, then you're rate-limited.
@@ -170,7 +258,7 @@ import GeoClusteringSDK
 
 let sdk = GeoClusteringService()
 let events = await sdk.clusterItems(itemMetadata) { phase in
-    // Update UI with progress
+    // Observe progress
 }
 // events = [GeoCluster(name: "Hamburg, Germany", photoCount: ...)]
 
