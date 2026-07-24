@@ -1,0 +1,170 @@
+---
+/** Metric tiles. Numeric values count up once the row scrolls into view. */
+interface Tile {
+  label: string;
+  value: number;
+  suffix?: string;
+  decimals?: number;
+  sub: string;
+}
+
+interface Props {
+  tiles: Tile[];
+}
+
+const { tiles } = Astro.props;
+---
+
+<div class="tiles" data-stat-tiles>
+  {
+    tiles.map((tile, i) => (
+      <div class="tiles__item" data-reveal style={`--d:${(i % 4) * 60}ms`}>
+        <span class="tiles__label">{tile.label}</span>
+        <span
+          class="tiles__value"
+          data-count={tile.value}
+          data-suffix={tile.suffix ?? ''}
+          data-decimals={tile.decimals ?? 0}
+        >
+          0{tile.suffix ?? ''}
+        </span>
+        <span class="tiles__sub">{tile.sub}</span>
+      </div>
+    ))
+  }
+</div>
+
+<script is:inline>
+  (() => {
+    function initStatTiles() {
+      const roots = document.querySelectorAll('[data-stat-tiles]');
+      if (!roots.length) return;
+
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+
+      const format = (value, decimals, suffix) =>
+        (decimals
+          ? value.toFixed(decimals)
+          : Math.round(value).toLocaleString('en-US')) + suffix;
+
+      const countUp = (el) => {
+        const target = parseFloat(el.dataset.count);
+        const decimals = parseInt(el.dataset.decimals || '0', 10);
+        const suffix = el.dataset.suffix || '';
+        if (reduce) {
+          el.textContent = format(target, decimals, suffix);
+          return;
+        }
+        const duration = 1200;
+        let start = null;
+        const frame = (ts) => {
+          if (start === null) start = ts;
+          const p = Math.min(1, (ts - start) / duration);
+          const eased = 1 - Math.pow(1 - p, 3);
+          el.textContent = format(target * eased, decimals, suffix);
+          if (p < 1) requestAnimationFrame(frame);
+          else el.textContent = format(target, decimals, suffix);
+        };
+        requestAnimationFrame(frame);
+      };
+
+      const pending = new Set();
+      const settle = (el) => {
+        pending.delete(el);
+        io.unobserve(el);
+        if (!pending.size) window.removeEventListener('scroll', onScroll);
+      };
+      const finalValue = (el) =>
+        format(
+          parseFloat(el.dataset.count),
+          parseInt(el.dataset.decimals || '0', 10),
+          el.dataset.suffix || '',
+        );
+
+      const io = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            settle(entry.target);
+            countUp(entry.target);
+          });
+        },
+        { threshold: 0.4 },
+      );
+
+      // A fast jump can carry the tiles past the viewport without the observer
+      // ever seeing them intersect; land those on their final value.
+      let ticking = false;
+      const onScroll = () => {
+        if (ticking) return;
+        ticking = true;
+        requestAnimationFrame(() => {
+          ticking = false;
+          pending.forEach((el) => {
+            if (el.getBoundingClientRect().bottom < 0) {
+              el.textContent = finalValue(el);
+              settle(el);
+            }
+          });
+        });
+      };
+
+      roots.forEach((root) => {
+        root.querySelectorAll('[data-count]').forEach((el) => {
+          pending.add(el);
+          io.observe(el);
+        });
+      });
+      if (pending.size) {
+        window.addEventListener('scroll', onScroll, { passive: true });
+      }
+    }
+
+    if (document.readyState !== 'loading') initStatTiles();
+    else document.addEventListener('DOMContentLoaded', initStatTiles);
+  })();
+</script>
+
+<style>
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--sp-3);
+    margin-block: var(--sp-6);
+  }
+  @media (max-width: 720px) {
+    .tiles {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+  .tiles__item {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-subtle);
+    padding: var(--sp-4);
+  }
+  .tiles__label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+  .tiles__value {
+    display: block;
+    font-size: var(--fs-xl);
+    font-weight: 680;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    margin-top: 0.35rem;
+  }
+  .tiles__sub {
+    display: block;
+    font-size: var(--fs-xs);
+    color: var(--fg-muted);
+    margin-top: 0.2rem;
+  }
+</style>

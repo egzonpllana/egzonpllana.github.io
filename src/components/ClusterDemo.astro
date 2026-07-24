@@ -1,0 +1,739 @@
+---
+/**
+ * Live clustering demo: a synthetic month of photos on a timeline collapses
+ * into events. The grouping is computed in the browser with the same two rules
+ * the article describes - time/distance split, then same-place merge.
+ */
+
+// [day of month, hour, city index]
+const PHOTOS: [number, number, number][] = [
+  [1, 18.0, 0],
+  [1, 18.3, 0],
+  [1, 18.8, 0],
+  [1, 19.5, 0],
+  [2, 12.0, 0],
+  [2, 12.4, 0],
+  [2, 13.1, 0],
+  [5, 9.0, 0],
+  [5, 9.3, 0],
+  [5, 10.1, 0],
+  [5, 10.4, 0],
+  [8, 19.0, 0],
+  [8, 19.4, 0],
+  [8, 20.2, 0],
+  [8, 20.9, 0],
+  [9, 14.2, 1],
+  [9, 17.0, 1],
+  [9, 21.3, 1],
+  [10, 8.5, 1],
+  [10, 11.2, 1],
+  [10, 13.5, 1],
+  [10, 17.8, 1],
+  [10, 22.0, 1],
+  [11, 9.5, 1],
+  [11, 12.0, 1],
+  [11, 15.3, 1],
+  [11, 20.1, 1],
+  [12, 8.0, 1],
+  [12, 13.2, 1],
+  [16, 11.0, 0],
+  [16, 11.5, 0],
+  [16, 13.0, 0],
+  [16, 16.2, 0],
+  [16, 16.6, 0],
+  [17, 12.0, 0],
+  [17, 12.8, 0],
+  [17, 14.5, 0],
+  [20, 18.5, 0],
+  [20, 19.0, 0],
+  [22, 9.0, 0],
+  [22, 10.2, 0],
+  [23, 10.0, 2],
+  [23, 10.5, 2],
+  [23, 12.2, 2],
+  [23, 15.0, 2],
+  [23, 22.0, 2],
+  [24, 9.5, 2],
+  [24, 11.0, 2],
+  [24, 13.5, 2],
+  [27, 10.0, 3],
+  [27, 11.5, 3],
+  [27, 13.0, 3],
+  [27, 15.5, 3],
+  [29, 17.0, 0],
+  [29, 17.5, 0],
+  [29, 19.2, 0],
+];
+
+const CITIES = [
+  { name: 'Berlin, Germany', color: '#3d8bd5' },
+  { name: 'Hamburg, Germany', color: '#d98a3c' },
+  { name: 'Lisbon, Portugal', color: '#8c6fd6' },
+  { name: 'Prague, Czechia', color: '#2fa37a' },
+];
+
+const SPLIT_OPTIONS = [3, 6, 12, 24];
+const MERGE_OPTIONS = [12, 24, 48];
+---
+
+<figure class="cd" data-cluster-demo data-reveal>
+  <div class="cd__frame">
+    <div class="cd__top">
+      <span class="cd__label"
+        >{PHOTOS.length} photos · one month · four cities</span
+      >
+      <div class="cd__controls">
+        <div class="cd__chips" role="group" aria-label="Split threshold, hours">
+          <span class="cd__chip-label">split</span>
+          {
+            SPLIT_OPTIONS.map((h) => (
+              <button
+                type="button"
+                class:list={['cd__chip', { 'is-on': h === 6 }]}
+                data-split={h}
+              >
+                {h}h
+              </button>
+            ))
+          }
+        </div>
+        <div class="cd__chips" role="group" aria-label="Merge window, hours">
+          <span class="cd__chip-label">merge</span>
+          {
+            MERGE_OPTIONS.map((h) => (
+              <button
+                type="button"
+                class:list={['cd__chip', { 'is-on': h === 48 }]}
+                data-merge={h}
+              >
+                {h}h
+              </button>
+            ))
+          }
+        </div>
+        <button type="button" class="cd__replay" data-replay>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+            <path
+              d="M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1v2.5H8"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"></path>
+          </svg>
+          Replay
+        </button>
+      </div>
+    </div>
+
+    <p class="cd__caption" data-caption>
+      <span class="cd__pulse" aria-hidden="true"></span>
+      <span data-caption-text>Scroll on - it runs itself.</span>
+    </p>
+
+    <div class="cd__stage" data-stage>
+      <div class="cd__band" data-band>
+        <span class="cd__band-hint">Photo library - unsorted</span>
+        <div class="cd__ticks" data-ticks></div>
+      </div>
+      <div class="cd__events" data-events aria-live="polite"></div>
+    </div>
+  </div>
+  <figcaption>
+    Every dot is a photo, placed by capture time. Phase 1 splits the timeline
+    whenever the gap exceeds the split threshold or the next photo is more than
+    50 km away; phase 2 merges neighbouring clusters that resolved to the same
+    place within the merge window. Change either control to re-cluster the same
+    photos at a different granularity.
+  </figcaption>
+</figure>
+
+<script is:inline define:vars={{ PHOTOS, CITIES }}>
+  (() => {
+    function initClusterDemo() {
+      const root = document.querySelector('[data-cluster-demo]');
+      if (!root || root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const stage = root.querySelector('[data-stage]');
+      const band = root.querySelector('[data-band]');
+      const ticksEl = root.querySelector('[data-ticks]');
+      const eventsEl = root.querySelector('[data-events]');
+      const captionEl = root.querySelector('[data-caption]');
+      const captionText = root.querySelector('[data-caption-text]');
+      const replayBtn = root.querySelector('[data-replay]');
+      if (!stage || !band || !eventsEl) return;
+
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+
+      const MONTH = 'May';
+      const T_MAX = 30 * 24;
+      const photos = PHOTOS.map((p, i) => ({
+        id: i,
+        t: (p[0] - 1) * 24 + p[1],
+        day: p[0],
+        city: p[2],
+      })).sort((a, b) => a.t - b.t);
+
+      let splitHours = 6;
+      let mergeHours = 48;
+      let clusters = [];
+      let timers = [];
+      let playing = false;
+      let hasRun = false;
+
+      // Phase 1: a new cluster starts on a time gap or a city change (the
+      // 50 km distance rule - photos in different cities are always > 50 km).
+      function rawSplit(gapHours) {
+        const out = [];
+        let current = null;
+        photos.forEach((p) => {
+          const brk =
+            !current ||
+            p.t - current.items[current.items.length - 1].t > gapHours ||
+            p.city !== current.city;
+          if (brk) {
+            current = { city: p.city, items: [] };
+            out.push(current);
+          }
+          current.items.push(p);
+        });
+        return out;
+      }
+
+      // Phase 2 and 3: consecutive clusters at the same place merge when the
+      // gap between them stays inside the merge window.
+      function merge(input, windowHours) {
+        const out = [];
+        input.forEach((c) => {
+          const prev = out[out.length - 1];
+          const gap = prev
+            ? c.items[0].t - prev.items[prev.items.length - 1].t
+            : Infinity;
+          if (prev && prev.city === c.city && gap <= windowHours) {
+            prev.items = prev.items.concat(c.items);
+          } else {
+            out.push({ city: c.city, items: c.items.slice() });
+          }
+        });
+        return out;
+      }
+
+      function nameFor(c) {
+        return CITIES[c.city].name;
+      }
+      function rangeLabel(c) {
+        const d1 = c.items[0].day;
+        const d2 = c.items[c.items.length - 1].day;
+        const span = d1 === d2 ? `${MONTH} ${d1}` : `${MONTH} ${d1}–${d2}`;
+        return `${c.items.length} photos · ${span}`;
+      }
+
+      [1, 8, 15, 22, 29].forEach((d) => {
+        const el = document.createElement('span');
+        el.className = 'cd__tick';
+        el.textContent = `${MONTH} ${d}`;
+        // Inset so the first and last labels are not clipped by the frame.
+        el.style.left = `${(3 + ((((d - 1) * 24) / T_MAX) * 94)).toFixed(3)}%`;
+        ticksEl.appendChild(el);
+      });
+
+      // Deterministic vertical scatter so the band reads as a photo pile.
+      function jitter(i) {
+        const x = Math.sin(i * 127.1) * 43758.5453;
+        return x - Math.floor(x);
+      }
+      const dots = photos.map((p, i) => {
+        const el = document.createElement('span');
+        el.className = 'cd__dot';
+        stage.appendChild(el);
+        return { p, el, jy: jitter(i) };
+      });
+      const indexOf = new Map(photos.map((p, i) => [p, i]));
+
+      function placeOnTimeline() {
+        const bw = band.clientWidth;
+        const bh = band.clientHeight;
+        dots.forEach((d) => {
+          const x = bw * 0.03 + (d.p.t / T_MAX) * (bw * 0.94) - 5;
+          const y = band.offsetTop + 24 + d.jy * (bh - 42);
+          d.el.style.transitionDuration = '0s';
+          d.el.style.transform = `translate(${x}px, ${y}px)`;
+          void d.el.offsetHeight;
+          d.el.style.transitionDuration = '';
+        });
+      }
+
+      function buildEvents(list) {
+        clusters = list;
+        eventsEl.innerHTML = '';
+        clusters.forEach((c) => {
+          const card = document.createElement('div');
+          card.className = 'cd__event';
+          card.style.setProperty('--ac', CITIES[c.city].color);
+          card.innerHTML =
+            '<span class="cd__event-name"><i></i><b></b></span>' +
+            '<span class="cd__event-meta"></span>' +
+            '<span class="cd__slots"></span>';
+          card.querySelector('b').textContent = nameFor(c);
+          card.querySelector('.cd__event-meta').textContent = rangeLabel(c);
+          const slots = card.querySelector('.cd__slots');
+          c.slotEls = c.items.map(() => {
+            const s = document.createElement('i');
+            s.className = 'cd__slot';
+            slots.appendChild(s);
+            return s;
+          });
+          c.cardEl = card;
+          eventsEl.appendChild(card);
+        });
+      }
+
+      function slotPos(slotEl) {
+        const r = slotEl.getBoundingClientRect();
+        const s = stage.getBoundingClientRect();
+        return { x: r.left - s.left, y: r.top - s.top };
+      }
+
+      function later(fn, ms) {
+        timers.push(setTimeout(fn, reduce ? 0 : ms));
+      }
+      function clearTimers() {
+        timers.forEach(clearTimeout);
+        timers = [];
+      }
+      function setCaption(html, done) {
+        captionText.innerHTML = html;
+        captionEl.classList.toggle('is-done', !!done);
+      }
+
+      function colorDots() {
+        clusters.forEach((c) => {
+          c.items.forEach((p) => {
+            dots[indexOf.get(p)].el.style.background = CITIES[c.city].color;
+          });
+        });
+      }
+
+      function flyDots(stagger, instant) {
+        clusters.forEach((c) => {
+          c.items.forEach((p, k) => {
+            const d = dots[indexOf.get(p)];
+            const pos = slotPos(c.slotEls[k]);
+            const move = () => {
+              if (instant) d.el.style.transitionDuration = '0s';
+              d.el.style.transform = `translate(${pos.x}px, ${pos.y}px)`;
+              if (instant) {
+                void d.el.offsetHeight;
+                d.el.style.transitionDuration = '';
+              }
+            };
+            if (stagger) later(move, stagger * indexOf.get(p));
+            else move();
+          });
+          later(() => c.cardEl.classList.add('is-shown'), 200);
+        });
+      }
+
+      function reset() {
+        clearTimers();
+        buildEvents(rawSplit(splitHours));
+        eventsEl.classList.add('is-hidden');
+        dots.forEach((d) => {
+          d.el.style.background = '';
+        });
+        placeOnTimeline();
+      }
+
+      function play() {
+        if (playing) return;
+        playing = true;
+        hasRun = true;
+        reset();
+        setCaption(`Reading library metadata - <b>${photos.length} items</b>`);
+
+        later(() => {
+          setCaption(
+            'Geocoding - K-D tree over 167,000 cities, <b>0 network calls</b>',
+          );
+          buildEvents(rawSplit(splitHours));
+          colorDots();
+        }, 900);
+
+        later(() => {
+          const raw = rawSplit(splitHours);
+          setCaption(
+            `Phase 1 - split on gap &gt; <b>${splitHours}h</b> or distance &gt; <b>50 km</b>: ${raw.length} candidate clusters`,
+          );
+          eventsEl.classList.remove('is-hidden');
+          buildEvents(raw);
+          colorDots();
+          flyDots(8);
+        }, 1900);
+
+        later(() => {
+          const merged = merge(rawSplit(splitHours), mergeHours);
+          setCaption(
+            `Phases 2-3 - merge same place within <b>${mergeHours}h</b>`,
+          );
+          buildEvents(merged);
+          colorDots();
+          flyDots(4);
+        }, 3600);
+
+        later(() => {
+          setCaption(
+            `Done - <b>${clusters.length} events</b> from ${photos.length} photos.`,
+            true,
+          );
+          playing = false;
+        }, 5000);
+      }
+
+      function refresh() {
+        clearTimers();
+        playing = false;
+        const raw = rawSplit(splitHours);
+        const merged = merge(raw, mergeHours);
+        eventsEl.classList.remove('is-hidden');
+        buildEvents(merged);
+        colorDots();
+        flyDots(reduce ? 0 : 3);
+        setCaption(
+          `split <b>${splitHours}h</b> · merge <b>${mergeHours}h</b> - ${raw.length} clusters collapse to <b>${merged.length} events</b>. Same photos, different granularity.`,
+          true,
+        );
+      }
+
+      root.querySelectorAll('[data-split]').forEach((chip) => {
+        chip.addEventListener('click', () => {
+          root
+            .querySelectorAll('[data-split]')
+            .forEach((c) => c.classList.remove('is-on'));
+          chip.classList.add('is-on');
+          splitHours = parseInt(chip.dataset.split, 10);
+          if (hasRun) refresh();
+          else play();
+        });
+      });
+      root.querySelectorAll('[data-merge]').forEach((chip) => {
+        chip.addEventListener('click', () => {
+          root
+            .querySelectorAll('[data-merge]')
+            .forEach((c) => c.classList.remove('is-on'));
+          chip.classList.add('is-on');
+          mergeHours = parseInt(chip.dataset.merge, 10);
+          if (hasRun) refresh();
+          else play();
+        });
+      });
+      replayBtn.addEventListener('click', () => {
+        playing = false;
+        play();
+      });
+
+      let resizeTimer = null;
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          if (playing) return;
+          if (hasRun) flyDots(0, true);
+          else placeOnTimeline();
+        }, 120);
+      });
+
+      reset();
+
+      const io = new IntersectionObserver(
+        (entries) => {
+          if (entries[0].isIntersecting && !hasRun) {
+            play();
+            io.disconnect();
+          }
+        },
+        { threshold: 0.35 },
+      );
+      io.observe(stage);
+    }
+
+    if (document.readyState !== 'loading') initClusterDemo();
+    else document.addEventListener('DOMContentLoaded', initClusterDemo);
+  })();
+</script>
+
+<style>
+  .cd {
+    margin-block: var(--sp-6);
+  }
+  .cd__frame {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--bg-subtle);
+    padding: var(--sp-5);
+  }
+  .cd__top {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    flex-wrap: wrap;
+  }
+  .cd__label {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+  .cd__controls {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+  }
+  .cd__chips {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+  }
+  .cd__chip-label {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.06em;
+    color: var(--fg-faint);
+    padding-inline: var(--sp-2) var(--sp-1);
+  }
+  .cd__chip {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    font-weight: 600;
+    color: var(--fg-muted);
+    padding: 0.28rem 0.6rem;
+    border-radius: 999px;
+    transition:
+      background 0.18s var(--ease),
+      color 0.18s var(--ease);
+  }
+  .cd__chip:hover {
+    background: var(--surface-hover);
+  }
+  .cd__chip.is-on {
+    background: var(--accent-text);
+    color: var(--accent-fg);
+  }
+  .cd__replay {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    font-weight: 600;
+    color: var(--fg-muted);
+    padding: 0.36rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    transition:
+      color 0.18s var(--ease),
+      border-color 0.18s var(--ease);
+  }
+  .cd__replay:hover {
+    color: var(--accent-text);
+    border-color: var(--accent);
+  }
+
+  .cd__caption {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-top: var(--sp-4);
+    min-height: 1.6rem;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+  .cd__caption :global(b) {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .cd__pulse {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--fg-faint);
+    flex: none;
+    animation: cd-pulse 1.4s ease-in-out infinite;
+  }
+  .cd__caption.is-done .cd__pulse {
+    background: var(--accent);
+    animation: none;
+  }
+  @keyframes cd-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  .cd__stage {
+    position: relative;
+    margin-top: var(--sp-4);
+  }
+  .cd__band {
+    position: relative;
+    height: 92px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+  .cd__band-hint {
+    position: absolute;
+    left: 10px;
+    top: 6px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+  .cd__ticks {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -22px;
+    height: 18px;
+  }
+  /* Ticks, event cards and dots are created by the script, so they carry no
+     scope attribute - their rules have to be global. */
+  .cd :global(.cd__tick) {
+    position: absolute;
+    transform: translateX(-50%);
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-faint);
+    white-space: nowrap;
+  }
+  .cd :global(.cd__tick)::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: -7px;
+    width: 1px;
+    height: 5px;
+    background: var(--border-strong);
+  }
+
+  .cd__events {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-3);
+    align-items: flex-start;
+    margin-top: 42px;
+    min-height: 132px;
+    transition: opacity 0.3s var(--ease);
+  }
+  .cd__events.is-hidden {
+    opacity: 0;
+  }
+  .cd :global(.cd__event) {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    padding: 0.6rem 0.7rem 0.7rem;
+    opacity: 0;
+    transform: translateY(6px);
+    transition:
+      opacity 0.4s var(--ease),
+      transform 0.4s var(--ease),
+      border-color 0.4s var(--ease);
+  }
+  .cd :global(.cd__event.is-shown) {
+    opacity: 1;
+    transform: none;
+    border-color: color-mix(in srgb, var(--ac) 45%, transparent);
+  }
+  .cd :global(.cd__event-name) {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: var(--fs-xs);
+    font-weight: 620;
+    color: var(--fg);
+    white-space: nowrap;
+  }
+  .cd :global(.cd__event-name i) {
+    width: 8px;
+    height: 8px;
+    border-radius: 3px;
+    background: var(--ac);
+    flex: none;
+  }
+  .cd :global(.cd__event-meta) {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-faint);
+    margin-top: 2px;
+  }
+  .cd :global(.cd__slots) {
+    display: grid;
+    grid-template-columns: repeat(6, 12px);
+    gap: 3px;
+    margin-top: 0.5rem;
+  }
+  .cd :global(.cd__slot) {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    background: var(--bg-subtle);
+  }
+  .cd :global(.cd__dot) {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    background: var(--border-strong);
+    will-change: transform;
+    transition:
+      transform 0.9s cubic-bezier(0.3, 0.9, 0.3, 1),
+      background 0.5s var(--ease);
+  }
+
+  .cd figcaption {
+    margin-top: var(--sp-3);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+
+  @media (max-width: 620px) {
+    .cd__frame {
+      padding: var(--sp-4);
+    }
+    .cd__controls {
+      margin-left: 0;
+      width: 100%;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cd :global(.cd__dot),
+    .cd :global(.cd__event) {
+      transition: none;
+    }
+    .cd__pulse {
+      animation: none;
+    }
+  }
+</style>
