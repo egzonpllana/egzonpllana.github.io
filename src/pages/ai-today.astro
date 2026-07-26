@@ -2,6 +2,7 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 import SectionHeading from '../components/SectionHeading.astro';
 import AiTalkSlideshow from '../components/AiTalkSlideshow.astro';
+import ViewCount from '../components/ViewCount.astro';
 import { AI_TALK_INTRO, AI_TALK_META } from '../data/aiTalk';
 import { formatDate, isoDate } from '../lib/format-date';
 
@@ -18,9 +19,12 @@ const publishedDate = new Date('2026-07-07');
         description={AI_TALK_INTRO.lead}
         descFull
       />
-      <time class="ai-date" datetime={isoDate(publishedDate)} data-reveal>
-        {formatDate(publishedDate)}
-      </time>
+      <p class="ai-date" data-reveal>
+        <time datetime={isoDate(publishedDate)}
+          >{formatDate(publishedDate)}</time
+        >
+        <ViewCount path={Astro.url.pathname} />
+      </p>
       <p class="ai-intro" data-reveal>{AI_TALK_INTRO.body}</p>
       <AiTalkSlideshow />
     </div>

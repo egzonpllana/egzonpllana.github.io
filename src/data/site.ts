@@ -12,6 +12,25 @@ export const SITE = {
   locale: 'en',
 } as const;
 
+/**
+ * GoatCounter analytics. `code` is the subdomain of your GoatCounter site
+ * (https://<code>.goatcounter.com) - it is public by design: the script only
+ * ever writes pageviews. The dashboard itself stays private in GoatCounter's
+ * site settings ("Dashboard viewable by: private").
+ *
+ * Leave `code` empty to disable tracking and hide every view counter.
+ * `showCounts` needs "Allow adding visitor counts to your website" enabled in
+ * GoatCounter settings, which exposes only per-path totals - nothing else.
+ */
+export const ANALYTICS = {
+  code: '',
+  showCounts: true,
+} as const;
+
+export const ANALYTICS_ENABLED = ANALYTICS.code.length > 0;
+export const VIEW_COUNTS_ENABLED = ANALYTICS_ENABLED && ANALYTICS.showCounts;
+export const COUNTER_BASE = `https://${ANALYTICS.code}.goatcounter.com`;
+
 export const NAV: NavItem[] = [
   { label: 'Portfolio', href: '/' },
   { label: 'Articles', href: '/articles/' },
