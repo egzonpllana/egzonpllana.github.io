@@ -1,0 +1,79 @@
+---
+import { COUNTER_BASE, VIEW_COUNTS_ENABLED } from '../data/site';
+
+interface Props {
+  /** Page path to report on, e.g. "/articles/foo/". Must match the tracked URL. */
+  path: string;
+  /** Render a leading separator dot (for inline meta rows). */
+  separator?: boolean;
+}
+
+const { path, separator = true } = Astro.props;
+---
+
+{
+  /* Hidden until the count resolves - a blocked or empty fetch leaves no gap. */
+  VIEW_COUNTS_ENABLED && (
+    <span class="views" data-views={path} data-views-base={COUNTER_BASE} hidden>
+      {separator && (
+        <span class="views__dot" aria-hidden="true">
+          ·
+        </span>
+      )}
+      <span class="views__n" data-views-n />
+    </span>
+  )
+}
+
+<script>
+  // Fill every [data-views] element from GoatCounter's public per-path counter.
+  // One request per unique path; failures (blocked, offline, no hits yet) leave
+  // the element hidden. Hoisted by Astro, so it ships once per page.
+  const elements = document.querySelectorAll<HTMLElement>('[data-views]');
+
+  const groups = new Map<string, HTMLElement[]>();
+  for (const element of elements) {
+    const path = element.dataset.views;
+    const base = element.dataset.viewsBase;
+    if (!path || !base) continue;
+    const key = `${base}|${path}`;
+    const group = groups.get(key);
+    if (group) group.push(element);
+    else groups.set(key, [element]);
+  }
+
+  for (const [key, group] of groups) {
+    const [base, path] = key.split('|');
+    void (async () => {
+      try {
+        const response = await fetch(
+          `${base}/counter/${encodeURIComponent(path)}.json`,
+        );
+        if (!response.ok) return;
+        const data = await response.json();
+        // Total pageviews, not unique visitors - repeat reads count.
+        const label: string = data.count || data.count_unique;
+        const count = Number.parseInt(String(label).replace(/\D/g, ''), 10);
+        if (!count) return;
+        const text = `${label} ${count === 1 ? 'read' : 'reads'}`;
+        for (const element of group) {
+          const slot = element.querySelector('[data-views-n]');
+          if (!slot) continue;
+          slot.textContent = text;
+          element.hidden = false;
+        }
+      } catch {
+        /* counts are decorative - never let a failure surface */
+      }
+    })();
+  }
+</script>
+
+<style>
+  .views[hidden] {
+    display: none;
+  }
+  .views__dot {
+    margin-right: var(--sp-2);
+  }
+</style>

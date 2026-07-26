@@ -3,7 +3,7 @@ import '@fontsource-variable/inter';
 import '@fontsource-variable/jetbrains-mono';
 import interLatinWoff2 from '@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url';
 import monoLatinWoff2 from '@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url';
-import { SITE } from '../data/site';
+import { ANALYTICS_ENABLED, COUNTER_BASE, SITE } from '../data/site';
 
 interface Props {
   title: string;
@@ -180,5 +180,17 @@ const jsonLd = isHome
 {
   jsonLd && (
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+  )
+}
+
+{
+  /* GoatCounter: cookieless, no personal data, skips localhost on its own. */
+  ANALYTICS_ENABLED && (
+    <script
+      is:inline
+      async
+      data-goatcounter={`${COUNTER_BASE}/count`}
+      src="https://gc.zgo.at/count.js"
+    />
   )
 }
