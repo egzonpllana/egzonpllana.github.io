@@ -1,0 +1,540 @@
+---
+/**
+ * Retry-taxonomy simulator. Pick a failure; see which of the three verdicts it
+ * carries, and what that means separately for an idempotent GET and a
+ * non-idempotent POST. The backoff ladder is re-rolled on every run, which is
+ * the point: the delays are fully jittered, not fixed.
+ */
+
+interface Failure {
+  key: string;
+  label: string;
+  verdict: 'safe' | 'ambiguous' | 'terminal';
+  reason: string;
+}
+
+const FAILURES: Failure[] = [
+  {
+    key: 'offline',
+    label: 'no connectivity',
+    verdict: 'safe',
+    reason:
+      'The request never left the device, so nothing can have been created on the other side.',
+  },
+  {
+    key: 'timeout',
+    label: 'request timed out',
+    verdict: 'ambiguous',
+    reason:
+      'A timeout says the answer did not arrive. It says nothing about whether the work was done.',
+  },
+  {
+    key: 'lost-sent',
+    label: 'connection lost, bytes sent',
+    verdict: 'ambiguous',
+    reason:
+      'Body bytes went out before the socket died. The server may hold a complete request.',
+  },
+  {
+    key: 'lost-nothing',
+    label: 'connection lost, nothing sent',
+    verdict: 'safe',
+    reason:
+      'A progress witness recorded that no body byte was ever written. There is nothing on the other side to duplicate.',
+  },
+  {
+    key: '500',
+    label: 'server error, 5xx',
+    verdict: 'safe',
+    reason:
+      'The server named itself as the failure. Retrying is the documented response.',
+  },
+  {
+    key: '429',
+    label: 'rate limited, 429',
+    verdict: 'safe',
+    reason: 'An explicit instruction to come back later, not a failure at all.',
+  },
+  {
+    key: '400',
+    label: 'rejected, 4xx',
+    verdict: 'terminal',
+    reason:
+      'The request was understood and refused. The same bytes will be refused again.',
+  },
+  {
+    key: 'identity',
+    label: 'missing product identity',
+    verdict: 'terminal',
+    reason:
+      'Caught before the request is even built. Retrying cannot invent the field that is missing.',
+  },
+];
+
+const VERDICT_LABEL: Record<string, string> = {
+  safe: 'safeToRetry',
+  ambiguous: 'ambiguous',
+  terminal: 'terminal',
+};
+
+/** Mirrors the two schedules in the client. */
+const SCHEDULES = {
+  poll: { attempts: 4, base: 1, max: 8 },
+  upload: { attempts: 3, base: 2, max: 10 },
+};
+---
+
+<figure class="rl" data-retry-ladder data-reveal>
+  <div class="rl__frame">
+    <div class="rl__top">
+      <span class="rl__label">one failure, two verdicts</span>
+      <button type="button" class="rl__replay" data-replay>
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1v2.5H8"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"></path>
+        </svg>
+        Re-roll
+      </button>
+    </div>
+
+    <div class="rl__chips" role="group" aria-label="Failure mode">
+      {
+        FAILURES.map((f, i) => (
+          <button
+            type="button"
+            class:list={['rl__chip', { 'is-on': i === 0 }]}
+            data-failure={f.key}
+          >
+            {f.label}
+          </button>
+        ))
+      }
+    </div>
+
+    <div class="rl__verdict">
+      <span class="rl__verdict-pill" data-verdict>safeToRetry</span>
+      <p class="rl__reason" data-reason></p>
+    </div>
+
+    <div class="rl__lanes" data-lanes></div>
+  </div>
+  <figcaption>
+    The same error object reaches both call sites and gets two different
+    answers, because <code>GET</code> can be repeated for free and
+    <code>POST</code> cannot. Re-roll to see the delays change: every wait is a fresh
+    random draw between zero and the ceiling, so two clients that fail together do
+    not come back together.
+  </figcaption>
+</figure>
+
+<script is:inline define:vars={{ FAILURES, SCHEDULES, VERDICT_LABEL }}>
+  (() => {
+    function initRetryLadder() {
+      const root = document.querySelector('[data-retry-ladder]');
+      if (!root || root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const lanesEl = root.querySelector('[data-lanes]');
+      const verdictEl = root.querySelector('[data-verdict]');
+      const reasonEl = root.querySelector('[data-reason]');
+      const replayBtn = root.querySelector('[data-replay]');
+      const chips = Array.from(root.querySelectorAll('[data-failure]'));
+      if (!lanesEl || !verdictEl || !reasonEl) return;
+
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+
+      let current = FAILURES[0].key;
+
+      /** Exponential growth, capped, then fully jittered — as shipped. */
+      function ladder(schedule) {
+        const out = [];
+        for (let attempt = 1; attempt < schedule.attempts; attempt++) {
+          const capped = Math.min(
+            schedule.base * Math.pow(2, attempt - 1),
+            schedule.max,
+          );
+          out.push({ ceiling: capped, delay: Math.random() * capped });
+        }
+        return out;
+      }
+
+      function laneMarkup(title, subtitle, retries, schedule) {
+        const lane = document.createElement('div');
+        lane.className = 'rl__lane';
+
+        const head = document.createElement('div');
+        head.className = 'rl__lane-head';
+
+        const name = document.createElement('span');
+        name.className = 'rl__lane-name';
+        name.textContent = title;
+        head.appendChild(name);
+
+        const verdict = document.createElement('span');
+        verdict.className = `rl__lane-tag rl__lane-tag--${retries ? 'go' : 'stop'}`;
+        verdict.textContent = retries
+          ? `retries, up to ${schedule.attempts}`
+          : 'does not retry';
+        head.appendChild(verdict);
+
+        lane.appendChild(head);
+
+        const sub = document.createElement('p');
+        sub.className = 'rl__lane-sub';
+        sub.textContent = subtitle;
+        lane.appendChild(sub);
+
+        const bars = document.createElement('div');
+        bars.className = 'rl__bars';
+
+        if (retries) {
+          const steps = ladder(schedule);
+          const widest = Math.max(...steps.map((s) => s.ceiling));
+          steps.forEach((step, i) => {
+            const row = document.createElement('div');
+            row.className = 'rl__bar-row';
+
+            const idx = document.createElement('span');
+            idx.className = 'rl__bar-idx';
+            idx.textContent = `try ${i + 2}`;
+            row.appendChild(idx);
+
+            const track = document.createElement('span');
+            track.className = 'rl__track';
+            track.style.setProperty(
+              '--ceil',
+              `${(step.ceiling / widest) * 100}%`,
+            );
+
+            const fill = document.createElement('span');
+            fill.className = 'rl__fill';
+            fill.style.width = '0%';
+            track.appendChild(fill);
+            row.appendChild(track);
+
+            const val = document.createElement('span');
+            val.className = 'rl__bar-val';
+            val.textContent = `${step.delay.toFixed(2)}s`;
+            row.appendChild(val);
+
+            bars.appendChild(row);
+
+            const target = `${(step.delay / widest) * 100}%`;
+            if (reduce) {
+              fill.style.width = target;
+            } else {
+              setTimeout(
+                () => {
+                  fill.style.width = target;
+                },
+                80 + i * 110,
+              );
+            }
+          });
+        } else {
+          const empty = document.createElement('p');
+          empty.className = 'rl__empty';
+          empty.textContent = 'Surfaces to the user on the first failure.';
+          bars.appendChild(empty);
+        }
+
+        lane.appendChild(bars);
+        return lane;
+      }
+
+      function run(key) {
+        current = key;
+        const failure = FAILURES.find((f) => f.key === key) || FAILURES[0];
+
+        chips.forEach((chip) =>
+          chip.classList.toggle('is-on', chip.dataset.failure === key),
+        );
+
+        verdictEl.textContent = VERDICT_LABEL[failure.verdict];
+        verdictEl.dataset.verdict = failure.verdict;
+        reasonEl.textContent = failure.reason;
+
+        // GET is idempotent: retry on anything that is not terminal.
+        const pollRetries = failure.verdict !== 'terminal';
+        // POST is not: only a failure proven not to have reached the server.
+        const uploadRetries = failure.verdict === 'safe';
+
+        lanesEl.innerHTML = '';
+        lanesEl.appendChild(
+          laneMarkup(
+            'GET /v1/jobs/{job_id}',
+            'Idempotent. A repeat costs one round trip and nothing else.',
+            pollRetries,
+            SCHEDULES.poll,
+          ),
+        );
+        lanesEl.appendChild(
+          laneMarkup(
+            'POST /v1/jobs',
+            'Not idempotent. A repeat may create a second job for the same scan.',
+            uploadRetries,
+            SCHEDULES.upload,
+          ),
+        );
+      }
+
+      chips.forEach((chip) =>
+        chip.addEventListener('click', () => run(chip.dataset.failure)),
+      );
+      if (replayBtn) replayBtn.addEventListener('click', () => run(current));
+
+      run(current);
+    }
+
+    if (document.readyState !== 'loading') initRetryLadder();
+    else document.addEventListener('DOMContentLoaded', initRetryLadder);
+    document.addEventListener('astro:page-load', initRetryLadder);
+  })();
+</script>
+
+<style>
+  .rl {
+    margin-block: var(--sp-6);
+
+    /* Verdict hues. Green comes from the theme accent; these two do not
+       exist as tokens, so they carry their own light/dark pair. */
+    --rl-warn: #8a5610;
+    --rl-warn-border: #c9922f;
+    --rl-warn-bg: rgba(201, 146, 47, 0.14);
+    --rl-stop: #a03636;
+    --rl-stop-border: #cf6f6f;
+    --rl-stop-bg: rgba(207, 111, 111, 0.13);
+  }
+  :global(:root[data-theme='dark']) .rl {
+    --rl-warn: #f2c76e;
+    --rl-warn-border: #a87c2c;
+    --rl-warn-bg: rgba(242, 199, 110, 0.12);
+    --rl-stop: #ff9d9d;
+    --rl-stop-border: #b35c5c;
+    --rl-stop-bg: rgba(255, 157, 157, 0.11);
+  }
+  .rl figcaption {
+    margin-top: var(--sp-3);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+  .rl__frame {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    padding: var(--sp-5);
+  }
+  .rl__top {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+  .rl__label {
+    font-size: var(--fs-xs);
+    color: var(--fg-muted);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .rl__replay {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-muted);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.24rem 0.5rem;
+    cursor: pointer;
+  }
+  .rl__replay:hover {
+    color: var(--fg);
+    border-color: var(--border-strong);
+  }
+
+  .rl__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-1);
+    margin-top: var(--sp-4);
+  }
+  .rl__chip {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-muted);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.24rem 0.5rem;
+    cursor: pointer;
+    transition:
+      color 0.2s var(--ease),
+      border-color 0.2s var(--ease),
+      background 0.2s var(--ease);
+  }
+  .rl__chip:hover {
+    color: var(--fg);
+    border-color: var(--border-strong);
+  }
+  .rl__chip.is-on {
+    color: var(--accent-text);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .rl__verdict {
+    margin-top: var(--sp-4);
+    padding-top: var(--sp-4);
+    border-top: 1px solid var(--border);
+  }
+  .rl__verdict-pill {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    padding: 0.2rem 0.5rem;
+    border: 1px solid var(--border-strong);
+    color: var(--fg);
+  }
+  .rl__verdict-pill[data-verdict='safe'] {
+    color: var(--accent-text);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .rl__verdict-pill[data-verdict='ambiguous'] {
+    color: var(--rl-warn);
+    border-color: var(--rl-warn-border);
+    background: var(--rl-warn-bg);
+  }
+  .rl__verdict-pill[data-verdict='terminal'] {
+    color: var(--rl-stop);
+    border-color: var(--rl-stop-border);
+    background: var(--rl-stop-bg);
+  }
+  .rl__reason {
+    font-size: var(--fs-sm);
+    line-height: 1.6;
+    color: var(--fg-muted);
+    margin: var(--sp-3) 0 0;
+  }
+
+  .rl__lanes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--sp-4);
+    margin-top: var(--sp-5);
+  }
+  .rl :global(.rl__lane) {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-subtle);
+    padding: var(--sp-4);
+  }
+  .rl :global(.rl__lane-head) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--sp-2);
+  }
+  .rl :global(.rl__lane-name) {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .rl :global(.rl__lane-tag) {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    padding: 0.1rem 0.35rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-strong);
+    color: var(--fg-muted);
+  }
+  .rl :global(.rl__lane-tag--go) {
+    color: var(--accent-text);
+    border-color: var(--accent);
+  }
+  .rl :global(.rl__lane-sub) {
+    font-size: var(--fs-xs);
+    line-height: 1.5;
+    color: var(--fg-muted);
+    margin: var(--sp-2) 0 0;
+  }
+
+  .rl :global(.rl__bars) {
+    margin-top: var(--sp-3);
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    min-height: 4.5rem;
+  }
+  .rl :global(.rl__bar-row) {
+    display: grid;
+    grid-template-columns: 2.6rem 1fr 2.8rem;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .rl :global(.rl__bar-idx),
+  .rl :global(.rl__bar-val) {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-faint);
+  }
+  .rl :global(.rl__bar-val) {
+    text-align: right;
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .rl :global(.rl__track) {
+    position: relative;
+    display: block;
+    height: 8px;
+    width: var(--ceil, 100%);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--fg) 8%, transparent);
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .rl :global(.rl__fill) {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.55s var(--ease);
+  }
+  .rl :global(.rl__empty) {
+    font-size: var(--fs-xs);
+    color: var(--fg-faint);
+    margin: 0;
+  }
+
+  @media (max-width: 620px) {
+    .rl__frame {
+      padding: var(--sp-4);
+    }
+    .rl__lanes {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rl :global(.rl__fill) {
+      transition: none;
+    }
+  }
+</style>

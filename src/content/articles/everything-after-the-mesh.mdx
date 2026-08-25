@@ -1,0 +1,300 @@
+---
+title: 'Everything After the Mesh'
+description: 'Shipping a 3D scanning product: a web storefront that opens a native scanner, a mesh that has to survive the wire, and a POST that is not idempotent.'
+date: 2026-08-25
+tags: ['iOS', 'Swift', '3D', 'WKWebView', 'Architecture', 'Networking']
+draft: false
+heroImage: '../../assets/covers/everything-after-the-mesh.png'
+---
+
+import BridgeSequence from '../../components/BridgeSequence.astro';
+import RetryLadder from '../../components/RetryLadder.astro';
+import PhaseRail from '../../components/PhaseRail.astro';
+import StatTiles from '../../components/StatTiles.astro';
+
+Scanning a real object with an iPhone is the part of this job that sounds hard. It isn't the part that took the time.
+
+The capture APIs are well documented and the sample code runs on the first try. What follows is the part with no sample code: putting that capture inside a product. A commerce page in a web view that opens a native scanner and expects an answer. A mesh that has to survive a wire and come back as a measurement. And a `POST` that is not idempotent, which turns out to shape more of the client than the 3D does.
+
+None of it is 3D work. All of it is the difference between a scan and a product.
+
+<StatTiles
+  tiles={[
+    {
+      label: 'Bridge contract',
+      value: 5,
+      sub: 'message names, total, web to native and back',
+    },
+    {
+      label: 'Frames uploaded',
+      value: 0,
+      sub: 'reconstruction is local; only the mesh leaves',
+    },
+    {
+      label: 'Retry verdicts',
+      value: 3,
+      sub: 'for one error, because a POST is not a GET',
+    },
+    {
+      label: 'Third-party deps',
+      value: 0,
+      sub: 'across the app and every package it links',
+    },
+  ]}
+/>
+
+---
+
+## The shape of the thing
+
+The commerce experience is a website. It has a catalogue, a basket, prices, promotions, a team shipping to it continuously, and none of that belongs in an iOS release cycle.
+
+The measurement is native. It needs LiDAR, a photogrammetry pipeline and a camera session — nothing a browser can reach.
+
+So the product is a web page that, at one specific moment, needs a native capability the browser does not have, and then needs the answer back. Everything below follows from that one sentence.
+
+The page loads in a [`WKWebView`](https://developer.apple.com/documentation/webkit/wkwebview). Native capture is presented **over** it, full-screen, not instead of it — the page stays loaded underneath, which means there is always a back, and no navigation state to rebuild when the scan ends. The result is delivered to the page and the page owns everything downstream.
+
+> **Decide which side of the boundary owns the product, and then defend it.** Every field the app understands is a field the web team cannot change alone.
+
+---
+
+## The boundary is five messages
+
+Two-way communication with a web view is not exotic. A script injected before any page script runs installs a symmetric API; [`WKScriptMessageHandler`](https://developer.apple.com/documentation/webkit/wkscriptmessagehandler) receives; `evaluateJavaScript` replies.
+
+```swift
+import WebKit
+
+let controller = WKUserContentController()
+
+// Injected at document start, main frame only, so the page can never
+// race the shim and find `window.bridge` undefined.
+controller.addUserScript(
+    WKUserScript(source: shimJS,
+                 injectionTime: .atDocumentStart,
+                 forMainFrameOnly: true)
+)
+controller.add(handler, name: "bridge")   // WKScriptMessageHandler
+
+let configuration = WKWebViewConfiguration()
+configuration.userContentController = controller
+
+let webView = WKWebView(frame: .zero, configuration: configuration)
+```
+
+The transport carries one shape — a message `name` and a JSON `payload` — and knows nothing about the product. The product vocabulary is five names layered on top. The page sends `scan.request` and `scan.status`; the app answers with `scan.started`, `scan.result` and `scan.aborted`. That is the entire surface area between a commerce site and a 3D scanner.
+
+What matters is not the mechanism. It is the contract.
+
+<BridgeSequence />
+
+### One required field, and everything else forwarded
+
+The app requires exactly one key on a scan request: which product variant to measure against. **Every other key on that payload is forwarded to the backend byte-for-byte** as its own part of the upload — same names, same JSON types, nesting intact.
+
+That single decision is the reason this integration has survived product changes without app releases. Marketing adds an attribute, a category is renamed, a new identifier appears — the web sends it, the backend reads it, and the app never learns what any of it means. It only learns the size limit: the payload is capped at 64 KB, and an oversized one is dropped rather than truncated, because a half-forwarded object is worse than none.
+
+The app parses the response for its own preview. The page gets the **untouched original**. Two consumers, one payload, and the app is never the bottleneck for a field it does not use.
+
+> **Forward what you do not understand.** A pass-through field costs you one line and buys the other team their whole release cycle back.
+
+### Belt, and also braces
+
+There is a second, independent way a scan starts. If the page never fires its message within a few seconds of finishing its load, the app reads the same identifiers straight out of the invocation URL's query string and starts anyway.
+
+This exists because the failure it prevents is invisible. A page that ships a JavaScript error, a caching layer that serves an older bundle, a market where the script is blocked — all of them produce an app that opens, looks completely healthy and does nothing. A four-second fallback turns that from a support ticket into a shrug.
+
+The fallback deliberately reads a **whitelist** of query keys, not everything present. Analytics parameters attach themselves to every link in the world; none of them should end up in a manifest that a backend will one day try to interpret.
+
+---
+
+## Four doors, one hallway
+
+A URL can reach this app four ways: a universal link into a cold launch, a universal link into a running app, a custom scheme, and ordinary in-app navigation. Four entry points, four call sites, and one very easy way to end up with four subtly different behaviours.
+
+They all funnel into a single clearing-house that answers one question — is this URL trusted — and publishes the result. Nothing routes from a delegate. Screens observe.
+
+Trust is deliberately boring: HTTPS only, and the host must be an **exact** member of a known set. Not a suffix match, not a contains. A suffix match on your own domain is a subdomain takeover away from being an open redirect into your own scanner.
+
+Two details cost real debugging time and are worth stealing:
+
+**A repeat of the same link must still route.** If the URL is the only thing you publish, tapping the same product link twice in a row produces an unchanged value, SwiftUI's `onChange` never fires, and the app just sits there. Publishing a monotonically increasing token alongside the URL fixes it. The sequence that exposes this — open a product, close it, tap the same link again — is not exotic, it is Tuesday.
+
+**Not every door deserves the same trust.** The custom scheme is the one entry point *any* installed app can call. Pointing the web view at a page on your own host is harmless; the user could browse there anyway. Silently opening the camera is not. So the clearing-house records which door a URL came through, and the automatic scan start refuses to fire for that one.
+
+> **Record the provenance of an input, not just its value.** Two identical URLs can deserve two different amounts of trust, and by the time you need to tell them apart the information is gone.
+
+---
+
+## Getting the mesh onto the wire
+
+On-device reconstruction produces a textured model in Apple's native format. The service that turns it into a measurement wants a plain mesh. The conversion itself is a solved problem — a reader, a flat value type, a writer, and adding a format means adding a writer.
+
+The interesting decisions are on the wire, not in the converter.
+
+The upload is one multipart request with three parts: a manifest, the forwarded web payload, and the mesh. The manifest is where the discipline lives.
+
+<PhaseRail
+  phases={[
+    {
+      title: 'Hash what you send, not what you have',
+      body: 'The manifest carries a SHA-256 of the exact bytes in the mesh part, and the filename it names has to match the part filename. Hashing the file you exported instead of the buffer you attached is a bug that only appears when the two diverge — and by then it is a support conversation about a scan that "uploaded fine".',
+      params: [
+        { name: 'digest', value: 'SHA-256' },
+        { name: 'scope', value: 'exact bytes' },
+      ],
+    },
+    {
+      title: 'Declare the coordinate frame explicitly',
+      body: 'Handedness, up axis, units. Three strings that cost nothing and prevent the single most expensive class of bug in this domain: a model that is correct and interpreted wrong. A metre is not a unit until both ends agree it is.',
+      params: [
+        { name: 'handedness', value: 'right' },
+        { name: 'up', value: 'y' },
+        { name: 'units', value: 'meters' },
+      ],
+    },
+    {
+      title: 'Version the schema on day one',
+      body: 'The manifest carries its own schema version before anything needs it. It is one field, and it is the difference between evolving the format and negotiating with every client version ever installed.',
+      params: [{ name: 'schema_version', value: '1.0' }],
+    },
+    {
+      title: 'Send the mesh, not the session',
+      body: 'The captured frames never leave the device. Reconstruction is local, so what goes up is a derived artefact an order of magnitude smaller — and a privacy posture you can state in one sentence rather than a paragraph.',
+      params: [
+        { name: 'images uploaded', value: '0' },
+        { name: 'parts', value: '3' },
+      ],
+    },
+  ]}
+/>
+
+---
+
+## A POST that is not idempotent
+
+Here is the constraint everything else bends around: submitting a scan creates work. Repeat it and you may create the same work twice, and someone pays for that twice.
+
+Which means the usual advice — retry on failure, with backoff — is wrong here, and wrong in a way that only shows up in production, at scale, as duplicates nobody can reproduce.
+
+The fix is to stop treating "did it fail" as one question. It is two:
+
+1. Did the request fail?
+2. Is it possible the server did the work anyway?
+
+An error type that answers only the first cannot be retried safely. So every failure carries a **three-valued** verdict — proven not to have reached the server, might have, or definitely will not succeed on repeat — and the two call sites read it differently. The idempotent poll retries on anything non-terminal. The submit retries only on the first of those three.
+
+<RetryLadder />
+
+The most interesting entry in that list is the one people usually get wrong. "Connection lost" is not one failure. If no body byte was ever written, nothing can exist on the other side and a retry is free. If bytes went out, the server may be holding a complete request. Same `URLError`, opposite answers — so the transport records whether it ever wrote a byte, and the error carries that fact with it.
+
+And the delays are **fully jittered**: each wait is a fresh random draw between zero and an exponentially growing, capped ceiling. Not the ceiling itself, and not the ceiling plus noise. A fixed backoff turns a brief server hiccup into a synchronised stampede when every client that failed together returns together. Re-roll the demo above a few times — the point is that no two runs agree.
+
+> **"Retry with backoff" is not a policy, it is half of one.** The other half is knowing which requests you are allowed to repeat, and that has to live in the error type.
+
+---
+
+## Timeouts that are not failures
+
+The fit is asynchronous. The submit returns `202 Accepted` with an identifier and no measurements; the client polls a separate endpoint until the job finishes.
+
+```swift
+func pollResult(jobID: String) async throws -> FitResult {
+    let deadline = ContinuousClock.now + pollTimeout
+
+    while true {
+        try Task.checkCancellation()
+
+        switch try await status(of: jobID) {
+        case .completed(let result):
+            return result
+        case .failed(let message):
+            throw FitError.server(message)
+        case .processing:
+            guard ContinuousClock.now < deadline else {
+                // Soft: the job is still alive on the server. The user can
+                // resume polling this same id — there is nothing to re-upload.
+                throw FitError.timedOut(jobID: jobID)
+            }
+            try await Task.sleep(for: pollInterval)
+        }
+    }
+}
+```
+
+Four things in that loop are load-bearing, and none of them are the loop.
+
+**The timeout is a client budget, not a server fact.** Hitting it means the client gave up waiting, not that the work stopped. So the error carries the job id, the user gets a "keep waiting" that resumes polling **the same job**, and the mesh is never uploaded twice. A hard timeout here would re-submit a scan that was about to succeed.
+
+**The upload does not belong to a screen.** It is owned by a coordinator that outlives the capture sheet and the review sheet. The user can dismiss everything and a late success still arrives, still reaches the page, still renders. Anything owned by a view is cancelled by a swipe the user did not think of as a cancel.
+
+**A superseded run must be unable to speak.** Start a second scan while the first is still uploading and, without a guard, the first one's callback lands on the second one's state. A monotonically increasing generation stamped on each run, checked before any state is written, makes stale results silently inert. This is the same shape of bug as the repeated-link one, in a different costume.
+
+**The stall watchdog only runs where bytes are expected.** It watches the transfer, where progress callbacks are a real signal, and stays out of reconstruction and the server-side fit, where silence is normal and a "still working" prompt is just a lie with a spinner. A progress indicator that cannot distinguish slow from stuck teaches users to ignore it.
+
+> **A timeout on someone else's work is an opinion.** Model it as one — keep the handle, offer to keep waiting, and never make the expensive part happen twice.
+
+---
+
+## What this pipeline does not do
+
+Three things, stated plainly, because a pipeline description that only lists wins is marketing.
+
+**The texture does not reach the server.** On-device reconstruction produces a properly textured model — real colour and surface detail, UV-mapped, and it is genuinely good. The transfer format carries geometry and texture coordinates but no image, so the fit is computed on bare geometry. For a dimensional fit that is the correct trade: the texture is worth megabytes and contributes nothing to a measurement. It is still worth being honest that the photorealism is a local artefact, not an end-to-end one.
+
+**Some manifest fields are placeholders.** The sensor block carries plausible, known-good camera intrinsics rather than the real per-device values, because the capture API in use does not surface them. It is labelled as such in the code. If a backend ever does metric reasoning from those numbers, that is a bug waiting with a fuse on it.
+
+**Gravity alignment is asserted, not measured.** The manifest declares an up axis. Nothing verifies it. It has been right every time, which is exactly the property that makes it dangerous to keep assuming.
+
+None of these block the product. All of them are the kind of thing that is cheap to write down now and expensive to discover later.
+
+---
+
+## What this added up to
+
+Seven Swift packages, all written in-house, no third-party runtime dependency anywhere in the product. Each one is independently shippable and none of them knows about the others: a capture engine that wraps the platform's 3D stack behind its own value types and does zero networking, a mesh transcoder built as reader → value type → writer, a generic web-view bridge with a per-session message log, an async networking layer, a dependency-injection container, a navigation router, and a logger that is stripped from release builds.
+
+What that bought, concretely:
+
+- A customer measures a real object with a phone and gets a fitted result back **inside the web page they were already shopping on** — no app-store detour in the middle of a purchase, and no second product surface to maintain.
+- **The web team ships product changes without an iOS release.** One required field, everything else forwarded verbatim — so a new product attribute is a web deploy, not a submission.
+- **Reconstruction is entirely on device.** No captured frame is uploaded; only a derived mesh, an order of magnitude smaller, with its own hash and a declared coordinate frame.
+- **A scan survives the things that actually happen** — a dismissed sheet, a lift with no signal, a fit that runs long, a second scan started on top of the first. None of those lose a capture, and none of them can create a duplicate job.
+- **Every seam is a protocol**, so the capture engine, the transcoder and the bridge each lift into a different product unchanged — none of them knows this one exists.
+
+The 3D was the interesting problem. The list above is the product.
+
+---
+
+## Takeaways
+
+> **Decide which side of the boundary owns the product.** Every field the app understands is a field the other team cannot change alone.
+
+> **Forward what you do not understand.** A pass-through payload costs one line and buys another team their whole release cycle.
+
+> **Record where an input came from, not just what it says.** Two identical URLs can deserve different amounts of trust, and by the time you need to tell them apart the information is gone.
+
+> **Put the coordinate frame and a schema version in the payload before anyone asks.** Three strings and one field, against the most expensive bug class in the domain.
+
+> **"Retry with backoff" is half a policy.** The other half is which requests may be repeated, and it belongs in the error type.
+
+> **Jitter fully.** Exponential-plus-noise still synchronises; a fresh draw between zero and the ceiling does not.
+
+> **A timeout on someone else's work is an opinion.** Keep the handle, offer to keep waiting, never redo the expensive part.
+
+> **Own long-running work above the screen that started it.** A dismissal is not a cancellation, and users do not know the difference.
+
+---
+
+## References
+
+**Web view bridge** — [`WKWebViewConfiguration`](https://developer.apple.com/documentation/webkit/wkwebviewconfiguration) · [`WKUserContentController`](https://developer.apple.com/documentation/webkit/wkusercontentcontroller) · [`WKUserScript`](https://developer.apple.com/documentation/webkit/wkuserscript) · [`WKScriptMessageHandler`](https://developer.apple.com/documentation/webkit/wkscriptmessagehandler) · [`WKContentRuleList`](https://developer.apple.com/documentation/webkit/wkcontentrulelist)
+
+**Links and entry points** — [Supporting associated domains](https://developer.apple.com/documentation/xcode/supporting-associated-domains) · [`applinks` JSON](https://developer.apple.com/documentation/bundleresources/applinks) · [TN3155: Debugging universal links](https://developer.apple.com/documentation/technotes/tn3155-debugging-universal-links) · [`NSUserActivity`](https://developer.apple.com/documentation/foundation/nsuseractivity)
+
+**Capture and mesh** — [`ObjectCaptureSession`](https://developer.apple.com/documentation/realitykit/objectcapturesession) · [`PhotogrammetrySession`](https://developer.apple.com/documentation/realitykit/photogrammetrysession) · [`PhotogrammetrySession.Request`](https://developer.apple.com/documentation/realitykit/photogrammetrysession/request) · [Model I/O](https://developer.apple.com/documentation/modelio) · [`MDLAsset`](https://developer.apple.com/documentation/modelio/mdlasset) · [OpenUSD](https://openusd.org/release/index.html) · [AR Quick Look](https://developer.apple.com/augmented-reality/quick-look/)
+
+**Transport and system** — [`URLSession`](https://developer.apple.com/documentation/foundation/urlsession) · [Background Tasks](https://developer.apple.com/documentation/backgroundtasks) · [`SHA256`](https://developer.apple.com/documentation/cryptokit/sha256) · [`ProcessInfo.ThermalState`](https://developer.apple.com/documentation/foundation/processinfo/thermalstate)
+
+**Sessions** — [WWDC23: Meet Object Capture for iOS](https://developer.apple.com/videos/play/wwdc2023/10191/) · [WWDC21: Create 3D models with Object Capture](https://developer.apple.com/videos/play/wwdc2021/10076/)
