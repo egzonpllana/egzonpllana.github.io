@@ -1,0 +1,514 @@
+---
+/**
+ * Live state mapper. Replays one scan's worth of `ObjectCaptureSession`
+ * capture-state emissions on the left and shows what the app publishes on the
+ * right, in step. The point of the component is the two places where the two
+ * columns deliberately disagree: `.initializing` is surfaced as ready, and the
+ * image count in the state payload never moves.
+ */
+interface Step {
+  /** Apple's `ObjectCaptureSession.CaptureState`. */
+  apple: string;
+  /** What the app publishes for it. */
+  app: string;
+  /** Milliseconds this step holds before the next emission. */
+  hold: number;
+  note: string;
+  /** Marks a row where the mapping is deliberately not one-to-one. */
+  flag?: string;
+  /** Shots accumulate during this step, with no state emission of their own. */
+  counting?: boolean;
+}
+
+const STEPS: Step[] = [
+  {
+    apple: '.initializing',
+    app: 'ready',
+    hold: 2200,
+    note: 'Not an emission at all - the session is read once, by hand, because the updates sequence only fires on changes and this one can dwell here.',
+    flag: 'pushed manually',
+  },
+  {
+    apple: '.ready',
+    app: 'ready',
+    hold: 1500,
+    note: 'The genuine one, some time later. It maps to the same value, so the duplicate transition is a no-op and nothing on screen flickers.',
+    flag: 'mapped early on purpose',
+  },
+  {
+    apple: '.detecting',
+    app: 'detecting',
+    hold: 1600,
+    note: 'The bounding box is up. One button, one call, and the mapping is honest.',
+  },
+  {
+    apple: '.capturing',
+    app: 'capturing(pass 1)',
+    hold: 5200,
+    note: 'The user orbits. Shots land on disk for five straight seconds and the capture state never changes again - so this row emits exactly once.',
+    counting: true,
+  },
+  {
+    apple: '.finishing',
+    app: 'finishingCapture',
+    hold: 1400,
+    note: 'Terminal-ish: it becomes completed on its own, so nothing may cancel it here.',
+  },
+  {
+    apple: '.completed',
+    app: 'captureComplete',
+    hold: 1800,
+    note: 'The images are final. Reconstruction is a different session entirely, and it has not started yet.',
+  },
+];
+
+const TOTAL = STEPS.reduce((sum, step) => sum + step.hold, 0);
+---
+
+<div class="csm" data-capture-state-map data-reveal>
+  <div class="csm__frame">
+    <div class="csm__bar">
+      <button
+        class="csm__play"
+        type="button"
+        data-play
+        aria-label="Pause the replay"
+      >
+        <span data-play-icon aria-hidden="true">❚❚</span>
+        <span data-play-label>pause</span>
+      </button>
+
+      <input
+        class="csm__scrub"
+        type="range"
+        min="0"
+        max="1000"
+        value="0"
+        step="1"
+        data-scrub
+        aria-label="Scrub the capture timeline"
+      />
+
+      <span class="csm__clock" data-clock>0.0s</span>
+    </div>
+
+    <div class="csm__head" aria-hidden="true">
+      <span class="csm__col-label">ObjectCaptureSession.CaptureState</span>
+      <span class="csm__col-label csm__col-label--right"
+        >what the app publishes</span
+      >
+    </div>
+
+    <ol class="csm__rows">
+      {
+        STEPS.map((step, i) => (
+          <li class="csm__row" data-row={i}>
+            <div class="csm__cell csm__cell--apple">
+              <code class="csm__code">{step.apple}</code>
+              {step.flag && <span class="csm__flag">{step.flag}</span>}
+            </div>
+
+            <span class="csm__arrow" aria-hidden="true">
+              <span class="csm__arrow-line" />
+              <span class="csm__arrow-head" />
+            </span>
+
+            <div class="csm__cell csm__cell--app">
+              <code class="csm__code csm__code--app" data-app-value>
+                {step.app}
+              </code>
+              {step.counting && (
+                <span class="csm__counters">
+                  <span class="csm__counter">
+                    payload imageCount <b>0</b>
+                  </span>
+                  <span class="csm__counter csm__counter--live">
+                    numberOfShotsTaken <b data-shots>0</b>
+                  </span>
+                </span>
+              )}
+            </div>
+
+            <p class="csm__note">{step.note}</p>
+          </li>
+        ))
+      }
+    </ol>
+  </div>
+</div>
+
+<script is:inline define:vars={{ STEPS, TOTAL }}>
+  (() => {
+    function initCaptureStateMap() {
+      const root = document.querySelector('[data-capture-state-map]');
+      if (!root || root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const rows = Array.from(root.querySelectorAll('[data-row]'));
+      const scrub = root.querySelector('[data-scrub]');
+      const clock = root.querySelector('[data-clock]');
+      const playBtn = root.querySelector('[data-play]');
+      const playIcon = root.querySelector('[data-play-icon]');
+      const playLabel = root.querySelector('[data-play-label]');
+      const shotsEl = root.querySelector('[data-shots]');
+      if (!rows.length || !scrub) return;
+
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+
+      // Cumulative start time of every step, so a scrub position resolves to
+      // one row without searching.
+      const starts = [];
+      let acc = 0;
+      for (const step of STEPS) {
+        starts.push(acc);
+        acc += step.hold;
+      }
+
+      /** Shots the session reports by the end of the capturing step. */
+      const FINAL_SHOTS = 38;
+
+      let elapsed = 0;
+      let playing = !reduce;
+      let hovering = false;
+      let raf = 0;
+      let last = 0;
+
+      function apply() {
+        let index = 0;
+        for (let i = 0; i < starts.length; i++) {
+          if (elapsed >= starts[i]) index = i;
+        }
+
+        rows.forEach((row, i) => {
+          row.classList.toggle('is-active', i === index);
+          row.classList.toggle('is-past', i < index);
+          row.classList.toggle('is-future', i > index);
+        });
+
+        if (shotsEl) {
+          const step = STEPS.findIndex((s) => s.counting);
+          let shots = 0;
+          if (step >= 0) {
+            if (index > step) shots = FINAL_SHOTS;
+            else if (index === step) {
+              const local = (elapsed - starts[step]) / STEPS[step].hold;
+              shots = Math.round(local * FINAL_SHOTS);
+            }
+          }
+          shotsEl.textContent = String(shots);
+        }
+
+        scrub.value = String(Math.round((elapsed / TOTAL) * 1000));
+        if (clock) clock.textContent = `${(elapsed / 1000).toFixed(1)}s`;
+      }
+
+      function loop(now) {
+        if (!playing) return;
+        const dt = last ? now - last : 0;
+        last = now;
+        if (!hovering) {
+          elapsed = (elapsed + dt) % TOTAL;
+          apply();
+        }
+        raf = requestAnimationFrame(loop);
+      }
+
+      function play() {
+        if (playing) return;
+        playing = true;
+        last = 0;
+        raf = requestAnimationFrame(loop);
+        setButton();
+      }
+
+      function pause() {
+        playing = false;
+        if (raf) cancelAnimationFrame(raf);
+        raf = 0;
+        setButton();
+      }
+
+      function setButton() {
+        if (playIcon) playIcon.textContent = playing ? '❚❚' : '▶';
+        if (playLabel) playLabel.textContent = playing ? 'pause' : 'play';
+        if (playBtn) {
+          playBtn.setAttribute(
+            'aria-label',
+            playing ? 'Pause the replay' : 'Play the replay',
+          );
+        }
+      }
+
+      playBtn?.addEventListener('click', () => (playing ? pause() : play()));
+
+      scrub.addEventListener('input', () => {
+        pause();
+        elapsed = (Number(scrub.value) / 1000) * TOTAL;
+        apply();
+      });
+
+      // Hovering holds the current frame without stopping the clock's owner,
+      // so a reader can look at a row without racing it.
+      root.addEventListener('pointerenter', () => (hovering = true));
+      root.addEventListener('pointerleave', () => (hovering = false));
+      root.addEventListener('focusin', () => (hovering = true));
+      root.addEventListener('focusout', () => (hovering = false));
+
+      const io = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              if (!reduce) play();
+            } else pause();
+          }
+        },
+        { threshold: 0.15 },
+      );
+      io.observe(root);
+
+      setButton();
+      apply();
+    }
+
+    if (document.readyState !== 'loading') initCaptureStateMap();
+    else document.addEventListener('DOMContentLoaded', initCaptureStateMap);
+    document.addEventListener('astro:page-load', initCaptureStateMap);
+  })();
+</script>
+
+<style>
+  .csm {
+    margin: var(--sp-6) 0;
+  }
+  .csm__frame {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    overflow: hidden;
+  }
+
+  .csm__bar {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-subtle);
+  }
+  .csm__play {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.3rem 0.6rem;
+    cursor: pointer;
+  }
+  .csm__play:hover {
+    color: var(--fg);
+    border-color: var(--border-strong);
+  }
+  .csm__scrub {
+    flex: 1;
+    min-width: 80px;
+    accent-color: var(--accent);
+  }
+  .csm__clock {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-faint);
+    min-width: 3.2em;
+    text-align: right;
+  }
+
+  .csm__head {
+    display: flex;
+    justify-content: space-between;
+    padding: var(--sp-3) var(--sp-4) 0;
+  }
+  .csm__col-label {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.03em;
+    color: var(--fg-faint);
+  }
+  .csm__col-label--right {
+    color: var(--accent-text);
+  }
+
+  .csm__rows {
+    list-style: none;
+    margin: 0;
+    padding: var(--sp-2) var(--sp-4) var(--sp-4);
+  }
+  .csm__row {
+    display: grid;
+    grid-template-columns: 1fr 44px 1fr;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-3) 0;
+    border-top: 1px solid var(--border);
+    opacity: 0.42;
+    transition:
+      opacity 0.35s var(--ease),
+      background 0.35s var(--ease);
+  }
+  .csm__row:first-child {
+    border-top: 0;
+  }
+  .csm__row.is-past {
+    opacity: 0.62;
+  }
+  .csm__row.is-active {
+    opacity: 1;
+  }
+
+  .csm__cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    min-width: 0;
+  }
+  .csm__cell--app {
+    align-items: flex-end;
+    text-align: right;
+  }
+  .csm__code {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.22rem 0.5rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+  .is-active .csm__code {
+    border-color: var(--border-strong);
+  }
+  .csm__code--app {
+    color: var(--accent-text);
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  }
+  .is-active .csm__code--app {
+    background: var(--accent-soft);
+  }
+
+  .csm__flag {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-faint);
+  }
+  .is-active .csm__flag {
+    color: var(--accent-text);
+  }
+
+  .csm__counters {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.35rem;
+  }
+  .csm__counter {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-faint);
+  }
+  .csm__counter b {
+    color: var(--fg-muted);
+    font-weight: 600;
+  }
+  .csm__counter--live b {
+    color: var(--accent-text);
+  }
+
+  .csm__arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+  }
+  .csm__arrow-line {
+    display: block;
+    width: 22px;
+    height: 1px;
+    background: var(--border-strong);
+  }
+  .csm__arrow-head {
+    display: block;
+    width: 0;
+    height: 0;
+    border-left: 5px solid var(--border-strong);
+    border-top: 3.5px solid transparent;
+    border-bottom: 3.5px solid transparent;
+  }
+  .is-active .csm__arrow-line,
+  .is-active .csm__arrow-head {
+    background: var(--accent);
+  }
+  .is-active .csm__arrow-head {
+    background: none;
+    border-left-color: var(--accent);
+  }
+
+  .csm__note {
+    grid-column: 1 / -1;
+    font-size: var(--fs-xs);
+    line-height: 1.6;
+    color: var(--fg-muted);
+    margin: 0.35rem 0 0;
+    max-height: 0;
+    overflow: hidden;
+    opacity: 0;
+    transition:
+      max-height 0.4s var(--ease),
+      opacity 0.3s var(--ease);
+  }
+  .is-active .csm__note {
+    max-height: 8rem;
+    opacity: 1;
+  }
+
+  @media (max-width: 620px) {
+    .csm__row {
+      grid-template-columns: 1fr;
+      gap: 0.35rem;
+    }
+    .csm__cell--app {
+      align-items: flex-start;
+      text-align: left;
+    }
+    .csm__counters {
+      justify-content: flex-start;
+    }
+    .csm__arrow {
+      justify-content: flex-start;
+      transform: rotate(90deg);
+      transform-origin: left center;
+      margin-left: 0.6rem;
+      height: 14px;
+    }
+    .csm__note {
+      max-height: 0;
+    }
+    .is-active .csm__note {
+      max-height: 12rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .csm__row,
+    .csm__note {
+      transition: none;
+    }
+  }
+</style>

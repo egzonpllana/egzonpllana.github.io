@@ -1,0 +1,992 @@
+---
+/**
+ * Drag-to-reveal: the same object, at the same camera, rendered the way a room
+ * sees it and the way a capture session sees it. Left of the divider is a
+ * shaded solid; right of it is the point cloud and wireframe the reconstruction
+ * actually works on. Everything is generated in the browser - there is no photo
+ * and no scan here, only the transform, drawn twice.
+ */
+interface Props {
+  /** Caption under the frame. */
+  caption?: string;
+}
+
+const {
+  caption = 'One object, one camera, two readings. Drag the divider - the geometry never moves, only what you are allowed to see of it.',
+} = Astro.props;
+---
+
+<figure class="mr" data-mesh-reveal data-reveal>
+  <div class="mr__frame">
+    <div class="mr__labels" aria-hidden="true">
+      <span class="mr__label mr__label--solid">in the room</span>
+      <span class="mr__label mr__label--scan">what capture sees</span>
+    </div>
+
+    <div class="mr__stage" data-stage>
+      <canvas class="mr__canvas" data-canvas></canvas>
+
+      <div
+        class="mr__divider"
+        data-divider
+        role="slider"
+        tabindex="0"
+        aria-label="Reveal the captured geometry"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow="50"
+        aria-valuetext="Half solid, half point cloud"
+      >
+        <span class="mr__grip" aria-hidden="true">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor">
+            <path d="M6 4 3 8l3 4M10 4l3 4-3 4" stroke-width="1.6"></path>
+          </svg>
+        </span>
+      </div>
+    </div>
+
+    <div class="mr__readout">
+      <span class="mr__stat">
+        vertices <b data-stat-vertices>0</b>
+      </span>
+      <span class="mr__stat">
+        triangles <b data-stat-triangles>0</b>
+      </span>
+      <span class="mr__stat">
+        points drawn <b data-stat-points>0</b>
+      </span>
+    </div>
+  </div>
+
+  <figcaption class="mr__caption">{caption}</figcaption>
+</figure>
+
+<script is:inline>
+  (() => {
+    function initMeshReveal() {
+      const root = document.querySelector('[data-mesh-reveal]');
+      if (!root || root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const canvas = root.querySelector('[data-canvas]');
+      const stage = root.querySelector('[data-stage]');
+      const divider = root.querySelector('[data-divider]');
+      if (!canvas || !stage || !divider) return;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+
+      // ---------------------------------------------------------------
+      // Geometry - a lounge armchair. Y is up, metres, roughly life size.
+      // Upholstery is built from rounded boxes so the silhouette curves
+      // the way a cushion does; the legs are turned frusta.
+      // ---------------------------------------------------------------
+      const positions = [];
+      const triangles = [];
+      /** Per-triangle material index, parallel to `triangles`. */
+      const materials = [];
+
+      const FABRIC = 0;
+      const WOOD = 1;
+
+      /** Rotate about X, then translate. Enough for a reclined back. */
+      function place(point, pitch, origin) {
+        const c = Math.cos(pitch);
+        const s = Math.sin(pitch);
+        const y = point[1] * c - point[2] * s;
+        const z = point[1] * s + point[2] * c;
+        return [point[0] + origin[0], y + origin[1], z + origin[2]];
+      }
+
+      /**
+       * A box whose corners and edges are rolled by `radius`. Each face is a
+       * grid; every grid point is pushed out from the clamped inner core, so
+       * flats stay flat and corners round.
+       */
+      function roundedBox(origin, size, radius, seg, material, pitch = 0) {
+        const half = [size[0] / 2, size[1] / 2, size[2] / 2];
+        const r = Math.min(radius, Math.min(half[0], half[1], half[2]) * 0.98);
+        const inner = [half[0] - r, half[1] - r, half[2] - r];
+
+        // normal, tangent u, tangent v - chosen so u x v = normal.
+        const faces = [
+          [
+            [1, 0, 0],
+            [0, 0, -1],
+            [0, 1, 0],
+          ],
+          [
+            [-1, 0, 0],
+            [0, 0, 1],
+            [0, 1, 0],
+          ],
+          [
+            [0, 1, 0],
+            [1, 0, 0],
+            [0, 0, -1],
+          ],
+          [
+            [0, -1, 0],
+            [1, 0, 0],
+            [0, 0, 1],
+          ],
+          [
+            [0, 0, 1],
+            [1, 0, 0],
+            [0, 1, 0],
+          ],
+          [
+            [0, 0, -1],
+            [-1, 0, 0],
+            [0, 1, 0],
+          ],
+        ];
+
+        for (const [n, u, v] of faces) {
+          const base = positions.length;
+          for (let j = 0; j <= seg; j++) {
+            for (let i = 0; i <= seg; i++) {
+              const su = (i / seg) * 2 - 1;
+              const sv = (j / seg) * 2 - 1;
+              // A point on the un-rounded cube surface.
+              const p = [
+                (n[0] + u[0] * su + v[0] * sv) * half[0],
+                (n[1] + u[1] * su + v[1] * sv) * half[1],
+                (n[2] + u[2] * su + v[2] * sv) * half[2],
+              ];
+              const core = [
+                Math.max(-inner[0], Math.min(inner[0], p[0])),
+                Math.max(-inner[1], Math.min(inner[1], p[1])),
+                Math.max(-inner[2], Math.min(inner[2], p[2])),
+              ];
+              const dx = p[0] - core[0];
+              const dy = p[1] - core[1];
+              const dz = p[2] - core[2];
+              const len = Math.hypot(dx, dy, dz) || 1;
+              positions.push(
+                place(
+                  [
+                    core[0] + (dx / len) * r,
+                    core[1] + (dy / len) * r,
+                    core[2] + (dz / len) * r,
+                  ],
+                  pitch,
+                  origin,
+                ),
+              );
+            }
+          }
+
+          const row = seg + 1;
+          for (let j = 0; j < seg; j++) {
+            for (let i = 0; i < seg; i++) {
+              const a = base + j * row + i;
+              const b = a + 1;
+              const c = a + row + 1;
+              const d = a + row;
+              triangles.push([a, b, c]);
+              materials.push(material);
+              triangles.push([a, c, d]);
+              materials.push(material);
+            }
+          }
+        }
+      }
+
+      /** A turned leg: a frustum with a capped foot. */
+      function leg(x, z, topRadius, footRadius, height, sides, material) {
+        const base = positions.length;
+        for (let i = 0; i < sides; i++) {
+          const angle = (i / sides) * Math.PI * 2;
+          const ca = Math.cos(angle);
+          const sa = Math.sin(angle);
+          positions.push([x + ca * topRadius, height, z + sa * topRadius]);
+          positions.push([x + ca * footRadius, 0, z + sa * footRadius]);
+        }
+        const centre = positions.length;
+        positions.push([x, 0, z]);
+
+        for (let i = 0; i < sides; i++) {
+          const next = (i + 1) % sides;
+          const topA = base + i * 2;
+          const footA = topA + 1;
+          const topB = base + next * 2;
+          const footB = topB + 1;
+
+          triangles.push([topA, topB, footB]);
+          materials.push(material);
+          triangles.push([topA, footB, footA]);
+          materials.push(material);
+
+          triangles.push([centre, footA, footB]);
+          materials.push(material);
+        }
+      }
+
+      const RECLINE = -0.15; // radians, the back leans away from the seat
+
+      roundedBox([0, 0.28, 0], [0.74, 0.1, 0.72], 0.03, 2, FABRIC); // plinth
+      roundedBox([0, 0.4, 0.03], [0.56, 0.14, 0.6], 0.055, 4, FABRIC); // seat cushion
+      roundedBox(
+        [0, 0.7, -0.28],
+        [0.76, 0.62, 0.16],
+        0.072,
+        4,
+        FABRIC,
+        RECLINE,
+      ); // back
+      roundedBox([0, 0.62, -0.2], [0.56, 0.42, 0.12], 0.05, 3, FABRIC, RECLINE); // back cushion
+      for (const sx of [-1, 1]) {
+        roundedBox(
+          [sx * 0.34, 0.46, 0.02],
+          [0.12, 0.26, 0.7],
+          0.059,
+          4,
+          FABRIC,
+        ); // arm
+      }
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          leg(sx * 0.29, sz * 0.29, 0.032, 0.018, 0.23, 10, WOOD);
+        }
+      }
+
+      // ---------------------------------------------------------------
+      // Surface samples - what a depth pass would actually return: points
+      // scattered over the faces, not just the eight corners of each box.
+      // Deterministic, so the picture is the same on every load.
+      // ---------------------------------------------------------------
+      function mulberry32(seed) {
+        let a = seed;
+        return function () {
+          a |= 0;
+          a = (a + 0x6d2b79f5) | 0;
+          let t = Math.imul(a ^ (a >>> 15), 1 | a);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      const rand = mulberry32(0x5ea15c);
+      const cloud = [];
+      const POINT_BUDGET = 2400;
+
+      const areas = triangles.map((t) => {
+        const [a, b, c] = [positions[t[0]], positions[t[1]], positions[t[2]]];
+        const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        const ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        const cx = ab[1] * ac[2] - ab[2] * ac[1];
+        const cy = ab[2] * ac[0] - ab[0] * ac[2];
+        const cz = ab[0] * ac[1] - ab[1] * ac[0];
+        return 0.5 * Math.hypot(cx, cy, cz);
+      });
+      const totalArea = areas.reduce((s, a) => s + a, 0);
+
+      triangles.forEach((t, i) => {
+        const n = Math.max(
+          1,
+          Math.round((areas[i] / totalArea) * POINT_BUDGET),
+        );
+        const [a, b, c] = [positions[t[0]], positions[t[1]], positions[t[2]]];
+        for (let k = 0; k < n; k++) {
+          let u = rand();
+          let v = rand();
+          if (u + v > 1) {
+            u = 1 - u;
+            v = 1 - v;
+          }
+          // A small normal-direction wobble, because depth is never exact.
+          const jitter = (rand() - 0.5) * 0.006;
+          cloud.push([
+            a[0] + u * (b[0] - a[0]) + v * (c[0] - a[0]) + jitter,
+            a[1] + u * (b[1] - a[1]) + v * (c[1] - a[1]) + jitter,
+            a[2] + u * (b[2] - a[2]) + v * (c[2] - a[2]) + jitter,
+          ]);
+        }
+      });
+
+      // Edges, welded by position rather than by index - each face of a
+      // rounded box is generated as its own grid, so the seams between them
+      // are separate vertices that sit in the same place. Welding here is
+      // what makes the silhouette pass below able to tell an outline from
+      // an interior edge.
+      const weldKey = (index) => {
+        const p = positions[index];
+        return `${Math.round(p[0] * 1e4)},${Math.round(p[1] * 1e4)},${Math.round(p[2] * 1e4)}`;
+      };
+      const weld = positions.map((_, i) => weldKey(i));
+
+      const edgeMap = new Map();
+      triangles.forEach((t, faceIndex) => {
+        const pairs = [
+          [t[0], t[1]],
+          [t[1], t[2]],
+          [t[2], t[0]],
+        ];
+        for (const [p, q] of pairs) {
+          const kp = weld[p];
+          const kq = weld[q];
+          const key = kp < kq ? `${kp}|${kq}` : `${kq}|${kp}`;
+          const existing = edgeMap.get(key);
+          if (existing) existing.faces.push(faceIndex);
+          else edgeMap.set(key, { a: p, b: q, faces: [faceIndex] });
+        }
+      });
+      const edges = Array.from(edgeMap.values());
+
+      const vertsEl = root.querySelector('[data-stat-vertices]');
+      const trisEl = root.querySelector('[data-stat-triangles]');
+      const pointsEl = root.querySelector('[data-stat-points]');
+      if (vertsEl) vertsEl.textContent = String(positions.length);
+      if (trisEl) trisEl.textContent = String(triangles.length);
+      if (pointsEl) pointsEl.textContent = String(cloud.length);
+
+      // ---------------------------------------------------------------
+      // Palette - read from the page so the render follows the theme.
+      // ---------------------------------------------------------------
+      let palette = readPalette();
+
+      function readPalette() {
+        const s = getComputedStyle(document.documentElement);
+        const get = (name, fallback) =>
+          (s.getPropertyValue(name) || fallback).trim();
+        return {
+          bg: get('--bg-subtle', '#f7f8fa'),
+          fg: get('--fg', '#0d1117'),
+          muted: get('--fg-muted', '#5b6472'),
+          border: get('--border-strong', '#d4d9e0'),
+          accent: get('--accent', '#11a14e'),
+          dark: document.documentElement.dataset.theme === 'dark',
+        };
+      }
+
+      new MutationObserver(() => {
+        palette = readPalette();
+      }).observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme'],
+      });
+
+      // ---------------------------------------------------------------
+      // Camera
+      // ---------------------------------------------------------------
+      let width = 0;
+      let height = 0;
+      let dpr = 1;
+
+      function resize() {
+        const rect = stage.getBoundingClientRect();
+        if (!rect.width) return;
+        dpr = Math.min(window.devicePixelRatio || 1, 2);
+        width = rect.width;
+        height = rect.height;
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+
+      const PITCH = -0.16;
+      const DISTANCE = 2.75;
+      const TARGET = [0, 0.52, 0];
+      let yaw = reduce ? 0.62 : 0.35;
+
+      const projected = new Array(positions.length);
+      const projectedCloud = new Array(cloud.length);
+
+      function projectInto(source, out) {
+        const cy = Math.cos(yaw);
+        const sy = Math.sin(yaw);
+        const cp = Math.cos(PITCH);
+        const sp = Math.sin(PITCH);
+        const focal = Math.min(width, height * 1.35) * 0.98;
+        const ox = width / 2;
+        const oy = height / 2 + height * 0.04;
+
+        for (let i = 0; i < source.length; i++) {
+          const p = source[i];
+          const x = p[0] - TARGET[0];
+          const y = p[1] - TARGET[1];
+          const z = p[2] - TARGET[2];
+
+          const rx = x * cy + z * sy;
+          const rz = -x * sy + z * cy;
+          const ry = y * cp - rz * sp;
+          const rz2 = y * sp + rz * cp + DISTANCE;
+
+          const inv = focal / Math.max(rz2, 0.05);
+          out[i] = [ox + rx * inv, oy - ry * inv, rz2];
+        }
+      }
+
+      // ---------------------------------------------------------------
+      // Static per-triangle data. The geometry never deforms, so normals
+      // are computed once rather than per frame.
+      // ---------------------------------------------------------------
+      const normals = triangles.map((t) => {
+        const a = positions[t[0]];
+        const b = positions[t[1]];
+        const c = positions[t[2]];
+        const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        const ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        const nx = ab[1] * ac[2] - ab[2] * ac[1];
+        const ny = ab[2] * ac[0] - ab[0] * ac[2];
+        const nz = ab[0] * ac[1] - ab[1] * ac[0];
+        const len = Math.hypot(nx, ny, nz) || 1;
+        return [nx / len, ny / len, nz / len];
+      });
+
+      // Shading normals, smoothed across welded vertices but only where the
+      // surface is genuinely continuous. Without the angle guard a rolled
+      // arm's end cap would bleed into its side and the whole part would go
+      // muddy; without the smoothing at all, every facet reads as a facet.
+      const facesAtVertex = new Map();
+      triangles.forEach((t, i) => {
+        for (const index of t) {
+          const key = weld[index];
+          const list = facesAtVertex.get(key);
+          if (list) list.push(i);
+          else facesAtVertex.set(key, [i]);
+        }
+      });
+
+      const shadeNormals = triangles.map((t, i) => {
+        const own = normals[i];
+        let ax = 0;
+        let ay = 0;
+        let az = 0;
+        for (const index of t) {
+          let vx = 0;
+          let vy = 0;
+          let vz = 0;
+          for (const face of facesAtVertex.get(weld[index])) {
+            const n = normals[face];
+            // Only blend faces on the same smooth surface, so creases stay
+            // creases.
+            if (n[0] * own[0] + n[1] * own[1] + n[2] * own[2] < 0.35) continue;
+            vx += n[0];
+            vy += n[1];
+            vz += n[2];
+          }
+          const vl = Math.hypot(vx, vy, vz) || 1;
+          ax += vx / vl;
+          ay += vy / vl;
+          az += vz / vl;
+        }
+        const l = Math.hypot(ax, ay, az) || 1;
+        return [ax / l, ay / l, az / l];
+      });
+
+      /** Upholstery and wood, per theme. */
+      const TONES = {
+        light: [
+          [214, 206, 194],
+          [146, 104, 70],
+        ],
+        dark: [
+          [196, 186, 172],
+          [152, 108, 72],
+        ],
+      };
+
+      /** Wall and floor behind the object, on the solid half only. */
+      const ROOM = {
+        light: { wall: [242, 240, 236], floor: [216, 210, 200] },
+        dark: { wall: [38, 40, 46], floor: [28, 30, 35] },
+      };
+
+      const facing = new Int8Array(triangles.length);
+      const order = [];
+
+      // ---------------------------------------------------------------
+      // Passes
+      // ---------------------------------------------------------------
+      function classify() {
+        order.length = 0;
+        for (let i = 0; i < triangles.length; i++) {
+          const t = triangles[i];
+          const a = projected[t[0]];
+          const b = projected[t[1]];
+          const c = projected[t[2]];
+          // Signed screen area. Screen y grows downward, so an outward-wound
+          // triangle facing the camera comes out negative.
+          const area =
+            (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+          const front = area < 0 ? 1 : 0;
+          facing[i] = front;
+          if (front) order.push([i, (a[2] + b[2] + c[2]) / 3]);
+        }
+        // Painter's algorithm: farthest first.
+        order.sort((p, q) => q[1] - p[1]);
+      }
+
+      function drawFloorShadow() {
+        // The solid half is a room, so the chair gets contact with a floor.
+        // The captured half deliberately does not - geometry has no lighting.
+        const centre = [0, 0.005, 0];
+        const cy = Math.cos(yaw);
+        const sy = Math.sin(yaw);
+        const cp = Math.cos(PITCH);
+        const sp = Math.sin(PITCH);
+        const focal = Math.min(width, height * 1.35) * 0.98;
+        const ox = width / 2;
+        const oy = height / 2 + height * 0.04;
+
+        const project = (p) => {
+          const x = p[0] - TARGET[0];
+          const y = p[1] - TARGET[1];
+          const z = p[2] - TARGET[2];
+          const rx = x * cy + z * sy;
+          const rz = -x * sy + z * cy;
+          const ry = y * cp - rz * sp;
+          const rz2 = y * sp + rz * cp + DISTANCE;
+          const inv = focal / Math.max(rz2, 0.05);
+          return [ox + rx * inv, oy - ry * inv];
+        };
+
+        const c = project(centre);
+        const rx = Math.abs(project([0.62, 0.005, 0])[0] - c[0]);
+        const ry = Math.abs(project([0, 0.005, 0.62])[1] - c[1]) + 6;
+
+        const gradient = ctx.createRadialGradient(
+          c[0],
+          c[1],
+          0,
+          c[0],
+          c[1],
+          Math.max(rx, ry),
+        );
+        gradient.addColorStop(
+          0,
+          palette.dark ? 'rgba(0,0,0,0.55)' : 'rgba(30,34,40,0.28)',
+        );
+        gradient.addColorStop(1, 'rgba(0,0,0,0)');
+
+        ctx.save();
+        ctx.translate(c[0], c[1]);
+        ctx.scale(1, Math.max(ry, 1) / Math.max(rx, 1));
+        ctx.translate(-c[0], -c[1]);
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(c[0], c[1], Math.max(rx, 1), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawRoom() {
+        const room = palette.dark ? ROOM.dark : ROOM.light;
+        const horizon = height * 0.66;
+
+        const wall = ctx.createLinearGradient(0, 0, 0, horizon);
+        wall.addColorStop(
+          0,
+          `rgb(${room.wall.map((v) => Math.round(v * 0.88))})`,
+        );
+        wall.addColorStop(1, `rgb(${room.wall})`);
+        ctx.fillStyle = wall;
+        ctx.fillRect(0, 0, width, horizon);
+
+        const floor = ctx.createLinearGradient(0, horizon, 0, height);
+        floor.addColorStop(0, `rgb(${room.floor})`);
+        floor.addColorStop(
+          1,
+          `rgb(${room.floor.map((v) => Math.round(v * 0.8))})`,
+        );
+        ctx.fillStyle = floor;
+        ctx.fillRect(0, horizon, width, height - horizon);
+      }
+
+      function drawSolid() {
+        drawRoom();
+        drawFloorShadow();
+
+        // One key light plus a cool fill, both rotating with the camera so
+        // the form reads at every angle.
+        const lx = Math.sin(yaw + 0.9) * 0.6;
+        const ly = 0.74;
+        const lz = Math.cos(yaw + 0.9) * 0.6;
+        const fx = -lx;
+        const fz = -lz;
+        const tones = palette.dark ? TONES.dark : TONES.light;
+
+        for (const [i] of order) {
+          const n = shadeNormals[i];
+          const key = Math.max(0, n[0] * lx + n[1] * ly + n[2] * lz);
+          const fill = Math.max(0, n[0] * fx + n[1] * 0.25 + n[2] * fz);
+          // Ambient, key, and a weak bounce - enough separation that a
+          // rolled arm does not read as a flat slab.
+          const shade = Math.min(1.12, 0.46 + 0.52 * key + 0.14 * fill);
+
+          const base = tones[materials[i]];
+          const colour = `rgb(${Math.round(
+            Math.min(255, base[0] * shade),
+          )}, ${Math.round(Math.min(255, base[1] * shade))}, ${Math.round(
+            Math.min(255, base[2] * shade),
+          )})`;
+
+          const t = triangles[i];
+          const pa = projected[t[0]];
+          const pb = projected[t[1]];
+          const pc = projected[t[2]];
+          ctx.beginPath();
+          ctx.moveTo(pa[0], pa[1]);
+          ctx.lineTo(pb[0], pb[1]);
+          ctx.lineTo(pc[0], pc[1]);
+          ctx.closePath();
+          // Stroking with the fill colour closes the anti-aliased hairline
+          // gaps between adjacent triangles. Without it the whole surface is
+          // covered in seams and reads as a wireframe rather than a solid.
+          ctx.fillStyle = colour;
+          ctx.strokeStyle = colour;
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+
+      // Reusable per-band scratch, so the point pass allocates nothing.
+      const BANDS = 6;
+      const bandBuffers = Array.from(
+        { length: BANDS },
+        () => new Float32Array(cloud.length * 2),
+      );
+      const bandCounts = new Int32Array(BANDS);
+
+      function drawScan() {
+        // Silhouette only: an edge is drawn when the two triangles sharing it
+        // face opposite ways, or when nothing shares it at all. That is a few
+        // hundred lines instead of a few thousand, and it moves as the object
+        // turns - which is what makes the right-hand side read as an outline
+        // rather than a mesh dump.
+        ctx.lineWidth = 1.1;
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = palette.dark
+          ? 'rgba(46, 224, 106, 0.5)'
+          : 'rgba(11, 122, 59, 0.45)';
+        ctx.beginPath();
+        for (const edge of edges) {
+          const f = edge.faces;
+          if (f.length === 2 && facing[f[0]] === facing[f[1]]) continue;
+          if (f.length === 1 && !facing[f[0]]) continue;
+          const a = projected[edge.a];
+          const b = projected[edge.b];
+          ctx.moveTo(a[0], a[1]);
+          ctx.lineTo(b[0], b[1]);
+        }
+        ctx.stroke();
+
+        // Points, sized and faded by depth so the far side reads as far.
+        // Bucketed into a handful of depth bands rather than styled per
+        // point: one fillStyle assignment per band instead of a few thousand
+        // per frame, which is the difference between smooth and not on a
+        // phone.
+        let near = Infinity;
+        let far = -Infinity;
+        for (const p of projectedCloud) {
+          if (p[2] < near) near = p[2];
+          if (p[2] > far) far = p[2];
+        }
+        const span = Math.max(far - near, 0.001);
+
+        for (let i = 0; i < BANDS; i++) bandCounts[i] = 0;
+
+        for (const p of projectedCloud) {
+          const band = Math.min(
+            BANDS - 1,
+            Math.floor(((p[2] - near) / span) * BANDS),
+          );
+          const buffer = bandBuffers[band];
+          const at = bandCounts[band];
+          buffer[at * 2] = p[0];
+          buffer[at * 2 + 1] = p[1];
+          bandCounts[band] = at + 1;
+        }
+
+        for (let band = 0; band < BANDS; band++) {
+          const count = bandCounts[band];
+          if (!count) continue;
+          const depth = (band + 0.5) / BANDS;
+          const alpha = (0.95 - depth * 0.7).toFixed(3);
+          const size = 1.9 - depth * 0.95;
+          const half = size / 2;
+          ctx.fillStyle = palette.dark
+            ? `rgba(46, 224, 106, ${alpha})`
+            : `rgba(11, 122, 59, ${alpha})`;
+
+          const buffer = bandBuffers[band];
+          for (let i = 0; i < count; i++) {
+            ctx.fillRect(
+              buffer[i * 2] - half,
+              buffer[i * 2 + 1] - half,
+              size,
+              size,
+            );
+          }
+        }
+      }
+
+      // ---------------------------------------------------------------
+      // Frame
+      // ---------------------------------------------------------------
+      let split = 0.5;
+
+      function render() {
+        if (!width || !height) return;
+        projectInto(positions, projected);
+        projectInto(cloud, projectedCloud);
+        classify();
+
+        const splitX = Math.round(split * width);
+
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = palette.bg;
+        ctx.fillRect(0, 0, width, height);
+        ctx.lineWidth = 1;
+        ctx.lineJoin = 'round';
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, splitX, height);
+        ctx.clip();
+        drawSolid();
+        ctx.restore();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(splitX, 0, width - splitX, height);
+        ctx.clip();
+        drawScan();
+        ctx.restore();
+
+        ctx.strokeStyle = palette.border;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(splitX + 0.5, 0);
+        ctx.lineTo(splitX + 0.5, height);
+        ctx.stroke();
+      }
+
+      let raf = 0;
+      let last = 0;
+      let running = false;
+
+      function loop(now) {
+        if (!running) return;
+        const dt = last ? Math.min((now - last) / 1000, 0.05) : 0;
+        last = now;
+        if (!reduce) yaw += dt * 0.24;
+        render();
+        raf = requestAnimationFrame(loop);
+      }
+
+      function start() {
+        if (running || reduce) return;
+        running = true;
+        last = 0;
+        raf = requestAnimationFrame(loop);
+      }
+
+      function stop() {
+        running = false;
+        if (raf) cancelAnimationFrame(raf);
+        raf = 0;
+      }
+
+      // ---------------------------------------------------------------
+      // Divider
+      // ---------------------------------------------------------------
+      function setSplit(next) {
+        split = Math.min(0.97, Math.max(0.03, next));
+        divider.style.left = `${split * 100}%`;
+        const pct = Math.round(split * 100);
+        divider.setAttribute('aria-valuenow', String(pct));
+        divider.setAttribute(
+          'aria-valuetext',
+          `${pct}% solid, ${100 - pct}% captured geometry`,
+        );
+        if (reduce) render();
+      }
+
+      function pointerSplit(clientX) {
+        const rect = stage.getBoundingClientRect();
+        if (!rect.width) return;
+        setSplit((clientX - rect.left) / rect.width);
+      }
+
+      let dragging = false;
+
+      stage.addEventListener('pointerdown', (event) => {
+        dragging = true;
+        stage.setPointerCapture(event.pointerId);
+        pointerSplit(event.clientX);
+        event.preventDefault();
+      });
+
+      stage.addEventListener('pointermove', (event) => {
+        if (!dragging) return;
+        pointerSplit(event.clientX);
+      });
+
+      const endDrag = (event) => {
+        if (!dragging) return;
+        dragging = false;
+        if (stage.hasPointerCapture?.(event.pointerId)) {
+          stage.releasePointerCapture(event.pointerId);
+        }
+      };
+      stage.addEventListener('pointerup', endDrag);
+      stage.addEventListener('pointercancel', endDrag);
+
+      divider.addEventListener('keydown', (event) => {
+        const step = event.shiftKey ? 0.1 : 0.025;
+        if (event.key === 'ArrowLeft') setSplit(split - step);
+        else if (event.key === 'ArrowRight') setSplit(split + step);
+        else if (event.key === 'Home') setSplit(0.03);
+        else if (event.key === 'End') setSplit(0.97);
+        else return;
+        event.preventDefault();
+      });
+
+      // ---------------------------------------------------------------
+      // Lifecycle
+      // ---------------------------------------------------------------
+      const ro = new ResizeObserver(() => {
+        resize();
+        render();
+      });
+      ro.observe(stage);
+
+      const io = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) start();
+            else stop();
+          }
+        },
+        { threshold: 0.05 },
+      );
+      io.observe(root);
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) stop();
+        else if (!reduce) start();
+      });
+
+      resize();
+      setSplit(0.5);
+      render();
+    }
+
+    if (document.readyState !== 'loading') initMeshReveal();
+    else document.addEventListener('DOMContentLoaded', initMeshReveal);
+    document.addEventListener('astro:page-load', initMeshReveal);
+  })();
+</script>
+
+<style>
+  .mr {
+    margin: var(--sp-6) 0;
+  }
+  .mr__frame {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .mr__labels {
+    display: flex;
+    justify-content: space-between;
+    padding: var(--sp-3) var(--sp-4);
+    border-bottom: 1px solid var(--border);
+  }
+  .mr__label {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+  .mr__label--scan {
+    color: var(--accent-text);
+  }
+  .mr__stage {
+    position: relative;
+    aspect-ratio: 16 / 10;
+    max-height: 440px;
+    touch-action: none;
+    cursor: ew-resize;
+    user-select: none;
+  }
+  .mr__canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .mr__divider {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--border-strong);
+    cursor: ew-resize;
+  }
+  .mr__divider:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+  .mr__grip {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--fg-muted);
+    box-shadow: var(--shadow-sm);
+  }
+  .mr__grip svg {
+    width: 16px;
+    height: 16px;
+  }
+  .mr__readout {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-4);
+    padding: var(--sp-3) var(--sp-4);
+    border-top: 1px solid var(--border);
+    background: var(--bg-subtle);
+  }
+  .mr__stat {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--fg-faint);
+  }
+  .mr__stat b {
+    color: var(--accent-text);
+    font-weight: 600;
+  }
+  .mr__caption {
+    font-size: var(--fs-xs);
+    line-height: 1.6;
+    color: var(--fg-faint);
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 620px) {
+    .mr__stage {
+      aspect-ratio: 4 / 3;
+    }
+    .mr__readout {
+      gap: var(--sp-3);
+    }
+  }
+</style>
