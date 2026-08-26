@@ -23,7 +23,7 @@ export const SDKS: Sdk[] = [
     description:
       'Save and load Codable objects to and from the Document directory on iOS with a tiny, type-safe API.',
     tags: ['Codable', 'Persistence', 'FileManager'],
-    stars: 42,
+    stars: 43,
     language: 'Swift',
   },
   {
@@ -43,7 +43,7 @@ export const SDKS: Sdk[] = [
     description:
       'A generic, thread-safe networking layer built on the latest Swift 6 concurrency APIs to avoid data races and crashes.',
     tags: ['Networking', 'Swift 6', 'async/await', 'Sendable'],
-    stars: 26,
+    stars: 27,
     language: 'Swift',
   },
   {
@@ -57,13 +57,13 @@ export const SDKS: Sdk[] = [
     language: 'Swift',
   },
   {
-    name: 'phaseshift-ios',
-    displayName: 'PhaseShift',
-    repoUrl: 'https://github.com/egzonpllana/phaseshift-ios',
+    name: 'EMediaPicker',
+    displayName: 'EMediaPicker',
+    repoUrl: 'https://github.com/egzonpllana/EMediaPicker',
     description:
-      'Elegant modal presentation with custom phase-shift transition animations - a lightweight Swift package.',
-    tags: ['SwiftUI', 'Transitions', 'Animation'],
-    stars: 11,
+      'The simplest possible implementation over AVCaptureSession, AssetsLibrary and Photos - camera capture and library picking behind one API.',
+    tags: ['Media', 'Camera', 'Photos', 'AVFoundation'],
+    stars: 12,
     language: 'Swift',
   },
   {
@@ -73,6 +73,16 @@ export const SDKS: Sdk[] = [
     description:
       'Type-safe localization SDK with over-the-air delivery, so copy ships across languages without an App Store release.',
     tags: ['Localization', 'OTA', 'i18n'],
+    stars: 4,
+    language: 'Swift',
+  },
+  {
+    name: 'phaseshift-ios',
+    displayName: 'PhaseShift',
+    repoUrl: 'https://github.com/egzonpllana/phaseshift-ios',
+    description:
+      'Elegant modal presentation with custom phase-shift transition animations - a lightweight Swift package.',
+    tags: ['SwiftUI', 'Transitions', 'Animation'],
     stars: 4,
     language: 'Swift',
   },
