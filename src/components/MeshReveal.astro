@@ -1,10 +1,12 @@
 ---
 /**
- * Drag-to-reveal: the same object, at the same camera, rendered the way a room
- * sees it and the way a capture session sees it. Left of the divider is a
- * shaded solid; right of it is the point cloud and wireframe the reconstruction
- * actually works on. Everything is generated in the browser - there is no photo
- * and no scan here, only the transform, drawn twice.
+ * Two panels, one scan. Left: an iPhone orbiting a chair, its depth cone
+ * sweeping across the surface. Right: the point cloud that sweep produces,
+ * filling in as the phone passes each face and never emptying again until the
+ * loop restarts. Both panels are driven by the same orbit angle, so the right
+ * side is a consequence of the left rather than a second picture of it.
+ * Everything is generated in the browser - there is no photo and no scan here,
+ * only the transform, drawn twice.
  */
 interface Props {
   /** Caption under the frame. */
@@ -12,48 +14,30 @@ interface Props {
 }
 
 const {
-  caption = 'One object, one camera, two readings. Drag the divider - the geometry never moves, only what you are allowed to see of it.',
+  caption = 'The phone only ever captures what faces it. Coverage stalls short of 100% because the underside of a chair never turns toward the lens - which is why a real session ends on a judgement call, not a completion event.',
 } = Astro.props;
 ---
 
 <figure class="mr" data-mesh-reveal data-reveal>
   <div class="mr__frame">
-    <div class="mr__labels" aria-hidden="true">
-      <span class="mr__label mr__label--solid">in the room</span>
-      <span class="mr__label mr__label--scan">what capture sees</span>
-    </div>
-
-    <div class="mr__stage" data-stage>
+    <div
+      class="mr__stage"
+      data-stage
+      role="img"
+      aria-label="An iPhone orbits a chair while its depth cone sweeps the surface; alongside it, the point cloud produced by that sweep fills in face by face."
+    >
       <canvas class="mr__canvas" data-canvas></canvas>
-
-      <div
-        class="mr__divider"
-        data-divider
-        role="slider"
-        tabindex="0"
-        aria-label="Reveal the captured geometry"
-        aria-valuemin="0"
-        aria-valuemax="100"
-        aria-valuenow="50"
-        aria-valuetext="Half solid, half point cloud"
-      >
-        <span class="mr__grip" aria-hidden="true">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor">
-            <path d="M6 4 3 8l3 4M10 4l3 4-3 4" stroke-width="1.6"></path>
-          </svg>
-        </span>
-      </div>
     </div>
 
-    <div class="mr__readout">
+    <div class="mr__readout" aria-hidden="true">
       <span class="mr__stat">
-        vertices <b data-stat-vertices>0</b>
+        points captured <b data-stat-captured>0</b>
+      </span>
+      <span class="mr__stat">
+        coverage <b data-stat-coverage>0%</b>
       </span>
       <span class="mr__stat">
         triangles <b data-stat-triangles>0</b>
-      </span>
-      <span class="mr__stat">
-        points drawn <b data-stat-points>0</b>
       </span>
     </div>
   </div>
@@ -70,8 +54,7 @@ const {
 
       const canvas = root.querySelector('[data-canvas]');
       const stage = root.querySelector('[data-stage]');
-      const divider = root.querySelector('[data-divider]');
-      if (!canvas || !stage || !divider) return;
+      if (!canvas || !stage) return;
 
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
@@ -80,18 +63,18 @@ const {
         '(prefers-reduced-motion: reduce)',
       ).matches;
 
-      // ---------------------------------------------------------------
-      // Geometry - a lounge armchair. Y is up, metres, roughly life size.
-      // Upholstery is built from rounded boxes so the silhouette curves
-      // the way a cushion does; the legs are turned frusta.
-      // ---------------------------------------------------------------
-      const positions = [];
-      const triangles = [];
-      /** Per-triangle material index, parallel to `triangles`. */
-      const materials = [];
+      const TAU = Math.PI * 2;
 
-      const FABRIC = 0;
-      const WOOD = 1;
+      // ---------------------------------------------------------------
+      // Mesh building. Y is up, metres, roughly life size. Upholstery is
+      // built from rounded boxes so the silhouette curves the way a cushion
+      // does; the legs are turned frusta. Every builder writes into a mesh
+      // object, because there are two meshes now - the chair and the phone -
+      // and only the chair is allowed to become point cloud.
+      // ---------------------------------------------------------------
+      function createMesh() {
+        return { positions: [], triangles: [], materials: [] };
+      }
 
       /** Rotate about X, then translate. Enough for a reclined back. */
       function place(point, pitch, origin) {
@@ -107,7 +90,15 @@ const {
        * grid; every grid point is pushed out from the clamped inner core, so
        * flats stay flat and corners round.
        */
-      function roundedBox(origin, size, radius, seg, material, pitch = 0) {
+      function roundedBox(
+        mesh,
+        origin,
+        size,
+        radius,
+        seg,
+        material,
+        pitch = 0,
+      ) {
         const half = [size[0] / 2, size[1] / 2, size[2] / 2];
         const r = Math.min(radius, Math.min(half[0], half[1], half[2]) * 0.98);
         const inner = [half[0] - r, half[1] - r, half[2] - r];
@@ -147,7 +138,7 @@ const {
         ];
 
         for (const [n, u, v] of faces) {
-          const base = positions.length;
+          const base = mesh.positions.length;
           for (let j = 0; j <= seg; j++) {
             for (let i = 0; i <= seg; i++) {
               const su = (i / seg) * 2 - 1;
@@ -167,7 +158,7 @@ const {
               const dy = p[1] - core[1];
               const dz = p[2] - core[2];
               const len = Math.hypot(dx, dy, dz) || 1;
-              positions.push(
+              mesh.positions.push(
                 place(
                   [
                     core[0] + (dx / len) * r,
@@ -188,27 +179,27 @@ const {
               const b = a + 1;
               const c = a + row + 1;
               const d = a + row;
-              triangles.push([a, b, c]);
-              materials.push(material);
-              triangles.push([a, c, d]);
-              materials.push(material);
+              mesh.triangles.push([a, b, c]);
+              mesh.materials.push(material);
+              mesh.triangles.push([a, c, d]);
+              mesh.materials.push(material);
             }
           }
         }
       }
 
       /** A turned leg: a frustum with a capped foot. */
-      function leg(x, z, topRadius, footRadius, height, sides, material) {
-        const base = positions.length;
+      function leg(mesh, x, z, topRadius, footRadius, height, sides, material) {
+        const base = mesh.positions.length;
         for (let i = 0; i < sides; i++) {
-          const angle = (i / sides) * Math.PI * 2;
+          const angle = (i / sides) * TAU;
           const ca = Math.cos(angle);
           const sa = Math.sin(angle);
-          positions.push([x + ca * topRadius, height, z + sa * topRadius]);
-          positions.push([x + ca * footRadius, 0, z + sa * footRadius]);
+          mesh.positions.push([x + ca * topRadius, height, z + sa * topRadius]);
+          mesh.positions.push([x + ca * footRadius, 0, z + sa * footRadius]);
         }
-        const centre = positions.length;
-        positions.push([x, 0, z]);
+        const centre = mesh.positions.length;
+        mesh.positions.push([x, 0, z]);
 
         for (let i = 0; i < sides; i++) {
           const next = (i + 1) % sides;
@@ -217,21 +208,130 @@ const {
           const topB = base + next * 2;
           const footB = topB + 1;
 
-          triangles.push([topA, topB, footB]);
-          materials.push(material);
-          triangles.push([topA, footB, footA]);
-          materials.push(material);
+          mesh.triangles.push([topA, topB, footB]);
+          mesh.materials.push(material);
+          mesh.triangles.push([topA, footB, footA]);
+          mesh.materials.push(material);
 
-          triangles.push([centre, footA, footB]);
-          materials.push(material);
+          mesh.triangles.push([centre, footA, footB]);
+          mesh.materials.push(material);
         }
       }
 
+      /**
+       * Per-triangle normals, crease-guarded shading normals, and welded
+       * edges. The geometry never deforms, so all of it is computed once.
+       */
+      function finalize(mesh) {
+        const { positions, triangles } = mesh;
+
+        const normals = triangles.map((t) => {
+          const a = positions[t[0]];
+          const b = positions[t[1]];
+          const c = positions[t[2]];
+          const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+          const ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+          const nx = ab[1] * ac[2] - ab[2] * ac[1];
+          const ny = ab[2] * ac[0] - ab[0] * ac[2];
+          const nz = ab[0] * ac[1] - ab[1] * ac[0];
+          const len = Math.hypot(nx, ny, nz) || 1;
+          return [nx / len, ny / len, nz / len];
+        });
+
+        // Welded by rounded position rather than by index - each face of a
+        // rounded box is generated as its own grid, so the seams between them
+        // are separate vertices that sit in the same place. Welding is what
+        // lets the silhouette pass tell an outline from an interior edge, and
+        // what lets shading smooth across a face boundary.
+        const weld = positions.map(
+          (p) =>
+            `${Math.round(p[0] * 1e4)},${Math.round(p[1] * 1e4)},${Math.round(p[2] * 1e4)}`,
+        );
+
+        const edgeMap = new Map();
+        const facesAtVertex = new Map();
+        triangles.forEach((t, faceIndex) => {
+          for (const index of t) {
+            const key = weld[index];
+            const list = facesAtVertex.get(key);
+            if (list) list.push(faceIndex);
+            else facesAtVertex.set(key, [faceIndex]);
+          }
+          const pairs = [
+            [t[0], t[1]],
+            [t[1], t[2]],
+            [t[2], t[0]],
+          ];
+          for (const [p, q] of pairs) {
+            const kp = weld[p];
+            const kq = weld[q];
+            const key = kp < kq ? `${kp}|${kq}` : `${kq}|${kp}`;
+            const existing = edgeMap.get(key);
+            if (existing) existing.faces.push(faceIndex);
+            else edgeMap.set(key, { a: p, b: q, faces: [faceIndex] });
+          }
+        });
+
+        // Smoothed across welded vertices, but only where the surface is
+        // genuinely continuous. Without the angle guard a rolled arm's end cap
+        // bleeds into its side and the whole part goes muddy; without the
+        // smoothing at all, every facet reads as a facet.
+        const shadeNormals = triangles.map((t, i) => {
+          const own = normals[i];
+          let ax = 0;
+          let ay = 0;
+          let az = 0;
+          for (const index of t) {
+            let vx = 0;
+            let vy = 0;
+            let vz = 0;
+            for (const face of facesAtVertex.get(weld[index])) {
+              const n = normals[face];
+              if (n[0] * own[0] + n[1] * own[1] + n[2] * own[2] < 0.35)
+                continue;
+              vx += n[0];
+              vy += n[1];
+              vz += n[2];
+            }
+            const vl = Math.hypot(vx, vy, vz) || 1;
+            ax += vx / vl;
+            ay += vy / vl;
+            az += vz / vl;
+          }
+          const l = Math.hypot(ax, ay, az) || 1;
+          return [ax / l, ay / l, az / l];
+        });
+
+        return {
+          ...mesh,
+          normals,
+          shadeNormals,
+          edges: Array.from(edgeMap.values()),
+          facing: new Int8Array(triangles.length),
+          order: [],
+          projected: new Array(positions.length),
+        };
+      }
+
+      // ---------------------------------------------------------------
+      // The object being scanned
+      // ---------------------------------------------------------------
+      const FABRIC = 0;
+      const WOOD = 1;
       const RECLINE = -0.15; // radians, the back leans away from the seat
 
-      roundedBox([0, 0.28, 0], [0.74, 0.1, 0.72], 0.03, 2, FABRIC); // plinth
-      roundedBox([0, 0.4, 0.03], [0.56, 0.14, 0.6], 0.055, 4, FABRIC); // seat cushion
+      const chairMesh = createMesh();
+      roundedBox(chairMesh, [0, 0.28, 0], [0.74, 0.1, 0.72], 0.03, 2, FABRIC); // plinth
       roundedBox(
+        chairMesh,
+        [0, 0.4, 0.03],
+        [0.56, 0.14, 0.6],
+        0.055,
+        4,
+        FABRIC,
+      ); // seat cushion
+      roundedBox(
+        chairMesh,
         [0, 0.7, -0.28],
         [0.76, 0.62, 0.16],
         0.072,
@@ -239,9 +339,18 @@ const {
         FABRIC,
         RECLINE,
       ); // back
-      roundedBox([0, 0.62, -0.2], [0.56, 0.42, 0.12], 0.05, 3, FABRIC, RECLINE); // back cushion
+      roundedBox(
+        chairMesh,
+        [0, 0.62, -0.2],
+        [0.56, 0.42, 0.12],
+        0.05,
+        3,
+        FABRIC,
+        RECLINE,
+      ); // back cushion
       for (const sx of [-1, 1]) {
         roundedBox(
+          chairMesh,
           [sx * 0.34, 0.46, 0.02],
           [0.12, 0.26, 0.7],
           0.059,
@@ -251,14 +360,42 @@ const {
       }
       for (const sx of [-1, 1]) {
         for (const sz of [-1, 1]) {
-          leg(sx * 0.29, sz * 0.29, 0.032, 0.018, 0.23, 10, WOOD);
+          leg(chairMesh, sx * 0.29, sz * 0.29, 0.032, 0.018, 0.23, 10, WOOD);
         }
       }
+
+      const chair = finalize(chairMesh);
+
+      // ---------------------------------------------------------------
+      // The phone. Local space: +Z is where the rear camera looks, +Y is up.
+      // Drawn well oversized on purpose - at true scale, at the distance that
+      // fits a whole orbit in frame, an iPhone is twenty pixels of grey.
+      // ---------------------------------------------------------------
+      const SHELL = 0;
+      const LENS = 1;
+
+      const phoneMesh = createMesh();
+      roundedBox(phoneMesh, [0, 0, 0], [0.2, 0.42, 0.026], 0.028, 2, SHELL); // body
+      roundedBox(
+        phoneMesh,
+        [0.046, 0.13, 0.018],
+        [0.086, 0.086, 0.012],
+        0.024,
+        2,
+        LENS,
+      ); // camera plateau
+
+      const phone = finalize(phoneMesh);
+      /** Rebuilt every frame from the orbit pose; the local mesh never moves. */
+      const phoneWorld = phone.positions.map(() => [0, 0, 0]);
+      const phoneShade = phone.shadeNormals.map(() => [0, 0, 0]);
 
       // ---------------------------------------------------------------
       // Surface samples - what a depth pass would actually return: points
       // scattered over the faces, not just the eight corners of each box.
-      // Deterministic, so the picture is the same on every load.
+      // Each sample carries the normal of the triangle it came from, because
+      // that is what decides whether the phone can see it. Deterministic, so
+      // the picture is the same on every load.
       // ---------------------------------------------------------------
       function mulberry32(seed) {
         let a = seed;
@@ -272,11 +409,15 @@ const {
       }
 
       const rand = mulberry32(0x5ea15c);
-      const cloud = [];
+      const samples = [];
       const POINT_BUDGET = 2400;
 
-      const areas = triangles.map((t) => {
-        const [a, b, c] = [positions[t[0]], positions[t[1]], positions[t[2]]];
+      const areas = chair.triangles.map((t) => {
+        const [a, b, c] = [
+          chair.positions[t[0]],
+          chair.positions[t[1]],
+          chair.positions[t[2]],
+        ];
         const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
         const ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
         const cx = ab[1] * ac[2] - ab[2] * ac[1];
@@ -286,12 +427,17 @@ const {
       });
       const totalArea = areas.reduce((s, a) => s + a, 0);
 
-      triangles.forEach((t, i) => {
+      chair.triangles.forEach((t, i) => {
         const n = Math.max(
           1,
           Math.round((areas[i] / totalArea) * POINT_BUDGET),
         );
-        const [a, b, c] = [positions[t[0]], positions[t[1]], positions[t[2]]];
+        const [a, b, c] = [
+          chair.positions[t[0]],
+          chair.positions[t[1]],
+          chair.positions[t[2]],
+        ];
+        const normal = chair.normals[i];
         for (let k = 0; k < n; k++) {
           let u = rand();
           let v = rand();
@@ -301,49 +447,35 @@ const {
           }
           // A small normal-direction wobble, because depth is never exact.
           const jitter = (rand() - 0.5) * 0.006;
-          cloud.push([
+          samples.push(
             a[0] + u * (b[0] - a[0]) + v * (c[0] - a[0]) + jitter,
             a[1] + u * (b[1] - a[1]) + v * (c[1] - a[1]) + jitter,
             a[2] + u * (b[2] - a[2]) + v * (c[2] - a[2]) + jitter,
-          ]);
+            normal[0],
+            normal[1],
+            normal[2],
+          );
         }
       });
 
-      // Edges, welded by position rather than by index - each face of a
-      // rounded box is generated as its own grid, so the seams between them
-      // are separate vertices that sit in the same place. Welding here is
-      // what makes the silhouette pass below able to tell an outline from
-      // an interior edge.
-      const weldKey = (index) => {
-        const p = positions[index];
-        return `${Math.round(p[0] * 1e4)},${Math.round(p[1] * 1e4)},${Math.round(p[2] * 1e4)}`;
-      };
-      const weld = positions.map((_, i) => weldKey(i));
+      /** x, y, z, nx, ny, nz per point. */
+      const cloud = Float32Array.from(samples);
+      const cloudCount = cloud.length / 6;
+      const captured = new Uint8Array(cloudCount);
+      let capturedCount = 0;
 
-      const edgeMap = new Map();
-      triangles.forEach((t, faceIndex) => {
-        const pairs = [
-          [t[0], t[1]],
-          [t[1], t[2]],
-          [t[2], t[0]],
-        ];
-        for (const [p, q] of pairs) {
-          const kp = weld[p];
-          const kq = weld[q];
-          const key = kp < kq ? `${kp}|${kq}` : `${kq}|${kp}`;
-          const existing = edgeMap.get(key);
-          if (existing) existing.faces.push(faceIndex);
-          else edgeMap.set(key, { a: p, b: q, faces: [faceIndex] });
-        }
-      });
-      const edges = Array.from(edgeMap.values());
+      /** Screen-space output for the cloud: x, y, depth per point. */
+      const projectedCloud = new Float32Array(cloudCount * 3);
+      /** Indices lit on this frame, for the beam and the surface glow. */
+      const fresh = new Int32Array(512);
+      let freshCount = 0;
 
-      const vertsEl = root.querySelector('[data-stat-vertices]');
-      const trisEl = root.querySelector('[data-stat-triangles]');
-      const pointsEl = root.querySelector('[data-stat-points]');
-      if (vertsEl) vertsEl.textContent = String(positions.length);
-      if (trisEl) trisEl.textContent = String(triangles.length);
-      if (pointsEl) pointsEl.textContent = String(cloud.length);
+      const capturedEl = root.querySelector('[data-stat-captured]');
+      const coverageEl = root.querySelector('[data-stat-coverage]');
+      const trianglesEl = root.querySelector('[data-stat-triangles]');
+      if (trianglesEl) {
+        trianglesEl.textContent = String(chair.triangles.length);
+      }
 
       // ---------------------------------------------------------------
       // Palette - read from the page so the render follows the theme.
@@ -360,6 +492,7 @@ const {
           muted: get('--fg-muted', '#5b6472'),
           border: get('--border-strong', '#d4d9e0'),
           accent: get('--accent', '#11a14e'),
+          mono: get('--font-mono', 'monospace'),
           dark: document.documentElement.dataset.theme === 'dark',
         };
       }
@@ -371,12 +504,77 @@ const {
         attributeFilter: ['data-theme'],
       });
 
+      /** Upholstery and wood, per theme. */
+      const CHAIR_TONES = {
+        light: [
+          [214, 206, 194],
+          [146, 104, 70],
+        ],
+        dark: [
+          [196, 186, 172],
+          [152, 108, 72],
+        ],
+      };
+
+      /** Shell and lens plateau, per theme. */
+      const PHONE_TONES = {
+        light: [
+          [96, 102, 112],
+          [40, 44, 52],
+        ],
+        dark: [
+          [138, 146, 158],
+          [52, 56, 64],
+        ],
+      };
+
+      /** Wall and floor behind the object, on the capture-rig panel only. */
+      const ROOM = {
+        light: { wall: [242, 240, 236], floor: [216, 210, 200] },
+        dark: { wall: [38, 40, 46], floor: [28, 30, 35] },
+      };
+
+      const accent = (alpha) =>
+        palette.dark
+          ? `rgba(46, 224, 106, ${alpha})`
+          : `rgba(11, 122, 59, ${alpha})`;
+
       // ---------------------------------------------------------------
-      // Camera
+      // Cameras. The rig panel is fixed so the phone is the only thing that
+      // moves in it; the cloud panel turns slowly, because a point cloud that
+      // does not turn reads as a smudge.
       // ---------------------------------------------------------------
+      const rigCam = {
+        yaw: 0.58,
+        pitch: -0.3,
+        distance: 3.0,
+        target: [0, 0.58, 0],
+        zoom: 0.95,
+        shiftY: 0.04,
+      };
+
+      const cloudCam = {
+        yaw: reduce ? 0.62 : 0.35,
+        pitch: -0.16,
+        distance: 2.75,
+        target: [0, 0.52, 0],
+        zoom: 0.98,
+        shiftY: 0.04,
+      };
+
+      const ORBIT_RADIUS = 1.05;
+      /** One full pass, then a beat on the finished cloud, then reset. */
+      const SCAN_SECONDS = 11;
+      const HOLD_SECONDS = 2.5;
+      /** How square-on a face has to be before the pass will accept it. */
+      const FACING_THRESHOLD = 0.55;
+      /** Half-angle of the depth cone - wide enough to contain the object. */
+      const CONE = 0.62;
+
       let width = 0;
       let height = 0;
       let dpr = 1;
+      let elapsed = 0;
 
       function resize() {
         const rect = stage.getBoundingClientRect();
@@ -389,122 +587,87 @@ const {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       }
 
-      const PITCH = -0.16;
-      const DISTANCE = 2.75;
-      const TARGET = [0, 0.52, 0];
-      let yaw = reduce ? 0.62 : 0.35;
+      /**
+       * Side by side when there is room, stacked when there is not. Driven by
+       * the stage's own aspect ratio, which CSS already flips at the mobile
+       * breakpoint - so there is no second pixel threshold to keep in sync.
+       */
+      function layout() {
+        if (width / height < 1.15) {
+          const half = Math.round(height / 2);
+          return {
+            stacked: true,
+            rig: { x: 0, y: 0, w: width, h: half },
+            cloud: { x: 0, y: half, w: width, h: height - half },
+          };
+        }
+        const half = Math.round(width / 2);
+        return {
+          stacked: false,
+          rig: { x: 0, y: 0, w: half, h: height },
+          cloud: { x: half, y: 0, w: width - half, h: height },
+        };
+      }
 
-      const projected = new Array(positions.length);
-      const projectedCloud = new Array(cloud.length);
+      function projectPoint(p, cam, rect, focal) {
+        const cy = Math.cos(cam.yaw);
+        const sy = Math.sin(cam.yaw);
+        const cp = Math.cos(cam.pitch);
+        const sp = Math.sin(cam.pitch);
+        const x = p[0] - cam.target[0];
+        const y = p[1] - cam.target[1];
+        const z = p[2] - cam.target[2];
+        const rx = x * cy + z * sy;
+        const rz = -x * sy + z * cy;
+        const ry = y * cp - rz * sp;
+        const rz2 = y * sp + rz * cp + cam.distance;
+        const inv = focal / Math.max(rz2, 0.05);
+        return [
+          rect.x + rect.w / 2 + rx * inv,
+          rect.y + rect.h / 2 + rect.h * (cam.shiftY || 0) - ry * inv,
+          rz2,
+        ];
+      }
 
-      function projectInto(source, out) {
-        const cy = Math.cos(yaw);
-        const sy = Math.sin(yaw);
-        const cp = Math.cos(PITCH);
-        const sp = Math.sin(PITCH);
-        const focal = Math.min(width, height * 1.35) * 0.98;
-        const ox = width / 2;
-        const oy = height / 2 + height * 0.04;
+      function focalFor(rect, cam) {
+        return Math.min(rect.w, rect.h * 1.35) * cam.zoom;
+      }
 
+      function projectMesh(source, out, cam, rect) {
+        const focal = focalFor(rect, cam);
         for (let i = 0; i < source.length; i++) {
-          const p = source[i];
-          const x = p[0] - TARGET[0];
-          const y = p[1] - TARGET[1];
-          const z = p[2] - TARGET[2];
-
-          const rx = x * cy + z * sy;
-          const rz = -x * sy + z * cy;
-          const ry = y * cp - rz * sp;
-          const rz2 = y * sp + rz * cp + DISTANCE;
-
-          const inv = focal / Math.max(rz2, 0.05);
-          out[i] = [ox + rx * inv, oy - ry * inv, rz2];
+          out[i] = projectPoint(source[i], cam, rect, focal);
         }
       }
 
-      // ---------------------------------------------------------------
-      // Static per-triangle data. The geometry never deforms, so normals
-      // are computed once rather than per frame.
-      // ---------------------------------------------------------------
-      const normals = triangles.map((t) => {
-        const a = positions[t[0]];
-        const b = positions[t[1]];
-        const c = positions[t[2]];
-        const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        const ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-        const nx = ab[1] * ac[2] - ab[2] * ac[1];
-        const ny = ab[2] * ac[0] - ab[0] * ac[2];
-        const nz = ab[0] * ac[1] - ab[1] * ac[0];
-        const len = Math.hypot(nx, ny, nz) || 1;
-        return [nx / len, ny / len, nz / len];
-      });
+      function projectCloud(cam, rect) {
+        const focal = focalFor(rect, cam);
+        const cy = Math.cos(cam.yaw);
+        const sy = Math.sin(cam.yaw);
+        const cp = Math.cos(cam.pitch);
+        const sp = Math.sin(cam.pitch);
+        const ox = rect.x + rect.w / 2;
+        const oy = rect.y + rect.h / 2 + rect.h * (cam.shiftY || 0);
 
-      // Shading normals, smoothed across welded vertices but only where the
-      // surface is genuinely continuous. Without the angle guard a rolled
-      // arm's end cap would bleed into its side and the whole part would go
-      // muddy; without the smoothing at all, every facet reads as a facet.
-      const facesAtVertex = new Map();
-      triangles.forEach((t, i) => {
-        for (const index of t) {
-          const key = weld[index];
-          const list = facesAtVertex.get(key);
-          if (list) list.push(i);
-          else facesAtVertex.set(key, [i]);
+        for (let i = 0; i < cloudCount; i++) {
+          const base = i * 6;
+          const x = cloud[base] - cam.target[0];
+          const y = cloud[base + 1] - cam.target[1];
+          const z = cloud[base + 2] - cam.target[2];
+          const rx = x * cy + z * sy;
+          const rz = -x * sy + z * cy;
+          const ry = y * cp - rz * sp;
+          const rz2 = y * sp + rz * cp + cam.distance;
+          const inv = focal / Math.max(rz2, 0.05);
+          const at = i * 3;
+          projectedCloud[at] = ox + rx * inv;
+          projectedCloud[at + 1] = oy - ry * inv;
+          projectedCloud[at + 2] = rz2;
         }
-      });
+      }
 
-      const shadeNormals = triangles.map((t, i) => {
-        const own = normals[i];
-        let ax = 0;
-        let ay = 0;
-        let az = 0;
-        for (const index of t) {
-          let vx = 0;
-          let vy = 0;
-          let vz = 0;
-          for (const face of facesAtVertex.get(weld[index])) {
-            const n = normals[face];
-            // Only blend faces on the same smooth surface, so creases stay
-            // creases.
-            if (n[0] * own[0] + n[1] * own[1] + n[2] * own[2] < 0.35) continue;
-            vx += n[0];
-            vy += n[1];
-            vz += n[2];
-          }
-          const vl = Math.hypot(vx, vy, vz) || 1;
-          ax += vx / vl;
-          ay += vy / vl;
-          az += vz / vl;
-        }
-        const l = Math.hypot(ax, ay, az) || 1;
-        return [ax / l, ay / l, az / l];
-      });
-
-      /** Upholstery and wood, per theme. */
-      const TONES = {
-        light: [
-          [214, 206, 194],
-          [146, 104, 70],
-        ],
-        dark: [
-          [196, 186, 172],
-          [152, 108, 72],
-        ],
-      };
-
-      /** Wall and floor behind the object, on the solid half only. */
-      const ROOM = {
-        light: { wall: [242, 240, 236], floor: [216, 210, 200] },
-        dark: { wall: [38, 40, 46], floor: [28, 30, 35] },
-      };
-
-      const facing = new Int8Array(triangles.length);
-      const order = [];
-
-      // ---------------------------------------------------------------
-      // Passes
-      // ---------------------------------------------------------------
-      function classify() {
+      function classify(mesh) {
+        const { triangles, projected, facing, order } = mesh;
         order.length = 0;
         for (let i = 0; i < triangles.length; i++) {
           const t = triangles[i];
@@ -523,33 +686,193 @@ const {
         order.sort((p, q) => q[1] - p[1]);
       }
 
-      function drawFloorShadow() {
-        // The solid half is a room, so the chair gets contact with a floor.
-        // The captured half deliberately does not - geometry has no lighting.
-        const centre = [0, 0.005, 0];
-        const cy = Math.cos(yaw);
-        const sy = Math.sin(yaw);
-        const cp = Math.cos(PITCH);
-        const sp = Math.sin(PITCH);
-        const focal = Math.min(width, height * 1.35) * 0.98;
-        const ox = width / 2;
-        const oy = height / 2 + height * 0.04;
+      // ---------------------------------------------------------------
+      // The scan itself
+      // ---------------------------------------------------------------
+      const phonePos = [0, 0, 0];
+      const phoneForward = [0, 0, 0];
+      const phoneRight = [0, 0, 0];
+      const phoneUp = [0, 0, 0];
 
-        const project = (p) => {
-          const x = p[0] - TARGET[0];
-          const y = p[1] - TARGET[1];
-          const z = p[2] - TARGET[2];
-          const rx = x * cy + z * sy;
-          const rz = -x * sy + z * cy;
-          const ry = y * cp - rz * sp;
-          const rz2 = y * sp + rz * cp + DISTANCE;
-          const inv = focal / Math.max(rz2, 0.05);
-          return [ox + rx * inv, oy - ry * inv];
-        };
+      /**
+       * Place the phone on its orbit and aim it at the object. Height rides a
+       * slower sine than the orbit, so a full pass also sweeps up and down -
+       * which is the only way the top and underside of anything get captured.
+       */
+      function poseFor(angle) {
+        const height = 0.92 + Math.sin(angle * 2) * 0.34;
+        phonePos[0] = Math.sin(angle) * ORBIT_RADIUS;
+        phonePos[1] = height;
+        phonePos[2] = Math.cos(angle) * ORBIT_RADIUS;
 
-        const c = project(centre);
-        const rx = Math.abs(project([0.62, 0.005, 0])[0] - c[0]);
-        const ry = Math.abs(project([0, 0.005, 0.62])[1] - c[1]) + 6;
+        const tx = cloudCam.target[0] - phonePos[0];
+        const ty = cloudCam.target[1] - phonePos[1];
+        const tz = cloudCam.target[2] - phonePos[2];
+        const tl = Math.hypot(tx, ty, tz) || 1;
+        phoneForward[0] = tx / tl;
+        phoneForward[1] = ty / tl;
+        phoneForward[2] = tz / tl;
+
+        // right = up x forward, then up = forward x right. World up is +Y.
+        phoneRight[0] = phoneForward[2];
+        phoneRight[1] = 0;
+        phoneRight[2] = -phoneForward[0];
+        const rl = Math.hypot(phoneRight[0], phoneRight[2]) || 1;
+        phoneRight[0] /= rl;
+        phoneRight[2] /= rl;
+
+        phoneUp[0] =
+          phoneForward[1] * phoneRight[2] - phoneForward[2] * phoneRight[1];
+        phoneUp[1] =
+          phoneForward[2] * phoneRight[0] - phoneForward[0] * phoneRight[2];
+        phoneUp[2] =
+          phoneForward[0] * phoneRight[1] - phoneForward[1] * phoneRight[0];
+
+        for (let i = 0; i < phone.positions.length; i++) {
+          const p = phone.positions[i];
+          const w = phoneWorld[i];
+          w[0] =
+            phonePos[0] +
+            phoneRight[0] * p[0] +
+            phoneUp[0] * p[1] +
+            phoneForward[0] * p[2];
+          w[1] =
+            phonePos[1] +
+            phoneRight[1] * p[0] +
+            phoneUp[1] * p[1] +
+            phoneForward[1] * p[2];
+          w[2] =
+            phonePos[2] +
+            phoneRight[2] * p[0] +
+            phoneUp[2] * p[1] +
+            phoneForward[2] * p[2];
+        }
+
+        for (let i = 0; i < phone.shadeNormals.length; i++) {
+          const n = phone.shadeNormals[i];
+          const s = phoneShade[i];
+          s[0] =
+            phoneRight[0] * n[0] + phoneUp[0] * n[1] + phoneForward[0] * n[2];
+          s[1] =
+            phoneRight[1] * n[0] + phoneUp[1] * n[1] + phoneForward[1] * n[2];
+          s[2] =
+            phoneRight[2] * n[0] + phoneUp[2] * n[1] + phoneForward[2] * n[2];
+        }
+      }
+
+      /**
+       * Mark every point the phone can currently see. A point counts when its
+       * normal turns far enough toward the lens and it falls inside the depth
+       * cone. Nothing is ever un-marked: coverage only grows, the way a real
+       * session accumulates. Self-occlusion is not modelled - on a shape this
+       * convex the facing test is doing nearly all of that work anyway.
+       *
+       * `fresh` collects what is in view right now rather than what is new,
+       * because the beam has to keep drawing after coverage plateaus - a phone
+       * that stops emitting once the cloud is full reads as a broken loop.
+       */
+      function advanceCapture(collectFresh) {
+        freshCount = 0;
+        const cosCone = Math.cos(CONE);
+
+        for (let i = 0; i < cloudCount; i++) {
+          const base = i * 6;
+          const dx = phonePos[0] - cloud[base];
+          const dy = phonePos[1] - cloud[base + 1];
+          const dz = phonePos[2] - cloud[base + 2];
+          const len = Math.hypot(dx, dy, dz) || 1;
+          const ux = dx / len;
+          const uy = dy / len;
+          const uz = dz / len;
+
+          if (
+            cloud[base + 3] * ux + cloud[base + 4] * uy + cloud[base + 5] * uz <
+            FACING_THRESHOLD
+          ) {
+            continue;
+          }
+          // Inside the cone: the ray out to the point, against where the lens
+          // is aimed.
+          if (
+            -ux * phoneForward[0] -
+              uy * phoneForward[1] -
+              uz * phoneForward[2] <
+            cosCone
+          ) {
+            continue;
+          }
+
+          if (!captured[i]) {
+            captured[i] = 1;
+            capturedCount++;
+          }
+          // Every third visible point, so the fan stays a fan rather than a
+          // solid wedge, and the buffer never has to grow.
+          if (collectFresh && i % 3 === 0 && freshCount < fresh.length) {
+            fresh[freshCount++] = i;
+          }
+        }
+      }
+
+      function resetScan() {
+        captured.fill(0);
+        capturedCount = 0;
+        freshCount = 0;
+        reported = -1;
+      }
+
+      let reported = -1;
+
+      function updateReadout() {
+        // Only when the number actually moved - this runs inside the frame
+        // loop, and formatting plus two layout-invalidating writes at 60 Hz is
+        // real work for a readout that changes a few hundred times a pass.
+        if (reported === capturedCount) return;
+        reported = capturedCount;
+        if (capturedEl) capturedEl.textContent = capturedCount.toLocaleString();
+        if (coverageEl) {
+          coverageEl.textContent = `${Math.round((capturedCount / cloudCount) * 100)}%`;
+        }
+      }
+
+      // ---------------------------------------------------------------
+      // Passes
+      // ---------------------------------------------------------------
+      function drawRoom(rect) {
+        const room = palette.dark ? ROOM.dark : ROOM.light;
+        const horizon = rect.y + rect.h * 0.68;
+
+        const wall = ctx.createLinearGradient(0, rect.y, 0, horizon);
+        wall.addColorStop(
+          0,
+          `rgb(${room.wall.map((v) => Math.round(v * 0.88))})`,
+        );
+        wall.addColorStop(1, `rgb(${room.wall})`);
+        ctx.fillStyle = wall;
+        ctx.fillRect(rect.x, rect.y, rect.w, horizon - rect.y);
+
+        const floor = ctx.createLinearGradient(0, horizon, 0, rect.y + rect.h);
+        floor.addColorStop(0, `rgb(${room.floor})`);
+        floor.addColorStop(
+          1,
+          `rgb(${room.floor.map((v) => Math.round(v * 0.8))})`,
+        );
+        ctx.fillStyle = floor;
+        ctx.fillRect(rect.x, horizon, rect.w, rect.y + rect.h - horizon);
+      }
+
+      function drawFloorShadow(rect) {
+        // The rig panel is a room, so the chair gets contact with a floor. The
+        // cloud panel deliberately does not - geometry has no lighting.
+        const focal = focalFor(rect, rigCam);
+        const c = projectPoint([0, 0.005, 0], rigCam, rect, focal);
+        const rx = Math.abs(
+          projectPoint([0.62, 0.005, 0], rigCam, rect, focal)[0] - c[0],
+        );
+        const ry =
+          Math.abs(
+            projectPoint([0, 0.005, 0.62], rigCam, rect, focal)[1] - c[1],
+          ) + 5;
 
         const gradient = ctx.createRadialGradient(
           c[0],
@@ -571,63 +894,38 @@ const {
         ctx.translate(-c[0], -c[1]);
         ctx.fillStyle = gradient;
         ctx.beginPath();
-        ctx.arc(c[0], c[1], Math.max(rx, 1), 0, Math.PI * 2);
+        ctx.arc(c[0], c[1], Math.max(rx, 1), 0, TAU);
         ctx.fill();
         ctx.restore();
       }
 
-      function drawRoom() {
-        const room = palette.dark ? ROOM.dark : ROOM.light;
-        const horizon = height * 0.66;
-
-        const wall = ctx.createLinearGradient(0, 0, 0, horizon);
-        wall.addColorStop(
-          0,
-          `rgb(${room.wall.map((v) => Math.round(v * 0.88))})`,
-        );
-        wall.addColorStop(1, `rgb(${room.wall})`);
-        ctx.fillStyle = wall;
-        ctx.fillRect(0, 0, width, horizon);
-
-        const floor = ctx.createLinearGradient(0, horizon, 0, height);
-        floor.addColorStop(0, `rgb(${room.floor})`);
-        floor.addColorStop(
-          1,
-          `rgb(${room.floor.map((v) => Math.round(v * 0.8))})`,
-        );
-        ctx.fillStyle = floor;
-        ctx.fillRect(0, horizon, width, height - horizon);
-      }
-
-      function drawSolid() {
-        drawRoom();
-        drawFloorShadow();
-
-        // One key light plus a cool fill, both rotating with the camera so
-        // the form reads at every angle.
-        const lx = Math.sin(yaw + 0.9) * 0.6;
+      /**
+       * Shaded solid. One key light plus a cool fill, both rotating with the
+       * camera so the form reads at every angle.
+       */
+      function drawSolid(mesh, projected, shade, tones, camYaw) {
+        const lx = Math.sin(camYaw + 0.9) * 0.6;
         const ly = 0.74;
-        const lz = Math.cos(yaw + 0.9) * 0.6;
+        const lz = Math.cos(camYaw + 0.9) * 0.6;
         const fx = -lx;
         const fz = -lz;
-        const tones = palette.dark ? TONES.dark : TONES.light;
 
-        for (const [i] of order) {
-          const n = shadeNormals[i];
+        for (const [i] of mesh.order) {
+          const n = shade[i];
           const key = Math.max(0, n[0] * lx + n[1] * ly + n[2] * lz);
           const fill = Math.max(0, n[0] * fx + n[1] * 0.25 + n[2] * fz);
-          // Ambient, key, and a weak bounce - enough separation that a
-          // rolled arm does not read as a flat slab.
-          const shade = Math.min(1.12, 0.46 + 0.52 * key + 0.14 * fill);
+          // Ambient, key, and a weak bounce - enough separation that a rolled
+          // arm does not read as a flat slab.
+          const shading = Math.min(1.12, 0.46 + 0.52 * key + 0.14 * fill);
 
-          const base = tones[materials[i]];
+          const base = tones[mesh.materials[i]];
           const colour = `rgb(${Math.round(
-            Math.min(255, base[0] * shade),
-          )}, ${Math.round(Math.min(255, base[1] * shade))}, ${Math.round(
-            Math.min(255, base[2] * shade),
+            Math.min(255, base[0] * shading),
+          )}, ${Math.round(Math.min(255, base[1] * shading))}, ${Math.round(
+            Math.min(255, base[2] * shading),
           )})`;
 
-          const t = triangles[i];
+          const t = mesh.triangles[i];
           const pa = projected[t[0]];
           const pb = projected[t[1]];
           const pc = projected[t[2]];
@@ -646,62 +944,150 @@ const {
         }
       }
 
+      /** The rays, and where they land on the object this frame. */
+      function drawBeam(rect) {
+        if (!freshCount) return;
+        const focal = focalFor(rect, rigCam);
+        // Start the rays at the lens, not at the middle of the slab.
+        const origin = projectPoint(
+          [
+            phonePos[0] + phoneForward[0] * 0.03,
+            phonePos[1] + phoneForward[1] * 0.03,
+            phonePos[2] + phoneForward[2] * 0.03,
+          ],
+          rigCam,
+          rect,
+          focal,
+        );
+
+        const step = Math.max(1, Math.floor(freshCount / 44));
+
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = accent(palette.dark ? 0.16 : 0.14);
+        ctx.beginPath();
+        for (let k = 0; k < freshCount; k += step) {
+          const base = fresh[k] * 6;
+          const hit = projectPoint(
+            [cloud[base], cloud[base + 1], cloud[base + 2]],
+            rigCam,
+            rect,
+            focal,
+          );
+          ctx.moveTo(origin[0], origin[1]);
+          ctx.lineTo(hit[0], hit[1]);
+        }
+        ctx.stroke();
+
+        // The landing spots, so the sweep has a visible edge on the surface.
+        ctx.fillStyle = accent(0.9);
+        const dotStep = Math.max(1, Math.floor(freshCount / 220));
+        for (let k = 0; k < freshCount; k += dotStep) {
+          const base = fresh[k] * 6;
+          const hit = projectPoint(
+            [cloud[base], cloud[base + 1], cloud[base + 2]],
+            rigCam,
+            rect,
+            focal,
+          );
+          ctx.fillRect(hit[0] - 0.9, hit[1] - 0.9, 1.8, 1.8);
+        }
+      }
+
+      function drawRig(rect) {
+        drawRoom(rect);
+        drawFloorShadow(rect);
+
+        projectMesh(chair.positions, chair.projected, rigCam, rect);
+        classify(chair);
+        drawSolid(
+          chair,
+          chair.projected,
+          chair.shadeNormals,
+          palette.dark ? CHAIR_TONES.dark : CHAIR_TONES.light,
+          rigCam.yaw,
+        );
+
+        drawBeam(rect);
+
+        projectMesh(phoneWorld, phone.projected, rigCam, rect);
+        classify(phone);
+        drawSolid(
+          phone,
+          phone.projected,
+          phoneShade,
+          palette.dark ? PHONE_TONES.dark : PHONE_TONES.light,
+          rigCam.yaw,
+        );
+      }
+
       // Reusable per-band scratch, so the point pass allocates nothing.
       const BANDS = 6;
       const bandBuffers = Array.from(
         { length: BANDS },
-        () => new Float32Array(cloud.length * 2),
+        () => new Float32Array(cloudCount * 2),
       );
       const bandCounts = new Int32Array(BANDS);
 
-      function drawScan() {
+      function drawScan(rect) {
+        ctx.fillStyle = palette.bg;
+        ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+
+        projectMesh(chair.positions, chair.projected, cloudCam, rect);
+        classify(chair);
+        projectCloud(cloudCam, rect);
+
         // Silhouette only: an edge is drawn when the two triangles sharing it
         // face opposite ways, or when nothing shares it at all. That is a few
         // hundred lines instead of a few thousand, and it moves as the object
-        // turns - which is what makes the right-hand side read as an outline
-        // rather than a mesh dump.
+        // turns - which is what keeps the panel readable while the cloud is
+        // still mostly empty.
         ctx.lineWidth = 1.1;
         ctx.lineJoin = 'round';
-        ctx.strokeStyle = palette.dark
-          ? 'rgba(46, 224, 106, 0.5)'
-          : 'rgba(11, 122, 59, 0.45)';
+        ctx.strokeStyle = accent(palette.dark ? 0.22 : 0.2);
         ctx.beginPath();
-        for (const edge of edges) {
+        for (const edge of chair.edges) {
           const f = edge.faces;
-          if (f.length === 2 && facing[f[0]] === facing[f[1]]) continue;
-          if (f.length === 1 && !facing[f[0]]) continue;
-          const a = projected[edge.a];
-          const b = projected[edge.b];
+          if (f.length === 2 && chair.facing[f[0]] === chair.facing[f[1]]) {
+            continue;
+          }
+          if (f.length === 1 && !chair.facing[f[0]]) continue;
+          const a = chair.projected[edge.a];
+          const b = chair.projected[edge.b];
           ctx.moveTo(a[0], a[1]);
           ctx.lineTo(b[0], b[1]);
         }
         ctx.stroke();
 
+        if (!capturedCount) return;
+
         // Points, sized and faded by depth so the far side reads as far.
-        // Bucketed into a handful of depth bands rather than styled per
-        // point: one fillStyle assignment per band instead of a few thousand
-        // per frame, which is the difference between smooth and not on a
-        // phone.
+        // Bucketed into a handful of depth bands rather than styled per point:
+        // one fillStyle assignment per band instead of a few thousand per
+        // frame, which is the difference between smooth and not on a phone.
         let near = Infinity;
         let far = -Infinity;
-        for (const p of projectedCloud) {
-          if (p[2] < near) near = p[2];
-          if (p[2] > far) far = p[2];
+        for (let i = 0; i < cloudCount; i++) {
+          if (!captured[i]) continue;
+          const d = projectedCloud[i * 3 + 2];
+          if (d < near) near = d;
+          if (d > far) far = d;
         }
         const span = Math.max(far - near, 0.001);
 
         for (let i = 0; i < BANDS; i++) bandCounts[i] = 0;
 
-        for (const p of projectedCloud) {
+        for (let i = 0; i < cloudCount; i++) {
+          if (!captured[i]) continue;
+          const at = i * 3;
           const band = Math.min(
             BANDS - 1,
-            Math.floor(((p[2] - near) / span) * BANDS),
+            Math.floor(((projectedCloud[at + 2] - near) / span) * BANDS),
           );
           const buffer = bandBuffers[band];
-          const at = bandCounts[band];
-          buffer[at * 2] = p[0];
-          buffer[at * 2 + 1] = p[1];
-          bandCounts[band] = at + 1;
+          const count = bandCounts[band];
+          buffer[count * 2] = projectedCloud[at];
+          buffer[count * 2 + 1] = projectedCloud[at + 1];
+          bandCounts[band] = count + 1;
         }
 
         for (let band = 0; band < BANDS; band++) {
@@ -711,9 +1097,7 @@ const {
           const alpha = (0.95 - depth * 0.7).toFixed(3);
           const size = 1.9 - depth * 0.95;
           const half = size / 2;
-          ctx.fillStyle = palette.dark
-            ? `rgba(46, 224, 106, ${alpha})`
-            : `rgba(11, 122, 59, ${alpha})`;
+          ctx.fillStyle = accent(alpha);
 
           const buffer = bandBuffers[band];
           for (let i = 0; i < count; i++) {
@@ -727,44 +1111,57 @@ const {
         }
       }
 
+      function drawLabel(rect, text, colour) {
+        ctx.font = `600 10px ${palette.mono}`;
+        ctx.textBaseline = 'top';
+        ctx.letterSpacing = '0.08em';
+        ctx.fillStyle = colour;
+        ctx.fillText(text.toUpperCase(), rect.x + 12, rect.y + 11);
+        ctx.letterSpacing = '0px';
+      }
+
       // ---------------------------------------------------------------
       // Frame
       // ---------------------------------------------------------------
-      let split = 0.5;
-
       function render() {
         if (!width || !height) return;
-        projectInto(positions, projected);
-        projectInto(cloud, projectedCloud);
-        classify();
-
-        const splitX = Math.round(split * width);
+        const panels = layout();
 
         ctx.clearRect(0, 0, width, height);
-        ctx.fillStyle = palette.bg;
-        ctx.fillRect(0, 0, width, height);
         ctx.lineWidth = 1;
         ctx.lineJoin = 'round';
 
         ctx.save();
         ctx.beginPath();
-        ctx.rect(0, 0, splitX, height);
+        ctx.rect(panels.rig.x, panels.rig.y, panels.rig.w, panels.rig.h);
         ctx.clip();
-        drawSolid();
+        drawRig(panels.rig);
+        drawLabel(panels.rig, 'iPhone scanning', palette.muted);
         ctx.restore();
 
         ctx.save();
         ctx.beginPath();
-        ctx.rect(splitX, 0, width - splitX, height);
+        ctx.rect(
+          panels.cloud.x,
+          panels.cloud.y,
+          panels.cloud.w,
+          panels.cloud.h,
+        );
         ctx.clip();
-        drawScan();
+        drawScan(panels.cloud);
+        drawLabel(panels.cloud, 'point cloud out', accent(0.95));
         ctx.restore();
 
         ctx.strokeStyle = palette.border;
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(splitX + 0.5, 0);
-        ctx.lineTo(splitX + 0.5, height);
+        if (panels.stacked) {
+          ctx.moveTo(0, panels.cloud.y + 0.5);
+          ctx.lineTo(width, panels.cloud.y + 0.5);
+        } else {
+          ctx.moveTo(panels.cloud.x + 0.5, 0);
+          ctx.lineTo(panels.cloud.x + 0.5, height);
+        }
         ctx.stroke();
       }
 
@@ -776,8 +1173,19 @@ const {
         if (!running) return;
         const dt = last ? Math.min((now - last) / 1000, 0.05) : 0;
         last = now;
-        if (!reduce) yaw += dt * 0.24;
+
+        elapsed += dt;
+        if (elapsed > SCAN_SECONDS + HOLD_SECONDS) {
+          elapsed = 0;
+          resetScan();
+        }
+
+        cloudCam.yaw += dt * 0.24;
+        poseFor((Math.min(elapsed, SCAN_SECONDS) / SCAN_SECONDS) * TAU);
+        advanceCapture(true);
+        updateReadout();
         render();
+
         raf = requestAnimationFrame(loop);
       }
 
@@ -794,60 +1202,20 @@ const {
         raf = 0;
       }
 
-      // ---------------------------------------------------------------
-      // Divider
-      // ---------------------------------------------------------------
-      function setSplit(next) {
-        split = Math.min(0.97, Math.max(0.03, next));
-        divider.style.left = `${split * 100}%`;
-        const pct = Math.round(split * 100);
-        divider.setAttribute('aria-valuenow', String(pct));
-        divider.setAttribute(
-          'aria-valuetext',
-          `${pct}% solid, ${100 - pct}% captured geometry`,
-        );
-        if (reduce) render();
-      }
-
-      function pointerSplit(clientX) {
-        const rect = stage.getBoundingClientRect();
-        if (!rect.width) return;
-        setSplit((clientX - rect.left) / rect.width);
-      }
-
-      let dragging = false;
-
-      stage.addEventListener('pointerdown', (event) => {
-        dragging = true;
-        stage.setPointerCapture(event.pointerId);
-        pointerSplit(event.clientX);
-        event.preventDefault();
-      });
-
-      stage.addEventListener('pointermove', (event) => {
-        if (!dragging) return;
-        pointerSplit(event.clientX);
-      });
-
-      const endDrag = (event) => {
-        if (!dragging) return;
-        dragging = false;
-        if (stage.hasPointerCapture?.(event.pointerId)) {
-          stage.releasePointerCapture(event.pointerId);
+      /**
+       * Reduced motion gets one frame, but not an empty one: step the same
+       * capture pass through a partial orbit first, so the panel still reads
+       * as scan-and-result rather than a chair beside a blank.
+       */
+      function prime() {
+        const STEPS = 48;
+        const STOP_AT = 0.62;
+        for (let i = 0; i <= STEPS; i++) {
+          poseFor((i / STEPS) * STOP_AT * TAU);
+          advanceCapture(i === STEPS);
         }
-      };
-      stage.addEventListener('pointerup', endDrag);
-      stage.addEventListener('pointercancel', endDrag);
-
-      divider.addEventListener('keydown', (event) => {
-        const step = event.shiftKey ? 0.1 : 0.025;
-        if (event.key === 'ArrowLeft') setSplit(split - step);
-        else if (event.key === 'ArrowRight') setSplit(split + step);
-        else if (event.key === 'Home') setSplit(0.03);
-        else if (event.key === 'End') setSplit(0.97);
-        else return;
-        event.preventDefault();
-      });
+        updateReadout();
+      }
 
       // ---------------------------------------------------------------
       // Lifecycle
@@ -875,7 +1243,8 @@ const {
       });
 
       resize();
-      setSplit(0.5);
+      if (reduce) prime();
+      else poseFor(0);
       render();
     }
 
@@ -895,67 +1264,15 @@ const {
     background: var(--surface);
     overflow: hidden;
   }
-  .mr__labels {
-    display: flex;
-    justify-content: space-between;
-    padding: var(--sp-3) var(--sp-4);
-    border-bottom: 1px solid var(--border);
-  }
-  .mr__label {
-    font-family: var(--font-mono);
-    font-size: var(--fs-2xs);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
-  }
-  .mr__label--scan {
-    color: var(--accent-text);
-  }
   .mr__stage {
     position: relative;
     aspect-ratio: 16 / 10;
     max-height: 440px;
-    touch-action: none;
-    cursor: ew-resize;
-    user-select: none;
   }
   .mr__canvas {
     display: block;
     width: 100%;
     height: 100%;
-  }
-  .mr__divider {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 50%;
-    width: 2px;
-    margin-left: -1px;
-    background: var(--border-strong);
-    cursor: ew-resize;
-  }
-  .mr__divider:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 3px;
-  }
-  .mr__grip {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 34px;
-    height: 34px;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    border: 1px solid var(--border-strong);
-    background: var(--surface);
-    color: var(--fg-muted);
-    box-shadow: var(--shadow-sm);
-  }
-  .mr__grip svg {
-    width: 16px;
-    height: 16px;
   }
   .mr__readout {
     display: flex;
@@ -982,8 +1299,12 @@ const {
   }
 
   @media (max-width: 620px) {
+    /* Taller than it is wide, which is what flips the canvas to stacked
+       panels - the split is read from the stage's aspect ratio, not from a
+       second copy of this breakpoint in the script. */
     .mr__stage {
-      aspect-ratio: 4 / 3;
+      aspect-ratio: 3 / 4;
+      max-height: none;
     }
     .mr__readout {
       gap: var(--sp-3);

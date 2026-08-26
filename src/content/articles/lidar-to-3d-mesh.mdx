@@ -1,6 +1,6 @@
 ---
 title: 'LiDAR to 3D Mesh, and Everything After'
-description: 'A build guide for shipping Object Capture in production: what to gate, what to own, what the API will not decide for you, and the failures that only appear on a real device.'
+description: 'A build guide for shipping Object Capture on iPhone in production: what to gate, what to own, what the API will not decide for you, and the failures that only appear on a real device.'
 date: 2026-08-25
 tags:
   [
@@ -29,7 +29,7 @@ Apple's Object Capture sample runs on the first try. That is the problem.
 
 It runs on a warm device, in a lit room, on a scan nobody cancels, with no product around it. Every one of those conditions is doing work, and none of them survive contact with a shipping app. The gap between "the sample runs" and "a customer measures their own furniture and gets a fitted result back" is where all the engineering is, and almost none of it is 3D.
 
-This is a build guide for that gap. What you have to decide, what the framework will not decide for you, and the specific failures that only show up on a real device in someone's living room.
+This is a build guide for that gap: an iPhone with a LiDAR sensor, walked around a real object, producing a textured model. What you have to decide, what the framework will not decide for you, and the specific failures that only show up on a real device in someone's living room.
 
 <MeshReveal />
 
@@ -78,7 +78,7 @@ Everything downstream follows from that one sentence. Decide it first, write it 
 
 The single most useful thing to know before you start: scanning an object on iOS is **two** RealityKit sessions with a directory between them.
 
-[`ObjectCaptureSession`](https://developer.apple.com/documentation/realitykit/objectcapturesession) runs the camera and the LiDAR sensor. It guides the user around the object and writes HEIC images into a directory you hand it, plus a checkpoint directory for its own intermediate state. It does not produce a model.
+[`ObjectCaptureSession`](https://developer.apple.com/documentation/realitykit/objectcapturesession) runs the phone's camera and its LiDAR sensor together. It guides the user around the object and writes HEIC images into a directory you hand it, plus a checkpoint directory for its own intermediate state. It does not produce a model.
 
 [`PhotogrammetrySession`](https://developer.apple.com/documentation/realitykit/photogrammetrysession) takes that images directory — not the checkpoint directory — and reconstructs a textured USDZ from it, on device, with the camera long since shut down.
 
