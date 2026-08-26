@@ -112,7 +112,13 @@ const MERGE_OPTIONS = [12, 24, 48];
           }
         </div>
         <button type="button" class="cd__replay" data-replay>
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 12 12"
+            fill="none"
+            aria-hidden="true"
+          >
             <path
               d="M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1v2.5H8"
               stroke="currentColor"
@@ -235,7 +241,7 @@ const MERGE_OPTIONS = [12, 24, 48];
         el.className = 'cd__tick';
         el.textContent = `${MONTH} ${d}`;
         // Inset so the first and last labels are not clipped by the frame.
-        el.style.left = `${(3 + ((((d - 1) * 24) / T_MAX) * 94)).toFixed(3)}%`;
+        el.style.left = `${(3 + (((d - 1) * 24) / T_MAX) * 94).toFixed(3)}%`;
         ticksEl.appendChild(el);
       });
 
