@@ -9,13 +9,11 @@ const OUT = join(__dirname, '..', 'src', 'assets', 'apps');
 
 const APPS = [
   { slug: 'engramr', id: '1506049485' },
-  { slug: 'eat-once', id: '6762008329' },
+  { slug: 'first-principles-physics', id: '6800736839' },
   { slug: 'fish-care', id: '6760917397' },
-  { slug: 'plantcare', id: '6761417775' },
   { slug: 'feed-my-dog', id: '6760208958' },
-  { slug: 'feed-my-cat', id: '6760629634' },
-  { slug: 'walk-my-dog', id: '6760465177' },
   { slug: 'read-habit', id: '6761147141' },
+  { slug: 'walk-my-dog', id: '6760465177' },
 ];
 
 await mkdir(OUT, { recursive: true });

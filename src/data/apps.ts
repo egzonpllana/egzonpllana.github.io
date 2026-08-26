@@ -1,13 +1,11 @@
 import type { App } from '../types';
 
 import engramr from '../assets/apps/engramr.png';
-import eatOnce from '../assets/apps/eat-once.png';
+import firstPrinciplesPhysics from '../assets/apps/first-principles-physics.png';
 import fishCare from '../assets/apps/fish-care.png';
-import plantcare from '../assets/apps/plantcare.png';
 import feedMyDog from '../assets/apps/feed-my-dog.png';
-import feedMyCat from '../assets/apps/feed-my-cat.png';
-import walkMyDog from '../assets/apps/walk-my-dog.png';
 import readHabit from '../assets/apps/read-habit.png';
+import walkMyDog from '../assets/apps/walk-my-dog.png';
 
 /**
  * App Store apps (developer id 1315313322).
@@ -26,13 +24,13 @@ export const APPS: App[] = [
     featured: true,
   },
   {
-    name: 'Eat Once - Body Rhythm',
-    category: 'Food & Drink',
+    name: 'First Principles: Physics',
+    category: 'Education',
     blurb:
-      'Not all foods are meant to be eaten at the same frequency - eat in rhythm with your body.',
+      'More than twenty pieces of physics simulated on device - move a control and the model is re-solved and redrawn, because it was never a picture.',
     appStoreUrl:
-      'https://apps.apple.com/us/app/eat-once-body-rhythm/id6762008329',
-    icon: eatOnce,
+      'https://apps.apple.com/us/app/first-principles-physics/id6800736839',
+    icon: firstPrinciplesPhysics,
     featured: true,
   },
   {
@@ -46,15 +44,6 @@ export const APPS: App[] = [
     featured: true,
   },
   {
-    name: 'PlantCare - AI Planner',
-    category: 'Lifestyle',
-    blurb:
-      'The all-in-one app for keeping your plants thriving with tailored care schedules and reminders.',
-    appStoreUrl:
-      'https://apps.apple.com/us/app/plantcare-ai-planner/id6761417775',
-    icon: plantcare,
-  },
-  {
     name: 'Feed My Dog - AI Meal Planner',
     category: 'Food & Drink',
     blurb:
@@ -62,22 +51,7 @@ export const APPS: App[] = [
     appStoreUrl:
       'https://apps.apple.com/us/app/feed-my-dog-ai-meal-planner/id6760208958',
     icon: feedMyDog,
-  },
-  {
-    name: 'Feed My Cat - AI Meal Planner',
-    category: 'Lifestyle',
-    blurb: 'AI-generated, breed-tailored meal plans for your cat.',
-    appStoreUrl:
-      'https://apps.apple.com/us/app/feed-my-cat-ai-meal-planner/id6760629634',
-    icon: feedMyCat,
-  },
-  {
-    name: 'Walk My Dog - AI Smart Planner',
-    category: 'Lifestyle',
-    blurb: 'AI-generated, breed-tailored walk plans for your dog.',
-    appStoreUrl:
-      'https://apps.apple.com/us/app/walk-my-dog-ai-smart-planner/id6760465177',
-    icon: walkMyDog,
+    featured: true,
   },
   {
     name: 'Read Habit - AI Planner',
@@ -87,7 +61,16 @@ export const APPS: App[] = [
     appStoreUrl:
       'https://apps.apple.com/us/app/read-habit-ai-planner/id6761147141',
     icon: readHabit,
+    featured: true,
+  },
+  {
+    name: 'Walk My Dog - AI Smart Planner',
+    category: 'Lifestyle',
+    blurb: 'AI-generated, breed-tailored walk plans for your dog.',
+    appStoreUrl:
+      'https://apps.apple.com/us/app/walk-my-dog-ai-smart-planner/id6760465177',
+    icon: walkMyDog,
   },
 ];
 
-export const FEATURED_APPS = APPS.slice(0, 5);
+export const FEATURED_APPS = APPS.filter((app) => app.featured);
