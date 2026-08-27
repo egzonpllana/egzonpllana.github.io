@@ -903,45 +903,45 @@ const {
        * Shaded solid. One key light plus a cool fill, both rotating with the
        * camera so the form reads at every angle.
        */
-      function drawSolid(mesh, projected, shade, tones, camYaw) {
+      function lightFor(camYaw) {
         const lx = Math.sin(camYaw + 0.9) * 0.6;
-        const ly = 0.74;
         const lz = Math.cos(camYaw + 0.9) * 0.6;
-        const fx = -lx;
-        const fz = -lz;
+        return { lx, ly: 0.74, lz, fx: -lx, fz: -lz };
+      }
 
-        for (const [i] of mesh.order) {
-          const n = shade[i];
-          const key = Math.max(0, n[0] * lx + n[1] * ly + n[2] * lz);
-          const fill = Math.max(0, n[0] * fx + n[1] * 0.25 + n[2] * fz);
-          // Ambient, key, and a weak bounce - enough separation that a rolled
-          // arm does not read as a flat slab.
-          const shading = Math.min(1.12, 0.46 + 0.52 * key + 0.14 * fill);
+      function drawTriangle(layer, i, light) {
+        const { mesh, projected, shade, tones } = layer;
+        const { lx, ly, lz, fx, fz } = light;
+        const n = shade[i];
+        const key = Math.max(0, n[0] * lx + n[1] * ly + n[2] * lz);
+        const fill = Math.max(0, n[0] * fx + n[1] * 0.25 + n[2] * fz);
+        // Ambient, key, and a weak bounce - enough separation that a rolled
+        // arm does not read as a flat slab.
+        const shading = Math.min(1.12, 0.46 + 0.52 * key + 0.14 * fill);
 
-          const base = tones[mesh.materials[i]];
-          const colour = `rgb(${Math.round(
-            Math.min(255, base[0] * shading),
-          )}, ${Math.round(Math.min(255, base[1] * shading))}, ${Math.round(
-            Math.min(255, base[2] * shading),
-          )})`;
+        const base = tones[mesh.materials[i]];
+        const colour = `rgb(${Math.round(
+          Math.min(255, base[0] * shading),
+        )}, ${Math.round(Math.min(255, base[1] * shading))}, ${Math.round(
+          Math.min(255, base[2] * shading),
+        )})`;
 
-          const t = mesh.triangles[i];
-          const pa = projected[t[0]];
-          const pb = projected[t[1]];
-          const pc = projected[t[2]];
-          ctx.beginPath();
-          ctx.moveTo(pa[0], pa[1]);
-          ctx.lineTo(pb[0], pb[1]);
-          ctx.lineTo(pc[0], pc[1]);
-          ctx.closePath();
-          // Stroking with the fill colour closes the anti-aliased hairline
-          // gaps between adjacent triangles. Without it the whole surface is
-          // covered in seams and reads as a wireframe rather than a solid.
-          ctx.fillStyle = colour;
-          ctx.strokeStyle = colour;
-          ctx.fill();
-          ctx.stroke();
-        }
+        const t = mesh.triangles[i];
+        const pa = projected[t[0]];
+        const pb = projected[t[1]];
+        const pc = projected[t[2]];
+        ctx.beginPath();
+        ctx.moveTo(pa[0], pa[1]);
+        ctx.lineTo(pb[0], pb[1]);
+        ctx.lineTo(pc[0], pc[1]);
+        ctx.closePath();
+        // Stroking with the fill colour closes the anti-aliased hairline
+        // gaps between adjacent triangles. Without it the whole surface is
+        // covered in seams and reads as a wireframe rather than a solid.
+        ctx.fillStyle = colour;
+        ctx.strokeStyle = colour;
+        ctx.fill();
+        ctx.stroke();
       }
 
       /** The rays, and where they land on the object this frame. */
@@ -993,31 +993,58 @@ const {
         }
       }
 
+      /** One depth queue across both meshes: [depth, layer, triangle]. */
+      const rigQueue = [];
+
       function drawRig(rect) {
         drawRoom(rect);
         drawFloorShadow(rect);
 
         projectMesh(chair.positions, chair.projected, rigCam, rect);
         classify(chair);
-        drawSolid(
-          chair,
-          chair.projected,
-          chair.shadeNormals,
-          palette.dark ? CHAIR_TONES.dark : CHAIR_TONES.light,
-          rigCam.yaw,
-        );
-
-        drawBeam(rect);
-
         projectMesh(phoneWorld, phone.projected, rigCam, rect);
         classify(phone);
-        drawSolid(
-          phone,
-          phone.projected,
-          phoneShade,
-          palette.dark ? PHONE_TONES.dark : PHONE_TONES.light,
-          rigCam.yaw,
-        );
+
+        const layers = [
+          {
+            mesh: chair,
+            projected: chair.projected,
+            shade: chair.shadeNormals,
+            tones: palette.dark ? CHAIR_TONES.dark : CHAIR_TONES.light,
+          },
+          {
+            mesh: phone,
+            projected: phone.projected,
+            shade: phoneShade,
+            tones: palette.dark ? PHONE_TONES.dark : PHONE_TONES.light,
+          },
+        ];
+
+        // The phone is on a real orbit - half of it is behind the chair. Two
+        // separate painter's passes sort each mesh only against itself, so
+        // whichever draws second wins every pixel and the phone reads as a
+        // sticker on the glass. Interleave the triangles instead, and the
+        // depth the projection already computed does the occluding.
+        rigQueue.length = 0;
+        for (const [i, depth] of chair.order) rigQueue.push([depth, 0, i]);
+        for (const [i, depth] of phone.order) rigQueue.push([depth, 1, i]);
+        rigQueue.sort((a, b) => b[0] - a[0]);
+
+        // Every ray lands on the phone's side of the object, so the fan
+        // belongs at the phone's depth too - in front of what the phone is in
+        // front of, behind what it is behind.
+        const beamDepth = phone.order.length ? phone.order[0][1] : -Infinity;
+        let beamDrawn = false;
+
+        const light = lightFor(rigCam.yaw);
+        for (const [depth, layer, i] of rigQueue) {
+          if (!beamDrawn && depth <= beamDepth) {
+            drawBeam(rect);
+            beamDrawn = true;
+          }
+          drawTriangle(layers[layer], i, light);
+        }
+        if (!beamDrawn) drawBeam(rect);
       }
 
       // Reusable per-band scratch, so the point pass allocates nothing.
