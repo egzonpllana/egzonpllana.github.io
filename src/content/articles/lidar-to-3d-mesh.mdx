@@ -23,7 +23,6 @@ import CaptureStateMap from '../../components/CaptureStateMap.astro';
 import BridgeSequence from '../../components/BridgeSequence.astro';
 import RetryLadder from '../../components/RetryLadder.astro';
 import PhaseRail from '../../components/PhaseRail.astro';
-import StatTiles from '../../components/StatTiles.astro';
 
 Apple's Object Capture sample runs on the first try. That is the problem.
 
@@ -32,31 +31,6 @@ It runs on a warm device, in a lit room, on a scan nobody cancels, with no produ
 This is a build guide for that gap: an iPhone with a LiDAR sensor, walked around a real object, producing a textured model. What you have to decide, what the framework will not decide for you, and the specific failures that only show up on a real device in someone's living room.
 
 <MeshReveal />
-
-<StatTiles
-  tiles={[
-    {
-      label: 'RealityKit sessions',
-      value: 2,
-      sub: 'capture and reconstruction, gated independently',
-    },
-    {
-      label: 'Usable detail levels',
-      value: 1,
-      sub: 'on iOS, out of the four the API declares',
-    },
-    {
-      label: 'Frames uploaded',
-      value: 0,
-      sub: 'reconstruction is local; only the mesh leaves',
-    },
-    {
-      label: 'Third-party deps',
-      value: 0,
-      sub: 'across the app and every package it links',
-    },
-  ]}
-/>
 
 ---
 
