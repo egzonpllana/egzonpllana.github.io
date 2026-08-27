@@ -27,6 +27,12 @@ const {
       aria-label="An iPhone orbits a chair while its depth cone sweeps the surface; alongside it, the point cloud produced by that sweep fills in face by face."
     >
       <canvas class="mr__canvas" data-canvas></canvas>
+      <span class="mr__label mr__label--rig" aria-hidden="true">
+        iPhone scanning
+      </span>
+      <span class="mr__label mr__label--cloud" aria-hidden="true">
+        point cloud out
+      </span>
     </div>
 
     <div class="mr__readout" aria-hidden="true">
@@ -492,7 +498,6 @@ const {
           muted: get('--fg-muted', '#5b6472'),
           border: get('--border-strong', '#d4d9e0'),
           accent: get('--accent', '#11a14e'),
-          mono: get('--font-mono', 'monospace'),
           dark: document.documentElement.dataset.theme === 'dark',
         };
       }
@@ -1138,15 +1143,6 @@ const {
         }
       }
 
-      function drawLabel(rect, text, colour) {
-        ctx.font = `600 10px ${palette.mono}`;
-        ctx.textBaseline = 'top';
-        ctx.letterSpacing = '0.08em';
-        ctx.fillStyle = colour;
-        ctx.fillText(text.toUpperCase(), rect.x + 12, rect.y + 11);
-        ctx.letterSpacing = '0px';
-      }
-
       // ---------------------------------------------------------------
       // Frame
       // ---------------------------------------------------------------
@@ -1163,7 +1159,6 @@ const {
         ctx.rect(panels.rig.x, panels.rig.y, panels.rig.w, panels.rig.h);
         ctx.clip();
         drawRig(panels.rig);
-        drawLabel(panels.rig, 'iPhone scanning', palette.muted);
         ctx.restore();
 
         ctx.save();
@@ -1176,7 +1171,6 @@ const {
         );
         ctx.clip();
         drawScan(panels.cloud);
-        drawLabel(panels.cloud, 'point cloud out', accent(0.95));
         ctx.restore();
 
         ctx.strokeStyle = palette.border;
@@ -1301,6 +1295,24 @@ const {
     width: 100%;
     height: 100%;
   }
+  .mr__label {
+    position: absolute;
+    top: var(--sp-3);
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+  .mr__label--rig {
+    left: var(--sp-4);
+    color: var(--fg-muted);
+  }
+  /* Sits at the second panel's origin, wherever the canvas put it. */
+  .mr__label--cloud {
+    left: calc(50% + var(--sp-4));
+    color: var(--accent-text);
+  }
   .mr__readout {
     display: flex;
     flex-wrap: wrap;
@@ -1332,6 +1344,10 @@ const {
     .mr__stage {
       aspect-ratio: 3 / 4;
       max-height: none;
+    }
+    .mr__label--cloud {
+      top: calc(50% + var(--sp-3));
+      left: var(--sp-4);
     }
     .mr__readout {
       gap: var(--sp-3);
