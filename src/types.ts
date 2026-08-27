@@ -27,6 +27,8 @@ export interface Sdk {
   description: string;
   tags: string[];
   stars: number;
+  /** Repository creation date, ISO yyyy-mm-dd. Drives the homepage order. */
+  created: string;
   language: 'Swift';
 }
 

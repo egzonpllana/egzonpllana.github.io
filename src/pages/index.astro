@@ -31,17 +31,12 @@ const otherCount = Math.max(0, published.length - featured.length);
 // The phone layout hides all but the first 2 cards per section.
 const otherCountMobile = Math.max(0, published.length - 2);
 
-// Showcase 5 SDKs: the most-starred packages first, then a flagship pick.
-const SDK_ORDER = [
-  'interactive-image-view-ios',
-  'codable-files-ios',
-  'memory-profiler-ios',
-  'network-layer-swift-6',
-  'orbitcore-ios',
-];
-const featuredSdks = SDK_ORDER.map((n) =>
-  SDKS.find((s) => s.name === n),
-).filter((s): s is Sdk => Boolean(s));
+// Showcase the 5 newest packages. Derived from the data rather than listed by
+// hand, so adding an SDK to sdks.ts is the only step - there is no second
+// place to remember.
+const featuredSdks: Sdk[] = [...SDKS]
+  .sort((a, b) => b.created.localeCompare(a.created))
+  .slice(0, 5);
 ---
 
 <BaseLayout title={SITE.title}>
