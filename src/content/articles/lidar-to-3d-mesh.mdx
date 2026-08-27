@@ -1,6 +1,6 @@
 ---
 title: 'LiDAR to 3D Mesh, and Everything After'
-description: 'A build guide for shipping Object Capture on iPhone in production: what to gate, what to own, what the API will not decide for you, and the failures that only appear on a real device.'
+description: 'How an iPhone LiDAR scan of your own armchair becomes a made-to-measure cover: what to gate, what to own, what the API will not decide for you, and the failures that only appear on a real device.'
 date: 2026-08-25
 tags:
   [
@@ -24,11 +24,13 @@ import BridgeSequence from '../../components/BridgeSequence.astro';
 import RetryLadder from '../../components/RetryLadder.astro';
 import PhaseRail from '../../components/PhaseRail.astro';
 
-Apple's Object Capture sample runs on the first try. That is the problem.
+A customer is standing in their living room with a phone held out at arm's length, walking sideways around their own armchair. Two minutes of that, and a factory cuts fabric to the shape the phone just measured. The cover that arrives either fits the chair or it does not.
 
-It runs on a warm device, in a lit room, on a scan nobody cancels, with no product around it. Every one of those conditions is doing work, and none of them survive contact with a shipping app. The gap between "the sample runs" and "a customer measures their own furniture and gets a fitted result back" is where all the engineering is, and almost none of it is 3D.
+The mesh is not the deliverable. A physical object cut from it is, and that changes what every failure in this pipeline costs. A scan lost at the end costs two minutes of someone's evening. A mesh that is quietly wrong — mirrored, mis-scaled, missing the axis that said which way was up — costs a cover that does not fit, found by the customer, after it ships.
 
-This is a build guide for that gap: an iPhone with a LiDAR sensor, walked around a real object, producing a textured model. What you have to decide, what the framework will not decide for you, and the specific failures that only show up on a real device in someone's living room.
+Apple's Object Capture sample produces that mesh, and it produces it on the first try: warm device, lit room, a scan nobody cancels, no product wrapped around it. None of those conditions survive a shipping app, and almost none of the work of removing them is 3D work. It is a capability gate that fails after the expensive part is already done, a shot counter frozen at zero, a framework crash with no path through your own code, and a coordinate frame nobody wrote down until something came back mirrored.
+
+This is a build guide for that: an iPhone with a LiDAR sensor, walked around a real object, producing a model something physical gets made from. What you have to decide, what the framework will not decide for you, and the failures that only show up on a real device in someone's living room.
 
 <MeshReveal />
 
