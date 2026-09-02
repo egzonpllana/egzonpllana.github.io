@@ -16,7 +16,8 @@ export const PROFILE: Profile = {
       summary:
         'Most of my work is the layer other engineers build on - small public APIs over carefully engineered internals.',
       highlights: [
-        '7 production Swift SDKs: networking, dependency injection, navigation, geospatial clustering, audio DSP, 3D capture, and WebKit bridging.',
+        'Consumed by production banking and healthcare apps in the hands of millions of users - the SDK layer renders on screen in every single session.',
+        'Maintained Swift packages spanning networking, dependency injection, navigation, geospatial clustering, real-time audio DSP, 3D photogrammetry, and WebKit bridging.',
         'A zero-dependency DI framework holding 1,000+ unit tests at constant per-test overhead, with transient, singleton, and weak-cache policies.',
         'A multi-module design system SDK with semantic versioning that removed duplicated components across a bank’s mobile apps.',
         'Every package is protocol-first, fully injectable, and built for Swift 6 strict concurrency - actors, Sendable, async/await.',

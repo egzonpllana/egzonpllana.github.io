@@ -42,11 +42,28 @@ const featuredSdks: Sdk[] = [...SDKS]
 <BaseLayout title={SITE.title}>
   <Hero />
 
-  <!-- 01 / Apps -->
-  <section class="section" id="apps" aria-labelledby="apps-heading">
+  <!-- 01 / Experience -->
+  <section class="section" id="experience" aria-labelledby="experience-heading">
     <div class="container">
       <SectionHeading
         number="01"
+        title="Experience"
+        id="experience-heading"
+        description="Three areas the work concentrates in - the platform layer, regulated production apps, and the systems problems underneath them."
+      />
+      <ExperienceList />
+    </div>
+  </section>
+
+  <!-- 02 / Apps -->
+  <section
+    class="section section--alt"
+    id="apps"
+    aria-labelledby="apps-heading"
+  >
+    <div class="container">
+      <SectionHeading
+        number="02"
         title="App Store apps"
         id="apps-heading"
         description="Consumer apps I have designed, built, and shipped end to end."
@@ -78,15 +95,11 @@ const featuredSdks: Sdk[] = [...SDKS]
     </div>
   </section>
 
-  <!-- 02 / SDKs -->
-  <section
-    class="section section--alt"
-    id="sdks"
-    aria-labelledby="sdks-heading"
-  >
+  <!-- 03 / SDKs -->
+  <section class="section" id="sdks" aria-labelledby="sdks-heading">
     <div class="container">
       <SectionHeading
-        number="02"
+        number="03"
         title="Swift SDKs"
         id="sdks-heading"
         description="Open-source Swift packages I design and maintain - protocol-first, fully testable, built for Swift 6 strict concurrency."
@@ -115,19 +128,6 @@ const featuredSdks: Sdk[] = [...SDKS]
           <span class="sr-only">(opens in new tab)</span>
         </a>
       </div>
-    </div>
-  </section>
-
-  <!-- 03 / Experience -->
-  <section class="section" id="experience" aria-labelledby="experience-heading">
-    <div class="container">
-      <SectionHeading
-        number="03"
-        title="Experience"
-        id="experience-heading"
-        description="Three areas the work concentrates in - the platform layer, regulated production apps, and the systems problems underneath them."
-      />
-      <ExperienceList />
     </div>
   </section>
 
