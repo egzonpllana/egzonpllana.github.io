@@ -43,14 +43,13 @@ export interface App {
   featured?: boolean;
 }
 
-export interface ExperienceItem {
-  company?: string;
-  position: string;
-  location: string;
-  period: string;
-  url?: string;
-  /** Extra line, e.g. early technologies for the university/foundation entry. */
-  note?: string;
+export interface ExperienceShowcase {
+  /** Short domain label above the title, e.g. "Platform layer". */
+  focus: string;
+  title: string;
+  summary: string;
+  /** Concrete, verifiable proof points for this area of work. */
+  highlights: string[];
 }
 
 export interface Profile {
@@ -60,6 +59,6 @@ export interface Profile {
   availability: string;
   summary: string;
   statement: string;
-  experience: ExperienceItem[];
+  experience: ExperienceShowcase[];
   skills: string[];
 }

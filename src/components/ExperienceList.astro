@@ -2,33 +2,27 @@
 import { PROFILE } from '../data/profile';
 ---
 
-<ol class="xp">
+<div class="xp">
   {
-    PROFILE.experience.map((job, i) => (
-      <li class="xp__item" data-reveal style={`--d:${i * 60}ms`}>
-        <span class="xp__period">{job.period}</span>
-        <span class="xp__marker" aria-hidden="true" />
-        <div class="xp__body">
-          <h3 class="xp__role">{job.position}</h3>
-          <p class="xp__company">
-            {job.company &&
-              (job.url ? (
-                <a href={job.url} target="_blank" rel="noopener noreferrer">
-                  {job.company}
-                  <span class="sr-only">(opens in new tab)</span>
-                  <span aria-hidden="true">↗</span>
-                </a>
-              ) : (
-                job.company
-              ))}
-            <span class="xp__location">{job.location}</span>
-          </p>
-          {job.note && <p class="xp__note">{job.note}</p>}
-        </div>
-      </li>
+    PROFILE.experience.map((area, i) => (
+      <article class="xp__card" data-reveal style={`--d:${i * 80}ms`}>
+        <header class="xp__head">
+          <span class="xp__index" aria-hidden="true">
+            {String(i + 1).padStart(2, '0')}
+          </span>
+          <span class="xp__focus">{area.focus}</span>
+        </header>
+        <h3 class="xp__title">{area.title}</h3>
+        <p class="xp__summary">{area.summary}</p>
+        <ul class="xp__points">
+          {area.highlights.map((point) => (
+            <li class="xp__point">{point}</li>
+          ))}
+        </ul>
+      </article>
     ))
   }
-</ol>
+</div>
 
 <ul class="xp-skills" aria-label="Core skills">
   {PROFILE.skills.map((skill) => <li class="tag">{skill}</li>)}
@@ -36,73 +30,81 @@ import { PROFILE } from '../data/profile';
 
 <style>
   .xp {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+    gap: var(--sp-4);
+    align-items: stretch;
+  }
+  .xp__card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    padding: var(--sp-5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    transition:
+      border-color 0.18s var(--ease),
+      transform 0.18s var(--ease),
+      box-shadow 0.18s var(--ease);
+  }
+  .xp__card:hover {
+    border-color: var(--border-strong);
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-md);
+  }
+  .xp__head {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+  .xp__index {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--accent-text);
+  }
+  .xp__focus {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+  .xp__title {
+    font-size: var(--fs-md);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .xp__summary {
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
+  }
+  .xp__points {
     list-style: none;
     padding: 0;
     margin: 0;
     display: flex;
     flex-direction: column;
-  }
-  .xp__item {
-    position: relative;
-    display: grid;
-    grid-template-columns: 150px 20px 1fr;
-    gap: var(--sp-4);
-    padding-block: var(--sp-5);
-  }
-  .xp__item + .xp__item {
+    gap: var(--sp-2);
+    padding-top: var(--sp-2);
     border-top: 1px solid var(--border);
   }
-  .xp__period {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xs);
-    color: var(--fg-faint);
-    padding-top: 0.2rem;
-    white-space: nowrap;
-  }
-  .xp__marker {
+  .xp__point {
     position: relative;
-    width: 9px;
-    height: 9px;
-    margin-top: 0.45rem;
+    padding-left: var(--sp-4);
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
+    line-height: 1.55;
+  }
+  .xp__point::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.62em;
+    width: 5px;
+    height: 5px;
     border-radius: 50%;
-    border: 2px solid var(--accent);
-    background: var(--bg);
-  }
-  .xp__item:first-child .xp__marker {
     background: var(--accent);
-  }
-  .xp__role {
-    font-size: var(--fs-md);
-    font-weight: 600;
-    letter-spacing: -0.01em;
-  }
-  .xp__company {
-    margin-top: var(--sp-1);
-    font-size: var(--fs-sm);
-    color: var(--fg-muted);
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: var(--sp-3);
-  }
-  .xp__company a {
-    color: var(--fg);
-    font-weight: 560;
-  }
-  .xp__company a:hover {
-    color: var(--accent-text);
-    text-decoration: underline;
-    text-underline-offset: 3px;
-  }
-  .xp__location {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xs);
-    color: var(--fg-faint);
-  }
-  .xp__note {
-    margin-top: var(--sp-2);
-    font-size: var(--fs-sm);
-    color: var(--fg-muted);
   }
   .xp-skills {
     display: flex;
@@ -111,15 +113,5 @@ import { PROFILE } from '../data/profile';
     list-style: none;
     padding: 0;
     margin-top: var(--sp-6);
-  }
-
-  @media (max-width: 640px) {
-    .xp__item {
-      grid-template-columns: 1fr;
-      gap: var(--sp-2);
-    }
-    .xp__marker {
-      display: none;
-    }
   }
 </style>
