@@ -180,3 +180,61 @@
 :root[data-theme='dark'] .prose pre.astro-code span {
   color: var(--shiki-dark);
 }
+
+/* Collapsible block: <details> with a <summary> label, used for long code
+   the reader opts into rather than scrolls past. */
+.prose details {
+  margin: var(--sp-5) 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+.prose details > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  color: var(--fg);
+  transition: color 0.15s var(--ease);
+}
+.prose details > summary::-webkit-details-marker {
+  display: none;
+}
+.prose details > summary::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  transform: rotate(-45deg);
+  transition: transform 0.18s var(--ease);
+}
+.prose details[open] > summary::before {
+  transform: rotate(45deg);
+}
+.prose details > summary:hover {
+  color: var(--accent-text);
+}
+.prose details > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.prose details[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+.prose details > *:not(summary) {
+  margin-left: var(--sp-4);
+  margin-right: var(--sp-4);
+}
+.prose details > *:not(summary):first-of-type {
+  margin-top: var(--sp-4);
+}
+.prose details > *:last-child {
+  margin-bottom: var(--sp-4);
+}
