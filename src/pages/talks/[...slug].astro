@@ -1,0 +1,37 @@
+---
+import { getCollection, render } from 'astro:content';
+import ArticleLayout from '../../layouts/ArticleLayout.astro';
+import { readingTime } from '../../lib/reading-time';
+import { articleSlug } from '../../lib/slug';
+
+export async function getStaticPaths() {
+  const talks = (await getCollection('talks')).filter((t) => !t.data.draft);
+
+  return talks.map((talk) => ({
+    params: { slug: articleSlug(talk.id) },
+    props: { talk },
+  }));
+}
+
+const { talk } = Astro.props;
+const { Content, headings } = await render(talk);
+const minutes = readingTime(talk.body ?? '');
+---
+
+<ArticleLayout
+  title={talk.data.title}
+  description={talk.data.description}
+  date={talk.data.date}
+  updated={talk.data.updated}
+  tags={talk.data.tags}
+  readingTime={minutes}
+  heroImage={talk.data.heroImage}
+  ogImage={talk.data.ogImage}
+  repoUrl={talk.data.repoUrl}
+  headings={headings}
+  backHref="/talks/"
+  backLabel="All talks"
+  tagsLinked={false}
+>
+  <Content />
+</ArticleLayout>

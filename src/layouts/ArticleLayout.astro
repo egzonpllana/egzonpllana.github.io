@@ -34,6 +34,11 @@ interface Props {
   repoUrl?: string;
   headings?: Heading[];
   related?: RelatedArticle[];
+  /** Section this entry belongs to - drives the back link. */
+  backHref?: string;
+  backLabel?: string;
+  /** Tag pills link to /tags/ only for collections that generate tag pages. */
+  tagsLinked?: boolean;
 }
 
 const {
@@ -48,6 +53,9 @@ const {
   repoUrl,
   headings = [],
   related = [],
+  backHref = '/articles/',
+  backLabel = 'All articles',
+  tagsLinked = true,
 } = Astro.props;
 
 // Social preview: a compressed ~1200px variant instead of the original PNG.
@@ -77,8 +85,9 @@ const showToc = tocEntries.length >= 3;
   imageAlt={`${title} - article cover`}
 >
   <article class="article container">
-    <a class="article__back link-accent" href="/articles/">
-      <span aria-hidden="true">←</span> All articles
+    <a class="article__back link-accent" href={backHref}>
+      <span aria-hidden="true">←</span>
+      {backLabel}
     </a>
 
     <header class="article__header">
@@ -101,13 +110,19 @@ const showToc = tocEntries.length >= 3;
       {
         tags.length > 0 && (
           <ul class="article__tags">
-            {tags.map((tag) => (
-              <li>
-                <a class="tag" href={`/tags/${tagSlug(tag)}/`}>
-                  {tag}
-                </a>
-              </li>
-            ))}
+            {tags.map((tag) =>
+              tagsLinked ? (
+                <li>
+                  <a class="tag" href={`/tags/${tagSlug(tag)}/`}>
+                    {tag}
+                  </a>
+                </li>
+              ) : (
+                <li>
+                  <span class="tag">{tag}</span>
+                </li>
+              ),
+            )}
           </ul>
         )
       }

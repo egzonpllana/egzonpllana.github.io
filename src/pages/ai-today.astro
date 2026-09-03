@@ -1,17 +1,45 @@
 ---
+import { getImage } from 'astro:assets';
 import BaseLayout from '../layouts/BaseLayout.astro';
 import SectionHeading from '../components/SectionHeading.astro';
 import AiTalkSlideshow from '../components/AiTalkSlideshow.astro';
 import ViewCount from '../components/ViewCount.astro';
 import { AI_TALK_INTRO, AI_TALK_META } from '../data/aiTalk';
 import { formatDate, isoDate } from '../lib/format-date';
+import { AI_TODAY_CARD } from '../data/talks';
 
 const publishedDate = new Date('2026-07-07');
+
+// Social preview: a compressed ~1200px variant instead of the original PNG.
+const og = AI_TODAY_CARD.image
+  ? await getImage({
+      src: AI_TODAY_CARD.image,
+      width: 1200,
+      format: 'jpeg',
+      quality: 85,
+    })
+  : undefined;
 ---
 
-<BaseLayout title={AI_TALK_META.title} description={AI_TALK_META.description}>
+<BaseLayout
+  title={AI_TALK_META.title}
+  description={AI_TALK_META.description}
+  type="article"
+  publishedDate={publishedDate}
+  image={og?.src}
+  imageWidth={typeof og?.attributes.width === 'number'
+    ? og.attributes.width
+    : undefined}
+  imageHeight={typeof og?.attributes.height === 'number'
+    ? og.attributes.height
+    : undefined}
+  imageAlt={`${AI_TALK_META.title} - talk cover`}
+>
   <section class="section">
     <div class="container">
+      <a class="ai-back link-accent" href="/talks/">
+        <span aria-hidden="true">&#8592;</span> All talks
+      </a>
       <SectionHeading
         as="h1"
         number="-"
@@ -32,6 +60,11 @@ const publishedDate = new Date('2026-07-07');
 </BaseLayout>
 
 <style>
+  .ai-back {
+    display: inline-block;
+    margin-bottom: var(--sp-5);
+    font-size: var(--fs-sm);
+  }
   .ai-date {
     display: block;
     margin-top: calc(-1 * var(--sp-4));

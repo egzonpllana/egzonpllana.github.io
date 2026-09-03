@@ -1,14 +1,19 @@
 ---
+import type { NavItem } from '../types';
 import { NAV, SITE } from '../data/site';
 import ThemeToggle from './ThemeToggle.astro';
 
 // Compare with trailing slashes normalized so /articles/foo/ matches /articles/.
 const currentPath = Astro.url.pathname.replace(/\/$/, '') + '/';
 
-function isActive(href: string): boolean {
-  if (href === '/') return currentPath === '/';
+function matchesPath(href: string): boolean {
   const normalized = href.replace(/\/$/, '') + '/';
   return currentPath === normalized || currentPath.startsWith(normalized);
+}
+
+function isActive(item: NavItem): boolean {
+  if (item.href === '/') return currentPath === '/';
+  return matchesPath(item.href) || (item.alsoActiveFor ?? []).some(matchesPath);
 }
 ---
 
@@ -26,8 +31,8 @@ function isActive(href: string): boolean {
             <li>
               <a
                 href={item.href}
-                class:list={['nav__link', { 'is-active': isActive(item.href) }]}
-                aria-current={isActive(item.href) ? 'page' : undefined}
+                class:list={['nav__link', { 'is-active': isActive(item) }]}
+                aria-current={isActive(item) ? 'page' : undefined}
               >
                 {item.label}
               </a>

@@ -1,0 +1,53 @@
+---
+import { getCollection } from 'astro:content';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import SectionHeading from '../../components/SectionHeading.astro';
+import TalkCard from '../../components/TalkCard.astro';
+import { readingTime } from '../../lib/reading-time';
+import { articleSlug } from '../../lib/slug';
+import { AI_TODAY_CARD, TALKS_INTRO } from '../../data/talks';
+import type { TalkCardEntry } from '../../data/talks';
+
+const written = (await getCollection('talks')).filter((t) => !t.data.draft);
+
+const cards: TalkCardEntry[] = [
+  AI_TODAY_CARD,
+  ...written.map((t) => ({
+    title: t.data.title,
+    description: t.data.description,
+    href: `/talks/${articleSlug(t.id)}/`,
+    date: t.data.date,
+    meta: `${readingTime(t.body ?? '')} min read`,
+    cta: 'Read the guide',
+    image: t.data.heroImage,
+  })),
+];
+
+cards.sort((a, b) => b.date.valueOf() - a.date.valueOf());
+---
+
+<BaseLayout title={TALKS_INTRO.title} description={TALKS_INTRO.description}>
+  <section class="section">
+    <div class="container">
+      <SectionHeading
+        as="h1"
+        number="-"
+        title={TALKS_INTRO.title}
+        description={TALKS_INTRO.description}
+        descFull
+      />
+
+      <div class="talks-grid">
+        {cards.map((c, i) => <TalkCard {...c} index={i} />)}
+      </div>
+    </div>
+  </section>
+</BaseLayout>
+
+<style>
+  .talks-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: var(--sp-5);
+  }
+</style>

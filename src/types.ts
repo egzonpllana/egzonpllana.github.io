@@ -3,6 +3,8 @@ import type { ImageMetadata } from 'astro';
 export interface NavItem {
   label: string;
   href: string;
+  /** Extra path prefixes that mark this item active, for pages outside `href`. */
+  alsoActiveFor?: string[];
 }
 
 export interface SocialLink {
