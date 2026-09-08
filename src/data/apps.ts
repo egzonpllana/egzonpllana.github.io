@@ -34,7 +34,7 @@ export const APPS: App[] = [
     featured: true,
   },
   {
-    name: 'Fish Care - AI Planner',
+    name: 'Fish Care: AI Planner',
     category: 'Lifestyle',
     blurb:
       'Build and manage a complete care routine for your fish, with smart scheduling across feeding, water and tank tasks.',
@@ -44,17 +44,17 @@ export const APPS: App[] = [
     featured: true,
   },
   {
-    name: 'Feed My Dog - AI Meal Planner',
+    name: 'Feed My Dog: Meal Planner',
     category: 'Food & Drink',
     blurb:
       'Smart, breed-tailored meal plans based on your dog’s unique profile.',
     appStoreUrl:
-      'https://apps.apple.com/us/app/feed-my-dog-ai-meal-planner/id6760208958',
+      'https://apps.apple.com/us/app/feed-my-dog-meal-planner/id6760208958',
     icon: feedMyDog,
     featured: true,
   },
   {
-    name: 'Read Habit - AI Planner',
+    name: 'Read Habit: AI Planner',
     category: 'Books',
     blurb:
       'Build and maintain a consistent reading habit with smart planning tools.',
@@ -64,11 +64,11 @@ export const APPS: App[] = [
     featured: true,
   },
   {
-    name: 'Walk My Dog - AI Smart Planner',
+    name: 'Walk My Dog: Smart Planner',
     category: 'Lifestyle',
-    blurb: 'AI-generated, breed-tailored walk plans for your dog.',
+    blurb: 'Breed-tailored walk plans for your dog.',
     appStoreUrl:
-      'https://apps.apple.com/us/app/walk-my-dog-ai-smart-planner/id6760465177',
+      'https://apps.apple.com/us/app/walk-my-dog-smart-planner/id6760465177',
     icon: walkMyDog,
   },
 ];
