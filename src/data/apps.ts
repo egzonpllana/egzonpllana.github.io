@@ -2,6 +2,7 @@ import type { App } from '../types';
 
 import engramr from '../assets/apps/engramr.png';
 import firstPrinciplesPhysics from '../assets/apps/first-principles-physics.png';
+import appreviewGen from '../assets/apps/appreviewgen.png';
 import fishCare from '../assets/apps/fish-care.png';
 import feedMyDog from '../assets/apps/feed-my-dog.png';
 import readHabit from '../assets/apps/read-habit.png';
@@ -34,6 +35,15 @@ export const APPS: App[] = [
     featured: true,
   },
   {
+    name: 'AppreviewGen',
+    category: 'Photo & Video',
+    blurb:
+      'App Store screenshots, preview videos and social promos made on device - framed, styled and exported at the exact sizes App Store Connect accepts.',
+    appStoreUrl: 'https://apps.apple.com/us/app/appreviewgen/id6808578330',
+    icon: appreviewGen,
+    featured: true,
+  },
+  {
     name: 'Fish Care: AI Planner',
     category: 'Lifestyle',
     blurb:
@@ -41,7 +51,6 @@ export const APPS: App[] = [
     appStoreUrl:
       'https://apps.apple.com/us/app/fish-care-ai-planner/id6760917397',
     icon: fishCare,
-    featured: true,
   },
   {
     name: 'Feed My Dog: Meal Planner',

@@ -18,6 +18,7 @@ const APPS = [
   { slug: 'engramr', id: '1506049485' },
   { slug: 'first-principles-physics', id: '6800736839' },
   { slug: 'fish-care', id: '6760917397' },
+  { slug: 'appreviewgen', id: '6808578330' },
   { slug: 'feed-my-dog', id: '6760208958' },
   { slug: 'read-habit', id: '6761147141' },
   { slug: 'walk-my-dog', id: '6760465177' },
@@ -34,7 +35,10 @@ async function artworkFromStorePage(id) {
     /https:\/\/is\d-ssl\.mzstatic\.com\/image\/thumb\/[^"\s\\]+?\/AppIcon[^"\s\\]*?\/\d+x\d+[a-z]{2}\.(?:png|jpg|webp)/,
   );
   if (!match) return null;
-  return match[0].replace(/\/\d+x\d+[a-z]{2}\.(?:png|jpg|webp)$/, '/512x512bb.jpg');
+  return match[0].replace(
+    /\/\d+x\d+[a-z]{2}\.(?:png|jpg|webp)$/,
+    '/512x512bb.jpg',
+  );
 }
 
 /** Artwork from the lookup API - cached, so only used when the page fails. */
