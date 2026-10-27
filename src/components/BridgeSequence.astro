@@ -3,7 +3,9 @@
  * Web <-> native message sequence player. Replays the scan handshake between a
  * page inside a WKWebView and the native app for three outcomes, so the reader
  * can see which messages actually cross the boundary and in which direction.
+ * It plays once when it scrolls into view; picking an ending replays that one.
  */
+import AnimControls from './viz/AnimControls.astro';
 
 interface Step {
   /** 'in' = web -> native, 'out' = native -> web, 'local' = neither */
@@ -147,23 +149,7 @@ const LABELS: Record<string, string> = {
             ))
           }
         </div>
-        <button type="button" class="bq__replay" data-replay>
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 12 12"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1v2.5H8"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"></path>
-          </svg>
-          Replay
-        </button>
+        <AnimControls />
       </div>
     </div>
 
@@ -172,7 +158,7 @@ const LABELS: Record<string, string> = {
       <span data-caption-text>Scroll on — it runs itself.</span>
     </p>
 
-    <div class="bq__stage" data-stage>
+    <div class="bq__stage">
       <div class="bq__lanes" aria-hidden="true">
         <span class="bq__lane">page in a web view</span>
         <span class="bq__lane bq__lane--right">native app</span>
@@ -200,27 +186,26 @@ const LABELS: Record<string, string> = {
       root.dataset.bound = '1';
 
       const rail = root.querySelector('[data-rail]');
-      const stage = root.querySelector('[data-stage]');
       const statusEl = root.querySelector('[data-status]');
       const captionText = root.querySelector('[data-caption-text]');
       const captionEl = root.querySelector('[data-caption]');
-      const replayBtn = root.querySelector('[data-replay]');
       const chips = Array.from(root.querySelectorAll('[data-scenario]'));
-      if (!rail || !stage) return;
+      if (!rail) return;
 
       const reduce = window.matchMedia(
         '(prefers-reduced-motion: reduce)',
       ).matches;
+      const STEP_MS = 900;
+      // From the last message to the caption going quiet.
+      const SETTLE_MS = STEP_MS + 400;
 
       let current = 'success';
-      let timers = [];
-
-      const clearTimers = () => {
-        timers.forEach(clearTimeout);
-        timers = [];
-      };
-
-      const after = (ms, fn) => timers.push(setTimeout(fn, ms));
+      // Messages on the rail, and the time left to the next tick.
+      let shown = 0;
+      let playing = false;
+      let timer = 0;
+      let due = 0;
+      let left = 0;
 
       function buildRow(step) {
         const row = document.createElement('div');
@@ -262,60 +247,106 @@ const LABELS: Record<string, string> = {
         return row;
       }
 
-      function run(key) {
-        clearTimers();
-        current = key;
-        const scenario = SCENARIOS[key];
-        rail.innerHTML = '';
-        if (statusEl) statusEl.textContent = 'not_started';
-        if (statusEl) statusEl.dataset.state = 'not_started';
-        if (captionText) captionText.textContent = scenario.caption;
+      function setStatus(state) {
+        if (!statusEl) return;
+        statusEl.textContent = state;
+        statusEl.dataset.state = state;
+      }
+
+      function appendNext() {
+        const step = SCENARIOS[current].steps[shown];
+        rail.appendChild(buildRow(step));
+        if (step.status) setStatus(step.status);
+        shown += 1;
+      }
+
+      function appendAll() {
+        while (shown < SCENARIOS[current].steps.length) appendNext();
+      }
+
+      function finish() {
+        playing = false;
+        left = 0;
+        if (captionEl) captionEl.classList.remove('is-live');
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
+      function schedule(delay) {
+        clearTimeout(timer);
+        due = performance.now() + delay;
+        timer = setTimeout(() => {
+          const count = SCENARIOS[current].steps.length;
+          if (shown >= count) {
+            finish();
+            return;
+          }
+          appendNext();
+          schedule(shown < count ? STEP_MS : SETTLE_MS);
+        }, delay);
+      }
+
+      function play() {
+        if (playing) return;
+        // Reduced motion lands the whole exchange at once.
+        if (reduce) {
+          appendAll();
+          finish();
+          return;
+        }
+        playing = true;
         if (captionEl) captionEl.classList.add('is-live');
+        schedule(left);
+      }
 
+      function pause() {
+        if (!playing) return;
+        playing = false;
+        clearTimeout(timer);
+        left = Math.max(0, due - performance.now());
+      }
+
+      function reset() {
+        playing = false;
+        clearTimeout(timer);
+        shown = 0;
+        left = 0;
+        rail.innerHTML = '';
+        setStatus('not_started');
+        if (captionText) captionText.textContent = SCENARIOS[current].caption;
+        if (captionEl) captionEl.classList.remove('is-live');
         chips.forEach((chip) =>
-          chip.classList.toggle('is-on', chip.dataset.scenario === key),
+          chip.classList.toggle('is-on', chip.dataset.scenario === current),
         );
+      }
 
-        const gap = reduce ? 0 : 900;
-
-        scenario.steps.forEach((step, i) => {
-          after(i * gap, () => {
-            const row = buildRow(step);
-            rail.appendChild(row);
-            requestAnimationFrame(() => row.classList.add('is-in'));
-            if (step.status && statusEl) {
-              statusEl.textContent = step.status;
-              statusEl.dataset.state = step.status;
-            }
-          });
-        });
-
-        after(scenario.steps.length * gap + 400, () => {
-          if (captionEl) captionEl.classList.remove('is-live');
-        });
+      /** Picking an ending replays it; reduced motion only swaps it. */
+      function choose(key) {
+        current = key;
+        reset();
+        if (reduce) {
+          appendAll();
+          return;
+        }
+        root.dispatchEvent(new CustomEvent('anim:started'));
+        play();
       }
 
       chips.forEach((chip) => {
-        chip.addEventListener('click', () => run(chip.dataset.scenario));
+        chip.addEventListener('click', () => choose(chip.dataset.scenario));
       });
-      if (replayBtn) replayBtn.addEventListener('click', () => run(current));
 
-      if (reduce || !('IntersectionObserver' in window)) {
-        run('success');
-        return;
+      // Reduced motion rests on the whole exchange until the reader plays it.
+      if (reduce) {
+        reset();
+        appendAll();
       }
 
-      const io = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            if (!entry.isIntersecting) return;
-            io.disconnect();
-            run('success');
-          });
-        },
-        { threshold: 0.3 },
-      );
-      io.observe(stage);
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause,
+        reset,
+      });
     }
 
     if (document.readyState !== 'loading') initBridgeSequence();
@@ -364,8 +395,7 @@ const LABELS: Record<string, string> = {
     gap: var(--sp-1);
     flex-wrap: wrap;
   }
-  .bq__chip,
-  .bq__replay {
+  .bq__chip {
     font-family: var(--font-mono);
     font-size: var(--fs-2xs);
     color: var(--fg-muted);
@@ -379,8 +409,7 @@ const LABELS: Record<string, string> = {
       border-color 0.2s var(--ease),
       background 0.2s var(--ease);
   }
-  .bq__chip:hover,
-  .bq__replay:hover {
+  .bq__chip:hover {
     color: var(--fg);
     border-color: var(--border-strong);
   }
@@ -389,12 +418,6 @@ const LABELS: Record<string, string> = {
     border-color: var(--accent);
     background: var(--accent-soft);
   }
-  .bq__replay {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-  }
-
   .bq__caption {
     display: flex;
     align-items: center;
@@ -453,15 +476,13 @@ const LABELS: Record<string, string> = {
 
   .bq :global(.bq__row) {
     display: flex;
-    opacity: 0;
-    transform: translateY(8px);
-    transition:
-      opacity 0.45s var(--ease),
-      transform 0.45s var(--ease);
+    animation: bq-in 0.45s var(--ease);
   }
-  .bq :global(.bq__row.is-in) {
-    opacity: 1;
-    transform: none;
+  @keyframes bq-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
   }
   .bq :global(.bq__row--in) {
     justify-content: flex-start;
@@ -582,7 +603,7 @@ const LABELS: Record<string, string> = {
 
   @media (prefers-reduced-motion: reduce) {
     .bq :global(.bq__row) {
-      transition: none;
+      animation: none;
     }
     .bq__caption.is-live .bq__pulse {
       animation: none;

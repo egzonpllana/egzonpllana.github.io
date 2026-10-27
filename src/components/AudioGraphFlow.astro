@@ -7,6 +7,7 @@
  * paused, stepped and replayed; layout is plain HTML so text stays readable.
  */
 import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
 
 interface Props {
   caption?: string;
@@ -62,7 +63,10 @@ const steps = [
   class="agf"
   data-agf
 >
-  <span slot="tools" class="viz-chip" data-chip>step 1 / {steps.length}</span>
+  <div slot="tools" class="agf__tools">
+    <span class="viz-chip" data-chip>step 1 / {steps.length}</span>
+    <AnimControls />
+  </div>
 
   <div class="agf__wrap">
     <div class="agf__flow">
@@ -140,25 +144,7 @@ const steps = [
     </div>
 
     <div class="agf__bar">
-      <div class="agf__ctrls">
-        <button
-          type="button"
-          class="viz-btn viz-btn--primary"
-          data-play
-          data-playing="1"
-        >
-          <svg viewBox="0 0 12 12" aria-hidden="true" data-icon-pause>
-            <rect x="2" y="1.5" width="3" height="9" rx="0.8"></rect>
-            <rect x="7" y="1.5" width="3" height="9" rx="0.8"></rect>
-          </svg>
-          <svg viewBox="0 0 12 12" aria-hidden="true" data-icon-play>
-            <path d="M3 1.5 L10.5 6 L3 10.5 Z"></path>
-          </svg>
-          <span data-play-label>Pause</span>
-        </button>
-        <button type="button" class="viz-btn" data-next>Step →</button>
-        <button type="button" class="viz-btn" data-replay>↺ Replay</button>
-      </div>
+      <button type="button" class="viz-btn" data-next>Step →</button>
       <div class="agf__pips" role="group" aria-label="Jump to a stage">
         {
           steps.map((s, i) => (
@@ -175,7 +161,7 @@ const steps = [
       </div>
     </div>
 
-    <div class="agf__detail viz-panel" data-detail aria-live="off">
+    <div class="agf__detail viz-panel" data-detail aria-live="polite">
       {
         steps.map((s, i) => (
           <div class="agf__d" data-d={i}>
@@ -207,15 +193,21 @@ const steps = [
       const gate = root.querySelector('[data-gate]');
       const gateState = root.querySelector('[data-gate-state]');
       const chip = root.querySelector('[data-chip]');
-      const playBtn = root.querySelector('[data-play]');
-      const playLabel = root.querySelector('[data-play-label]');
       const reduce = window.matchMedia(
         '(prefers-reduced-motion: reduce)',
       ).matches;
 
       const COUNT = details.length;
+      const LAST = COUNT - 1;
       const GATE = 2;
-      const DURATIONS = [1700, 2100, 3600, 1900, 2300, 3400];
+      // How long each step holds before the next; the run ends on the last step.
+      const DURATIONS = [1700, 2100, 3600, 1900, 2300];
+      // The gate's own check, timed from the start of its step.
+      const GATE_PHASES = [
+        [350, 't1'],
+        [800, 'wait'],
+        [1900, 'pass'],
+      ];
       const GATE_LABELS = {
         idle: 'not checked',
         t1: 'attempt 1 · invalid',
@@ -224,8 +216,10 @@ const steps = [
       };
 
       let step = 0;
-      let playing = !reduce;
-      let started = false;
+      let playing = false;
+      let gateLive = false; // the gate check still has to play out on this step
+      let elapsed = 0; // ms of the current step already played
+      let since = 0; // when the current stretch of playback began
       let timers = [];
 
       const clearTimers = () => {
@@ -240,8 +234,12 @@ const steps = [
         root.classList.toggle('is-unlocked', state === 'pass');
       }
 
-      function render(i, animateGate) {
+      // Shows step i from its start. Without `animate` the step is drawn
+      // settled: no travelling packet, and the gate already passed.
+      function render(i, animate) {
+        const flow = animate && !reduce;
         step = i;
+        elapsed = 0;
         stages.forEach((el) => {
           const k = +el.dataset.stage;
           el.classList.toggle('is-on', k === i);
@@ -249,13 +247,11 @@ const steps = [
         });
         links.forEach((el) => {
           const k = +el.dataset.link;
-          el.classList.toggle('is-done', k < i);
+          el.classList.toggle('is-done', k < i || (k === i && !flow));
           el.classList.remove('is-flow');
-          if (k === i && !reduce) {
+          if (k === i && flow) {
             void el.offsetWidth;
             el.classList.add('is-flow');
-          } else if (k === i) {
-            el.classList.add('is-done');
           }
         });
         pips.forEach((p, k) => {
@@ -266,51 +262,51 @@ const steps = [
         details.forEach((d, k) => d.classList.toggle('is-on', k === i));
         chip.textContent = `step ${i + 1} / ${COUNT}`;
 
-        if (i < GATE) setGate('idle');
-        else if (i > GATE || !animateGate || reduce) setGate('pass');
-        else {
-          setGate('idle');
-          later(() => setGate('t1'), 350);
-          later(() => setGate('wait'), 800);
-          later(() => setGate('pass'), 1900);
-        }
-      }
-
-      function schedule() {
-        if (!playing || root.dataset.inview === '0') return;
-        later(() => {
-          const next = (step + 1) % COUNT;
-          clearTimers();
-          render(next, true);
-          schedule();
-        }, DURATIONS[step]);
+        gateLive = i === GATE && flow;
+        setGate(i < GATE || gateLive ? 'idle' : 'pass');
       }
 
       function setPlaying(next) {
         playing = next;
-        playLabel.textContent = next ? 'Pause' : 'Play';
-        playBtn.dataset.playing = next ? '1' : '0';
         detail.setAttribute('aria-live', next ? 'off' : 'polite');
-        clearTimers();
-        if (next) {
-          render(step, true);
-          schedule();
-        }
       }
 
+      // Schedules the rest of the current step from where it was left.
+      function run() {
+        since = performance.now();
+        if (gateLive) {
+          GATE_PHASES.forEach(([at, state]) => {
+            if (at <= elapsed) setGate(state);
+            else later(() => setGate(state), at - elapsed);
+          });
+        }
+        later(advance, DURATIONS[step] - elapsed);
+      }
+
+      function advance() {
+        clearTimers();
+        render(step + 1, true);
+        if (step < LAST) {
+          run();
+          return;
+        }
+        setPlaying(false);
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
+      // A manual jump shows the step settled and stops playback there.
       function goTo(i) {
         setPlaying(false);
-        render(i, true);
+        clearTimers();
+        render(i, false);
+        root.dispatchEvent(
+          new CustomEvent(i === LAST ? 'anim:ended' : 'anim:paused'),
+        );
       }
 
-      playBtn.addEventListener('click', () => setPlaying(!playing));
       root
         .querySelector('[data-next]')
-        .addEventListener('click', () => goTo((step + 1) % COUNT));
-      root.querySelector('[data-replay]').addEventListener('click', () => {
-        step = 0;
-        setPlaying(true);
-      });
+        .addEventListener('click', () => goTo(step >= LAST ? 0 : step + 1));
       pips.forEach((p, k) => p.addEventListener('click', () => goTo(k)));
       stages.forEach((el) =>
         el.addEventListener('click', (e) => {
@@ -319,32 +315,32 @@ const steps = [
         }),
       );
 
-      root.addEventListener('viz:inview', (e) => {
-        if (!e.detail) {
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play() {
+          if (playing) return;
+          if (step >= LAST) {
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          setPlaying(true);
+          run();
+        },
+        pause() {
+          if (!playing) return;
+          elapsed += performance.now() - since;
+          setPlaying(false);
           clearTimers();
-          return;
-        }
-        if (!started) {
-          started = true;
-          step = 0;
-        }
-        if (playing) {
+        },
+        reset() {
+          setPlaying(false);
           clearTimers();
-          render(step, true);
-          schedule();
-        }
+          render(0, false);
+        },
       });
 
-      if (reduce) {
-        setPlaying(false);
-        render(COUNT - 1, false);
-        root.classList.add('is-static');
-      } else {
-        render(0, false);
-        setPlaying(true);
-        if (root.dataset.inview !== '1') clearTimers();
-        else started = true;
-      }
+      // Reduced motion rests on the whole graph until the reader plays it.
+      render(reduce ? LAST : 0, false);
     }
     if (document.readyState !== 'loading') initAudioGraphFlow();
     else document.addEventListener('DOMContentLoaded', initAudioGraphFlow);
@@ -352,6 +348,12 @@ const steps = [
 </script>
 
 <style>
+  .agf__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
   .agf__wrap {
     container-type: inline-size;
   }
@@ -652,11 +654,22 @@ const steps = [
     color: var(--viz-level);
   }
   [data-gate='wait'] .agf__wait i::after {
-    transition: transform 1s linear;
-    transform: scaleX(1);
+    animation: agf-wait 1s linear forwards;
+  }
+  /* The shared pause rule does not reach pseudo-elements; hold the bar here. */
+  :global(.agf[data-anim-state='paused'])
+    [data-gate='wait']
+    .agf__wait
+    i::after {
+    animation-play-state: paused;
   }
   [data-gate='pass'] .agf__wait i::after {
     transform: scaleX(1);
+  }
+  @keyframes agf-wait {
+    to {
+      transform: scaleX(1);
+    }
   }
   [data-gate='pass'] [data-try='2'] {
     color: var(--accent-text);
@@ -770,15 +783,6 @@ const steps = [
     justify-content: space-between;
     gap: var(--sp-2) var(--sp-3);
     margin-top: var(--sp-4);
-  }
-  .agf__ctrls {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--sp-2);
-  }
-  [data-play][data-playing='1'] [data-icon-play],
-  [data-play]:not([data-playing='1']) [data-icon-pause] {
-    display: none;
   }
   .agf__pips {
     display: flex;

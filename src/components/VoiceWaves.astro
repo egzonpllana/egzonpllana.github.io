@@ -3,8 +3,12 @@
  * Voice-message bubble driven by the same pipeline as the app: each audio
  * buffer becomes 100 RMS slices, and every 0.2 s the view appends the newest
  * slice as a bar on the right while the oldest slides off the left.
+ *
+ * Playback is one 10 s take that fills the ribbon once: a simulated voice
+ * speaking the preview sentence, or the reader's microphone when they tap it.
  */
 import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
 
 interface Props {
   caption?: string;
@@ -34,7 +38,10 @@ const preview = Array.from({ length: BARS }, (_, i) => {
   class="vw"
   data-vw
 >
-  <span slot="tools" class="viz-chip" data-mode>idle</span>
+  <div slot="tools" class="vw__tools">
+    <span class="viz-chip" data-mode>idle</span>
+    <AnimControls />
+  </div>
 
   <div class="vw__chat">
     <span class="viz-label vw__who">You · voice message</span>
@@ -123,22 +130,37 @@ const preview = Array.from({ length: BARS }, (_, i) => {
       const reduce = window.matchMedia(
         '(prefers-reduced-motion: reduce)',
       ).matches;
+      const idleText = statusText.textContent;
+      // The simulated voice speaks the preview sentence, so its take ends on it.
+      const sentence = [...preview.children].map(
+        (bar) => parseFloat(bar.style.getPropertyValue('--h')) || FLOOR,
+      );
+      // One take is BARS ticks: the ribbon fills once, then the take ends.
+      const Take = Object.freeze({
+        None: 'none',
+        Opening: 'opening', // waiting for the microphone
+        Rolling: 'rolling',
+        Done: 'done',
+      });
 
       // BARS + 1 values: index 0 is the bar sliding out on the left.
       const levels = new Array(BARS + 1).fill(FLOOR);
       let W = 0;
       let H = 0;
       let color = '';
-      let running = false;
       let drawing = false;
+      let raf = 0;
       let stream = null;
       let ac = null;
       let analyser = null;
       let sampleBuf = null;
+      let take = Take.None;
+      let useMic = false; // this take listens to the microphone, not the sentence
+      let playing = false;
+      let ticks = 0;
       let tickTimer = 0;
-      let t0 = 0;
       let lastPush = 0;
-      let simPhase = 0;
+      let heldMs = 0; // how far into the current tick a pause stopped
       let session = 0;
 
       const readColor = () => {
@@ -155,9 +177,14 @@ const preview = Array.from({ length: BARS }, (_, i) => {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       }
 
-      function draw(ts) {
-        const p =
-          reduce || !running ? 1 : Math.min(1, (ts - lastPush) / TICK_MS);
+      // How far the newest bar has slid in: 0 just appended, 1 in place.
+      function slide() {
+        if (reduce || take !== Take.Rolling) return 1;
+        const ms = playing ? performance.now() - lastPush : heldMs;
+        return Math.min(1, ms / TICK_MS);
+      }
+      function draw() {
+        const p = slide();
         const step = W / BARS;
         const bw = Math.max(2, step * 0.56);
         const mid = H / 2;
@@ -174,27 +201,32 @@ const preview = Array.from({ length: BARS }, (_, i) => {
         }
         ctx.globalAlpha = 1;
       }
-      function frame(ts) {
+      function frame() {
         if (!drawing) return;
-        draw(ts);
-        requestAnimationFrame(frame);
+        draw();
+        raf = requestAnimationFrame(frame);
       }
       function setDrawing(on) {
-        const want = on && running && !reduce;
+        const want = on && !reduce;
         if (want === drawing) return;
         drawing = want;
-        if (want) requestAnimationFrame(frame);
+        cancelAnimationFrame(raf);
+        if (want) raf = requestAnimationFrame(frame);
       }
 
       function showRms(rms) {
         rmsEl.textContent = rms.toFixed(3);
         rmsBar.style.width = `${Math.min(1, rms * DISPLAY_GAIN) * 100}%`;
       }
+      function showTime() {
+        const secs = Math.floor((ticks * TICK_MS) / 1000);
+        timeEl.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+      }
       function push(level) {
         levels.push(level);
         levels.shift();
         lastPush = performance.now();
-        if (!drawing && root.dataset.inview !== '0') draw(lastPush);
+        if (!drawing) draw();
       }
 
       // One buffer of samples -> 100 RMS slices (the recorder's batch) -> the view takes the newest slice.
@@ -213,23 +245,24 @@ const preview = Array.from({ length: BARS }, (_, i) => {
         push(Math.max(FLOOR, Math.min(1, level * DISPLAY_GAIN)));
       }
 
-      function simulate() {
-        simPhase += 4;
-        const syll =
-          Math.max(0, Math.sin(simPhase * 0.23)) *
-          (0.5 + 0.5 * Math.sin(simPhase * 0.07));
-        const v = Math.min(1, 0.04 + syll * (0.7 + Math.random() * 0.3));
+      function speak() {
+        const v = sentence[ticks] ?? FLOOR;
         showRms(v / (1.1 * DISPLAY_GAIN));
         push(v);
       }
 
       function tick() {
+        if (ticks >= BARS) {
+          finish();
+          return;
+        }
         if (analyser && sampleBuf) {
           analyser.getFloatTimeDomainData(sampleBuf);
           pushFromSamples(sampleBuf);
-        } else simulate();
-        const secs = Math.floor((performance.now() - t0) / 1000);
-        timeEl.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+        } else speak();
+        ticks += 1;
+        showTime();
+        tickTimer = setTimeout(tick, TICK_MS);
       }
 
       function setStatus(text, kind) {
@@ -238,17 +271,39 @@ const preview = Array.from({ length: BARS }, (_, i) => {
         mode.classList.toggle('viz-chip--level', kind === 'live mic');
         mode.classList.toggle('viz-chip--meta', kind === 'simulated');
       }
+      function setListening(on) {
+        btn.classList.toggle('is-on', on);
+        btn.setAttribute('aria-pressed', String(on));
+        btn.setAttribute(
+          'aria-label',
+          on ? 'Stop listening' : 'Start listening',
+        );
+      }
 
-      async function start() {
+      function closeMic() {
+        stream?.getTracks().forEach((t) => t.stop());
+        ac?.close();
+        stream = ac = analyser = sampleBuf = null;
+      }
+      // Also cancels a microphone request that has not been answered yet.
+      function release() {
+        session++;
+        closeMic();
+        setListening(false);
+      }
+
+      // Starts the tick clock, or resumes it where the current tick stood.
+      function roll() {
+        clearTimeout(tickTimer);
+        lastPush = performance.now() - heldMs;
+        tickTimer = setTimeout(tick, TICK_MS - heldMs);
+        heldMs = 0;
+        setDrawing(true);
+      }
+
+      async function openMic() {
         const id = ++session;
-        running = true;
-        btn.classList.add('is-on');
-        btn.setAttribute('aria-pressed', 'true');
-        btn.setAttribute('aria-label', 'Stop listening');
-        preview.hidden = true;
-        levels.fill(FLOOR);
-        showRms(0);
-        timeEl.textContent = '0:00';
+        setListening(true);
         setStatus('asking for the microphone…', 'starting');
         try {
           if (!navigator.mediaDevices?.getUserMedia)
@@ -271,52 +326,113 @@ const preview = Array.from({ length: BARS }, (_, i) => {
           );
         } catch {
           if (id !== session) return;
-          analyser = null;
-          sampleBuf = null;
+          closeMic();
           setStatus(
             'microphone unavailable here, playing a simulated voice',
             'simulated',
           );
         }
-        t0 = performance.now();
-        lastPush = t0;
-        clearInterval(tickTimer);
-        tickTimer = setInterval(tick, TICK_MS);
-        setDrawing(root.dataset.inview !== '0');
+        take = Take.Rolling;
+        if (playing) roll();
       }
 
-      function stop() {
-        session++;
-        running = false;
-        clearInterval(tickTimer);
+      function startTake() {
+        take = Take.Opening;
+        preview.hidden = true;
+        if (useMic) {
+          openMic();
+          return;
+        }
+        setStatus(
+          'playing a simulated voice, tap the microphone to use yours',
+          'simulated',
+        );
+        take = Take.Rolling;
+        roll();
+      }
+
+      function finish() {
+        const wasMic = Boolean(stream) || take === Take.Opening;
+        playing = false;
+        take = Take.Done;
+        clearTimeout(tickTimer);
         setDrawing(false);
-        btn.classList.remove('is-on');
-        btn.setAttribute('aria-pressed', 'false');
-        btn.setAttribute('aria-label', 'Start listening');
-        stream?.getTracks().forEach((t) => t.stop());
-        ac?.close();
-        stream = ac = analyser = sampleBuf = null;
-        setStatus('stopped, microphone released. Tap to listen again', 'idle');
-        draw(performance.now());
+        release();
+        setStatus(
+          wasMic
+            ? 'stopped, microphone released. Tap to listen again'
+            : 'simulated voice, one bar per 0.2 s. Tap the microphone to use yours',
+          'idle',
+        );
+        draw();
+        root.dispatchEvent(new CustomEvent('anim:ended'));
       }
 
-      btn.addEventListener('click', () => (running ? stop() : start()));
-      root.addEventListener('viz:inview', (e) => {
-        if (e.detail) draw(performance.now());
-        setDrawing(e.detail);
+      function play() {
+        if (take === Take.Done) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        if (take === Take.None) startTake();
+        else if (take === Take.Rolling) roll();
+        // Opening: the pending microphone request rolls once it is answered.
+      }
+
+      function pause() {
+        if (!playing) return;
+        playing = false;
+        clearTimeout(tickTimer);
+        if (take === Take.Rolling)
+          heldMs = Math.min(TICK_MS, performance.now() - lastPush);
+        setDrawing(false);
+        draw();
+      }
+
+      function reset() {
+        playing = false;
+        clearTimeout(tickTimer);
+        setDrawing(false);
+        release();
+        useMic = false;
+        take = Take.None;
+        ticks = 0;
+        heldMs = 0;
+        levels.fill(FLOOR);
+        preview.hidden = false;
+        showRms(0);
+        showTime();
+        setStatus(idleText, 'idle');
+        draw();
+      }
+
+      const listening = () =>
+        useMic && (take === Take.Opening || take === Take.Rolling);
+
+      // Only this button opens the microphone: it records a live take, or
+      // ends the one under way. Replay and restart run the simulated voice.
+      btn.addEventListener('click', () => {
+        if (listening()) {
+          finish();
+          return;
+        }
+        reset();
+        useMic = true;
+        root.dispatchEvent(new CustomEvent('anim:started'));
+        play();
       });
-      window.addEventListener('pagehide', () => running && stop());
+      window.addEventListener('pagehide', () => listening() && finish());
 
       const redraw = () => {
         size();
-        draw(performance.now());
+        draw();
       };
       if ('ResizeObserver' in window)
         new ResizeObserver(redraw).observe(canvas);
       else window.addEventListener('resize', redraw);
       new MutationObserver(() => {
         readColor();
-        draw(performance.now());
+        draw();
       }).observe(document.documentElement, {
         attributes: true,
         attributeFilter: ['data-theme', 'class'],
@@ -324,7 +440,14 @@ const preview = Array.from({ length: BARS }, (_, i) => {
 
       readColor();
       size();
-      draw(0);
+      draw();
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause,
+        reset,
+      });
     }
     if (document.readyState !== 'loading') initVoiceWaves();
     else document.addEventListener('DOMContentLoaded', initVoiceWaves);
@@ -332,6 +455,12 @@ const preview = Array.from({ length: BARS }, (_, i) => {
 </script>
 
 <style>
+  .vw__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
   .vw__chat {
     display: flex;
     flex-direction: column;
@@ -351,7 +480,6 @@ const preview = Array.from({ length: BARS }, (_, i) => {
     background: color-mix(in srgb, var(--accent) 7%, var(--surface));
     border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
     border-radius: 999px;
-    box-shadow: var(--shadow-sm);
   }
   .vw__btn {
     position: relative;
@@ -398,8 +526,11 @@ const preview = Array.from({ length: BARS }, (_, i) => {
     position: absolute;
     inset: 0;
     border-radius: 50%;
-    animation: vw-pulse 1.4s ease-out infinite;
     pointer-events: none;
+  }
+  /* The ring pulses only while a live take is actually recording. */
+  :global(.vw[data-anim-state='playing']) .vw__btn.is-on::after {
+    animation: vw-pulse 1.4s ease-out infinite;
   }
 
   /* Ribbon and readouts side by side, so the waves sit on the pill's centre line. */
@@ -518,7 +649,7 @@ const preview = Array.from({ length: BARS }, (_, i) => {
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .vw__btn.is-on::after {
+    :global(.vw[data-anim-state='playing']) .vw__btn.is-on::after {
       animation: none;
     }
     .vw__meter span {

@@ -1,5 +1,10 @@
 ---
-/** Metric tiles. Numeric values count up once the row scrolls into view. */
+/**
+ * Metric tiles. Numeric values count up once, the first time the row scrolls
+ * into view; the controls under the row pause or replay the count.
+ */
+import AnimControls from './viz/AnimControls.astro';
+
 interface Tile {
   label: string;
   value: number;
@@ -16,110 +21,108 @@ const { tiles } = Astro.props;
 ---
 
 <div class="tiles" data-stat-tiles>
-  {
-    tiles.map((tile, i) => (
-      <div class="tiles__item" data-reveal style={`--d:${(i % 4) * 60}ms`}>
-        <span class="tiles__label">{tile.label}</span>
-        <span
-          class="tiles__value"
-          data-count={tile.value}
-          data-suffix={tile.suffix ?? ''}
-          data-decimals={tile.decimals ?? 0}
-        >
-          0{tile.suffix ?? ''}
-        </span>
-        <span class="tiles__sub">{tile.sub}</span>
-      </div>
-    ))
-  }
+  <div class="tiles__grid">
+    {
+      tiles.map((tile, i) => (
+        <div class="tiles__item" data-reveal style={`--d:${(i % 4) * 60}ms`}>
+          <span class="tiles__label">{tile.label}</span>
+          <span
+            class="tiles__value"
+            data-count={tile.value}
+            data-suffix={tile.suffix ?? ''}
+            data-decimals={tile.decimals ?? 0}
+          >
+            0{tile.suffix ?? ''}
+          </span>
+          <span class="tiles__sub">{tile.sub}</span>
+        </div>
+      ))
+    }
+  </div>
+  <div class="tiles__foot">
+    <AnimControls />
+  </div>
 </div>
 
 <script is:inline>
   (() => {
     function initStatTiles() {
-      const roots = document.querySelectorAll('[data-stat-tiles]');
-      if (!roots.length) return;
-
       const reduce = window.matchMedia(
         '(prefers-reduced-motion: reduce)',
       ).matches;
+      const DURATION = 1200;
 
       const format = (value, decimals, suffix) =>
         (decimals
           ? value.toFixed(decimals)
           : Math.round(value).toLocaleString('en-US')) + suffix;
 
-      const countUp = (el) => {
-        const target = parseFloat(el.dataset.count);
-        const decimals = parseInt(el.dataset.decimals || '0', 10);
-        const suffix = el.dataset.suffix || '';
-        if (reduce) {
-          el.textContent = format(target, decimals, suffix);
-          return;
-        }
-        const duration = 1200;
-        let start = null;
-        const frame = (ts) => {
-          if (start === null) start = ts;
-          const p = Math.min(1, (ts - start) / duration);
-          const eased = 1 - Math.pow(1 - p, 3);
-          el.textContent = format(target * eased, decimals, suffix);
-          if (p < 1) requestAnimationFrame(frame);
-          else el.textContent = format(target, decimals, suffix);
+      // The component can appear more than once per page: one engine per row.
+      document.querySelectorAll('[data-stat-tiles]').forEach((root) => {
+        if (root.dataset.bound === '1') return;
+        root.dataset.bound = '1';
+
+        const values = [...root.querySelectorAll('[data-count]')].map((el) => ({
+          el,
+          target: parseFloat(el.dataset.count),
+          decimals: parseInt(el.dataset.decimals || '0', 10),
+          suffix: el.dataset.suffix || '',
+        }));
+
+        // Reduced motion rests on the final values until the reader plays it.
+        let elapsed = reduce ? DURATION : 0;
+        let since = null;
+        let raf = 0;
+
+        const paint = () => {
+          const eased = 1 - Math.pow(1 - elapsed / DURATION, 3);
+          values.forEach((v) => {
+            v.el.textContent = format(v.target * eased, v.decimals, v.suffix);
+          });
         };
-        requestAnimationFrame(frame);
-      };
 
-      const pending = new Set();
-      const settle = (el) => {
-        pending.delete(el);
-        io.unobserve(el);
-        if (!pending.size) window.removeEventListener('scroll', onScroll);
-      };
-      const finalValue = (el) =>
-        format(
-          parseFloat(el.dataset.count),
-          parseInt(el.dataset.decimals || '0', 10),
-          el.dataset.suffix || '',
-        );
+        // Progress is kept in `elapsed`, so a pause resumes the same count.
+        const frame = (ts) => {
+          if (since === null) since = ts - elapsed;
+          elapsed = Math.min(DURATION, ts - since);
+          paint();
+          if (elapsed < DURATION) {
+            raf = requestAnimationFrame(frame);
+            return;
+          }
+          raf = 0;
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+        };
 
-      const io = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            if (!entry.isIntersecting) return;
-            settle(entry.target);
-            countUp(entry.target);
-          });
-        },
-        { threshold: 0.4 },
-      );
+        const stop = () => {
+          cancelAnimationFrame(raf);
+          raf = 0;
+          since = null;
+        };
 
-      // A fast jump can carry the tiles past the viewport without the observer
-      // ever seeing them intersect; land those on their final value.
-      let ticking = false;
-      const onScroll = () => {
-        if (ticking) return;
-        ticking = true;
-        requestAnimationFrame(() => {
-          ticking = false;
-          pending.forEach((el) => {
-            if (el.getBoundingClientRect().bottom < 0) {
-              el.textContent = finalValue(el);
-              settle(el);
+        paint();
+
+        (window.animQueue = window.animQueue || []).push({
+          root,
+          play() {
+            if (raf) return;
+            // Reduced motion lands on the final values without counting.
+            if (reduce) elapsed = DURATION;
+            if (elapsed >= DURATION) {
+              paint();
+              root.dispatchEvent(new CustomEvent('anim:ended'));
+              return;
             }
-          });
-        });
-      };
-
-      roots.forEach((root) => {
-        root.querySelectorAll('[data-count]').forEach((el) => {
-          pending.add(el);
-          io.observe(el);
+            raf = requestAnimationFrame(frame);
+          },
+          pause: stop,
+          reset() {
+            stop();
+            elapsed = 0;
+            paint();
+          },
         });
       });
-      if (pending.size) {
-        window.addEventListener('scroll', onScroll, { passive: true });
-      }
     }
 
     if (document.readyState !== 'loading') initStatTiles();
@@ -129,15 +132,22 @@ const { tiles } = Astro.props;
 
 <style>
   .tiles {
+    margin-block: var(--sp-6);
+  }
+  .tiles__grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: var(--sp-3);
-    margin-block: var(--sp-6);
   }
   @media (max-width: 720px) {
-    .tiles {
+    .tiles__grid {
       grid-template-columns: repeat(2, 1fr);
     }
+  }
+  .tiles__foot {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: var(--sp-2);
   }
   .tiles__item {
     border: 1px solid var(--border);

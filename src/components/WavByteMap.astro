@@ -3,13 +3,15 @@
  * The WAV header as a real hex dump: offset column, 16 bytes per row, every
  * byte coloured by the field it belongs to. Pick a field to decode it. A
  * second layout shows a header padded with JUNK and FLLR chunks (as Apple's
- * file writer can produce), where the sound starts at offset 4,096, and a
- * "walk the chunks" button replays the parser hopping from chunk to chunk.
+ * file writer can produce), where the sound starts at offset 4,096. The
+ * animation is the parser walking the chunks, hopping from one to the next;
+ * picking a layout replays it over that layout.
  *
  * Both layouts are built at compile time from the field list below, so every
  * byte on screen is computed, not typed by hand.
  */
 import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
 
 interface Props {
   caption?: string;
@@ -423,8 +425,10 @@ const paddedLookup = padded.fields;
   class="wbm"
   data-wbm
 >
-  <span slot="tools" class="viz-chip viz-chip--sound" data-chip>sound @ 44</span
-  >
+  <div slot="tools" class="wbm__tools">
+    <span class="viz-chip viz-chip--sound" data-chip>sound @ 44</span>
+    <AnimControls label="Chunk walk" />
+  </div>
 
   <div class="wbm__bar">
     <div class="viz-seg" role="group" aria-label="Header layout">
@@ -435,12 +439,6 @@ const paddedLookup = padded.fields;
         >Apple JUNK/FLLR</button
       >
     </div>
-    <button type="button" class="viz-btn viz-btn--primary" data-walk>
-      <svg viewBox="0 0 12 12" aria-hidden="true"
-        ><path d="M3 1.5 L10.5 6 L3 10.5 Z"></path></svg
-      >
-      Walk the chunks
-    </button>
   </div>
 
   <div class="wbm__dumpwrap">
@@ -587,7 +585,6 @@ const paddedLookup = padded.fields;
       ).matches;
       const chip = root.querySelector('[data-chip]');
       const segBtns = [...root.querySelectorAll('[data-variant]')];
-      const walkBtn = root.querySelector('[data-walk]');
       const walkLog = root.querySelector('[data-walklog]');
       const cutKey = root.querySelector('[data-cutkey]');
       const out = {
@@ -605,13 +602,24 @@ const paddedLookup = padded.fields;
         pad: '',
         sound: 'sound',
       };
+      const LEAD_MS = 400;
+      const STEP_MS = 1500;
 
       let variant = 'plain';
       let active = 0;
-      let walkTimers = [];
+      // Parser walk: hops on screen, and the time left to the next one.
+      let hop = 0;
+      let playing = false;
+      let timer = 0;
+      let due = 0;
+      let left = LEAD_MS;
 
       const dump = () => root.querySelector(`[data-dump="${variant}"]`);
       const buttons = () => [...dump().querySelectorAll('[data-f]')];
+      const hops = () => data[variant].walk;
+      const fieldIndex = (id) => data[variant].ids.indexOf(id);
+      // The field the detail panel rests on before the walk runs.
+      const restField = () => fieldIndex(variant === 'plain' ? 'data' : 'fllr');
 
       function mark(cls, set) {
         dump()
@@ -641,18 +649,78 @@ const paddedLookup = padded.fields;
         if (first) first.tabIndex = 0;
       }
 
-      function stopWalk() {
-        walkTimers.forEach(clearTimeout);
-        walkTimers = [];
-        root.classList.remove('is-walking');
+      function renderHop(h) {
+        const step = hops()[h];
+        const hopSet = step.ids.map(fieldIndex).filter((i) => i >= 0);
+        const bodySet = step.body.map(fieldIndex).filter((i) => i >= 0);
+        mark('is-hop', hopSet);
+        mark('is-body', bodySet);
+        const line = document.createElement('div');
+        line.className = h === hops().length - 1 ? 'is-found' : '';
+        line.textContent = `${h + 1}. ${step.text}`;
+        walkLog
+          .querySelectorAll('div')
+          .forEach((el) => el.classList.add('is-past'));
+        walkLog.appendChild(line);
+        walkLog.hidden = false;
+        if (hopSet[0] !== undefined) show(hopSet[0]);
+      }
+
+      function clearWalk() {
+        playing = false;
+        clearTimeout(timer);
+        hop = 0;
+        left = LEAD_MS;
         mark('is-hop', []);
         mark('is-body', []);
+        walkLog.hidden = true;
+        walkLog.innerHTML = '';
+      }
+
+      function schedule(delay) {
+        clearTimeout(timer);
+        due = performance.now() + delay;
+        timer = setTimeout(() => {
+          renderHop(hop);
+          hop += 1;
+          if (hop < hops().length) {
+            schedule(STEP_MS);
+            return;
+          }
+          playing = false;
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+        }, delay);
+      }
+
+      function play() {
+        if (playing) return;
+        // Reduced motion lands the whole walk at once.
+        if (reduce) {
+          while (hop < hops().length) renderHop(hop++);
+        }
+        if (hop >= hops().length) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        schedule(left);
+      }
+
+      function pause() {
+        if (!playing) return;
+        playing = false;
+        clearTimeout(timer);
+        left = Math.max(0, due - performance.now());
+      }
+
+      function reset() {
+        clearWalk();
+        show(restField());
       }
 
       function setVariant(v) {
         if (v === variant) return;
-        stopWalk();
-        walkLog.hidden = true;
+        clearWalk();
         variant = v;
         segBtns.forEach((b) =>
           b.setAttribute('aria-pressed', String(b.dataset.variant === v)),
@@ -662,43 +730,16 @@ const paddedLookup = padded.fields;
           .forEach((el) => (el.hidden = el.dataset.dump !== v));
         chip.textContent = `sound @ ${data[v].data.toLocaleString('en-US')}`;
         cutKey.hidden = v !== 'padded';
-        show(data[v].ids.indexOf(v === 'plain' ? 'data' : 'fllr'));
-      }
-
-      function runWalk() {
-        stopWalk();
-        const hops = data[variant].walk;
-        const ids = data[variant].ids;
-        const idx = (id) => ids.indexOf(id);
-        root.classList.add('is-walking');
-        walkLog.hidden = false;
-        walkLog.innerHTML = '';
-        const STEP = reduce ? 0 : 1500;
-        hops.forEach((hop, h) => {
-          walkTimers.push(
-            setTimeout(() => {
-              const hopSet = hop.ids.map(idx).filter((i) => i >= 0);
-              const bodySet = hop.body.map(idx).filter((i) => i >= 0);
-              mark('is-hop', hopSet);
-              mark('is-body', bodySet);
-              const line = document.createElement('div');
-              line.className = h === hops.length - 1 ? 'is-found' : '';
-              line.textContent = `${h + 1}. ${hop.text}`;
-              walkLog
-                .querySelectorAll('div')
-                .forEach((el) => el.classList.add('is-past'));
-              walkLog.appendChild(line);
-              if (hopSet[0] !== undefined) show(hopSet[0]);
-              if (h === hops.length - 1) root.classList.remove('is-walking');
-            }, h * STEP),
-          );
-        });
+        show(restField());
+        // A new layout replays the walk over it; reduced motion only swaps it.
+        if (reduce) return;
+        root.dispatchEvent(new CustomEvent('anim:started'));
+        play();
       }
 
       segBtns.forEach((b) =>
         b.addEventListener('click', () => setVariant(b.dataset.variant)),
       );
-      walkBtn.addEventListener('click', runWalk);
 
       root.querySelectorAll('[data-dump]').forEach((d) => {
         d.addEventListener('mouseover', (e) => {
@@ -733,11 +774,14 @@ const paddedLookup = padded.fields;
         });
       });
 
-      root.addEventListener('viz:inview', (e) => {
-        if (!e.detail) stopWalk();
-      });
+      show(restField());
 
-      show(data.plain.ids.indexOf('data'));
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause,
+        reset,
+      });
     }
     if (document.readyState !== 'loading') initWavByteMap();
     else document.addEventListener('DOMContentLoaded', initWavByteMap);
@@ -745,12 +789,14 @@ const paddedLookup = padded.fields;
 </script>
 
 <style>
+  .wbm__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
   .wbm__bar {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--sp-2) var(--sp-3);
     margin-bottom: var(--sp-3);
   }
   .wbm__bar .viz-seg {

@@ -5,6 +5,7 @@
  * samples describe a lower, false pitch, drawn as a dashed ghost.
  */
 import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
 
 interface Props {
   caption?: string;
@@ -21,16 +22,14 @@ const {
   class="swl"
   data-swl
 >
-  <span
-    slot="tools"
-    class="viz-chip viz-chip--sound"
-    data-out-verdict
-    aria-live="polite"
-  >
-    <span class="viz-dot"></span><span data-out-verdict-text
-      >captured faithfully</span
-    >
-  </span>
+  <div slot="tools" class="swl__tools">
+    <span class="viz-chip viz-chip--sound" data-out-verdict aria-live="polite">
+      <span class="viz-dot"></span><span data-out-verdict-text
+        >captured faithfully</span
+      >
+    </span>
+    <AnimControls />
+  </div>
 
   <div class="swl__scope viz-panel">
     <canvas
@@ -155,15 +154,16 @@ const {
 
       const WINDOW = 0.004; // seconds of sound on screen
       const METER_SPAN = 1.5; // the meter track covers 0 .. 1.5 x the limit
-      const reduce = window.matchMedia(
-        '(prefers-reduced-motion: reduce)',
-      ).matches;
+      const SPIN = 5; // radians of phase per second of playback
+      // One run turns the wave through three full cycles, so it comes to rest
+      // on the frame it started from.
+      const RUN = 3 * 2 * Math.PI;
       const fmt = (n) => Math.round(n).toLocaleString('en-US');
 
       let rate = 16000;
       let phase = 0;
       let last = 0;
-      let running = false;
+      let raf = 0;
       let W = 0;
       let H = 0;
       let colors = {};
@@ -304,20 +304,21 @@ const {
         draw();
       }
 
-      function loop(ts) {
-        if (!running) return;
+      function tick(ts) {
         const dt = last ? Math.min((ts - last) / 1000, 0.1) : 0;
         last = ts;
-        phase += dt * 5;
+        phase = Math.min(RUN, phase + dt * SPIN);
         draw();
-        requestAnimationFrame(loop);
+        if (phase < RUN) {
+          raf = requestAnimationFrame(tick);
+          return;
+        }
+        raf = 0;
+        root.dispatchEvent(new CustomEvent('anim:ended'));
       }
-      function play(on) {
-        if (reduce) on = false;
-        if (on === running) return;
-        running = on;
-        last = 0;
-        if (on) requestAnimationFrame(loop);
+      function stop() {
+        cancelAnimationFrame(raf);
+        raf = 0;
       }
 
       [inFreq, inAmp].forEach((el) => el.addEventListener('input', update));
@@ -350,12 +351,28 @@ const {
         attributeFilter: ['data-theme', 'class'],
       });
 
-      root.addEventListener('viz:inview', (e) => play(e.detail));
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play() {
+          if (raf) return;
+          if (phase >= RUN) {
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          last = 0;
+          raf = requestAnimationFrame(tick);
+        },
+        pause: stop,
+        reset() {
+          stop();
+          phase = 0;
+          draw();
+        },
+      });
 
       readColors();
       size();
       update();
-      play(root.dataset.inview === '1');
     }
 
     if (document.readyState !== 'loading') initSoundWaveLab();
@@ -364,6 +381,12 @@ const {
 </script>
 
 <style>
+  .swl__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
   .swl__scope {
     position: relative;
     overflow: hidden;

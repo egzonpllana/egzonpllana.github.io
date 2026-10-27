@@ -6,6 +6,8 @@
  * columns deliberately disagree: `.initializing` is surfaced as ready, and the
  * image count in the state payload never moves.
  */
+import AnimControls from './viz/AnimControls.astro';
+
 interface Step {
   /** Apple's `ObjectCaptureSession.CaptureState`. */
   apple: string;
@@ -68,15 +70,7 @@ const TOTAL = STEPS.reduce((sum, step) => sum + step.hold, 0);
 <div class="csm" data-capture-state-map data-reveal>
   <div class="csm__frame">
     <div class="csm__bar">
-      <button
-        class="csm__play"
-        type="button"
-        data-play
-        aria-label="Pause the replay"
-      >
-        <span data-play-icon aria-hidden="true">❚❚</span>
-        <span data-play-label>pause</span>
-      </button>
+      <AnimControls />
 
       <input
         class="csm__scrub"
@@ -147,15 +141,8 @@ const TOTAL = STEPS.reduce((sum, step) => sum + step.hold, 0);
       const rows = Array.from(root.querySelectorAll('[data-row]'));
       const scrub = root.querySelector('[data-scrub]');
       const clock = root.querySelector('[data-clock]');
-      const playBtn = root.querySelector('[data-play]');
-      const playIcon = root.querySelector('[data-play-icon]');
-      const playLabel = root.querySelector('[data-play-label]');
       const shotsEl = root.querySelector('[data-shots]');
       if (!rows.length || !scrub) return;
-
-      const reduce = window.matchMedia(
-        '(prefers-reduced-motion: reduce)',
-      ).matches;
 
       // Cumulative start time of every step, so a scrub position resolves to
       // one row without searching.
@@ -168,10 +155,17 @@ const TOTAL = STEPS.reduce((sum, step) => sum + step.hold, 0);
 
       /** Shots the session reports by the end of the capturing step. */
       const FINAL_SHOTS = 38;
+      /**
+       * Longest frame gap the clock will absorb. A background tab stops
+       * frames entirely; without a cap the first frame back would swallow
+       * the whole replay.
+       */
+      const MAX_FRAME_MS = 100;
 
+      // Every reader, reduced motion included, starts on the first emission;
+      // the playback runtime decides when it runs.
       let elapsed = 0;
-      let playing = !reduce;
-      let hovering = false;
+      let playing = false;
       let raf = 0;
       let last = 0;
 
@@ -204,13 +198,19 @@ const TOTAL = STEPS.reduce((sum, step) => sum + step.hold, 0);
         if (clock) clock.textContent = `${(elapsed / 1000).toFixed(1)}s`;
       }
 
+      // One pass of the scan, then it rests on `.completed` - the clock only
+      // advances while frames run, so a pause resumes where it stopped.
       function loop(now) {
         if (!playing) return;
-        const dt = last ? now - last : 0;
+        const dt = last ? Math.min(now - last, MAX_FRAME_MS) : 0;
         last = now;
-        if (!hovering) {
-          elapsed = (elapsed + dt) % TOTAL;
-          apply();
+        elapsed = Math.min(elapsed + dt, TOTAL);
+        apply();
+        if (elapsed >= TOTAL) {
+          playing = false;
+          raf = 0;
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
         }
         raf = requestAnimationFrame(loop);
       }
@@ -220,55 +220,36 @@ const TOTAL = STEPS.reduce((sum, step) => sum + step.hold, 0);
         playing = true;
         last = 0;
         raf = requestAnimationFrame(loop);
-        setButton();
       }
 
       function pause() {
         playing = false;
         if (raf) cancelAnimationFrame(raf);
         raf = 0;
-        setButton();
       }
 
-      function setButton() {
-        if (playIcon) playIcon.textContent = playing ? '❚❚' : '▶';
-        if (playLabel) playLabel.textContent = playing ? 'pause' : 'play';
-        if (playBtn) {
-          playBtn.setAttribute(
-            'aria-label',
-            playing ? 'Pause the replay' : 'Play the replay',
-          );
-        }
-      }
-
-      playBtn?.addEventListener('click', () => (playing ? pause() : play()));
-
+      // Scrubbing takes the timeline off the clock: it holds wherever the
+      // reader leaves it, and play resumes from there.
       scrub.addEventListener('input', () => {
         pause();
         elapsed = (Number(scrub.value) / 1000) * TOTAL;
         apply();
+        root.dispatchEvent(
+          new CustomEvent(elapsed >= TOTAL ? 'anim:ended' : 'anim:paused'),
+        );
       });
 
-      // Hovering holds the current frame without stopping the clock's owner,
-      // so a reader can look at a row without racing it.
-      root.addEventListener('pointerenter', () => (hovering = true));
-      root.addEventListener('pointerleave', () => (hovering = false));
-      root.addEventListener('focusin', () => (hovering = true));
-      root.addEventListener('focusout', () => (hovering = false));
-
-      const io = new IntersectionObserver(
-        (entries) => {
-          for (const entry of entries) {
-            if (entry.isIntersecting) {
-              if (!reduce) play();
-            } else pause();
-          }
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause,
+        reset() {
+          pause();
+          elapsed = 0;
+          apply();
         },
-        { threshold: 0.15 },
-      );
-      io.observe(root);
+      });
 
-      setButton();
       apply();
     }
 
@@ -293,26 +274,9 @@ const TOTAL = STEPS.reduce((sum, step) => sum + step.hold, 0);
     display: flex;
     align-items: center;
     gap: var(--sp-3);
-    padding: var(--sp-3) var(--sp-4);
+    padding: var(--sp-2) var(--sp-4);
     border-bottom: 1px solid var(--border);
     background: var(--bg-subtle);
-  }
-  .csm__play {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-family: var(--font-mono);
-    font-size: var(--fs-2xs);
-    color: var(--fg-muted);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 0.3rem 0.6rem;
-    cursor: pointer;
-  }
-  .csm__play:hover {
-    color: var(--fg);
-    border-color: var(--border-strong);
   }
   .csm__scrub {
     flex: 1;

@@ -5,6 +5,7 @@
  * its 44-byte header is stripped, and only the sound is sent.
  */
 import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
 
 interface Props {
   caption?: string;
@@ -30,27 +31,9 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
   class="ctl"
   data-ctl
 >
-  <button
-    slot="tools"
-    type="button"
-    class="viz-btn"
-    data-toggle
-    aria-pressed="false"
-    aria-label="Pause the animation"
-  >
-    <svg class="ctl__ico ctl__ico--pause" viewBox="0 0 12 12" aria-hidden="true"
-      ><rect x="2" y="1.5" width="3" height="9" rx="1"></rect><rect
-        x="7"
-        y="1.5"
-        width="3"
-        height="9"
-        rx="1"></rect></svg
-    >
-    <svg class="ctl__ico ctl__ico--play" viewBox="0 0 12 12" aria-hidden="true"
-      ><path d="M3 1.6v8.8L10.4 6z"></path></svg
-    >
-    <span data-toggle-text>Pause</span>
-  </button>
+  <div slot="tools" class="ctl__tools">
+    <AnimControls />
+  </div>
 
   <div class="ctl__lanehead">
     <span class="viz-label">microphone, always on</span>
@@ -134,8 +117,6 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
       if (!ctx) return;
       const cardsEl = root.querySelector('[data-cards]');
       const axis = root.querySelector('[data-axis]');
-      const toggle = root.querySelector('[data-toggle]');
-      const toggleText = root.querySelector('[data-toggle-text]');
       const liveText = root.querySelector('[data-live-text]');
 
       const CHUNK_S = 0.8; // the recorder's timer, in seconds of audio
@@ -143,13 +124,11 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
       const SPEED = CHUNK_S / REAL_PER_CHUNK;
       const VIEW_CHUNKS = 5;
       const VIEW_S = VIEW_CHUNKS * CHUNK_S;
-      const HEAD_AT = 0.9; // once the head reaches 90% of the lane, the lane scrolls
-      const MAX_CARDS = 5;
       const STRIP_AT = 0.3; // seconds of audio after a cut before the header goes
       const SENT_AT = 0.6;
-      const reduce = window.matchMedia(
-        '(prefers-reduced-motion: reduce)',
-      ).matches;
+      // One pass across the lane: five chunks, then a short tail with the head
+      // at the edge while the last one loses its header and is sent.
+      const END_S = VIEW_S + SENT_AT + 0.1;
       const pad = (n) => String(n).padStart(2, '0');
       const range = (i) =>
         `${(i * CHUNK_S).toFixed(1)}–${((i + 1) * CHUNK_S).toFixed(1)} s`;
@@ -157,19 +136,19 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
       let W = 0;
       let H = 0;
       let colors = {};
-      let t = VIEW_S; // audio seconds recorded so far
-      let staticView = true; // the end state: five chunks, lane not scrolled
-      let started = false;
-      let userPaused = reduce;
-      let running = false;
+      let t = END_S; // audio seconds recorded; opens on the finished pass
+      let raf = 0;
       let last = 0;
       let cards = [];
 
-      const axisLabels = Array.from({ length: VIEW_CHUNKS + 2 }, () => {
+      for (let k = 0; k <= VIEW_CHUNKS; k++) {
         const s = document.createElement('span');
+        s.style.left = `${(k / VIEW_CHUNKS) * 100}%`;
+        s.textContent = `${(k * CHUNK_S).toFixed(1)} s`;
+        if (k === 0) s.classList.add('is-start');
+        if (k === VIEW_CHUNKS) s.classList.add('is-end');
         axis.appendChild(s);
-        return s;
-      });
+      }
 
       function readColors() {
         const cs = getComputedStyle(root);
@@ -206,26 +185,20 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
         return Math.min(1, env * (0.45 + 0.55 * hash(Math.floor(s * 220))));
       }
 
-      const viewStart = () =>
-        staticView ? 0 : Math.max(0, t - HEAD_AT * VIEW_S);
-
       function draw() {
-        const v0 = viewStart();
         const pps = W / VIEW_S;
-        const headX = Math.min(W, (t - v0) * pps);
+        const headX = Math.min(W, t * pps);
         const mid = H / 2;
         const now = Math.floor(t / CHUNK_S);
         ctx.clearRect(0, 0, W, H);
 
         // Closed chunks get a faint cup; the open one is brighter; a fresh cut flashes.
-        const first = Math.floor(v0 / CHUNK_S);
-        for (let k = first; k <= now; k++) {
-          const x0 = (k * CHUNK_S - v0) * pps;
-          const x1 = Math.min(headX, ((k + 1) * CHUNK_S - v0) * pps);
+        for (let k = 0; k <= now; k++) {
+          const x0 = k * CHUNK_S * pps;
+          const x1 = Math.min(headX, (k + 1) * CHUNK_S * pps);
           if (x1 <= 0 || x0 >= W) continue;
           const since = t - (k + 1) * CHUNK_S;
-          const flash =
-            !staticView && since >= 0 && since < 0.3 ? 1 - since / 0.3 : 0;
+          const flash = since >= 0 && since < 0.3 ? 1 - since / 0.3 : 0;
           ctx.fillStyle = colors.sound;
           ctx.globalAlpha = k === now ? 0.14 : 0.05 + flash * 0.2;
           ctx.fillRect(x0, 0, x1 - x0, H);
@@ -247,7 +220,7 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
         ctx.beginPath();
         const A = H / 2 - 8;
         for (let x = 1; x < headX; x += 3) {
-          const a = Math.max(1, amp(v0 + x / pps) * A);
+          const a = Math.max(1, amp(x / pps) * A);
           ctx.moveTo(x, mid - a);
           ctx.lineTo(x, mid + a);
         }
@@ -257,9 +230,9 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
         ctx.lineWidth = 1.25;
         ctx.setLineDash([4, 3]);
         ctx.beginPath();
-        for (let k = first + 1; k <= now; k++) {
-          const x = Math.round((k * CHUNK_S - v0) * pps) + 0.5;
-          if (x <= 0 || x >= W) continue;
+        for (let k = 1; k <= now; k++) {
+          const x = Math.round(k * CHUNK_S * pps) + 0.5;
+          if (x >= W) continue;
           ctx.moveTo(x, 0);
           ctx.lineTo(x, H);
         }
@@ -277,18 +250,6 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
         ctx.beginPath();
         ctx.arc(hx, 5, 3.5, 0, Math.PI * 2);
         ctx.fill();
-
-        axisLabels.forEach((el, i) => {
-          const k = first + i;
-          const x = (k * CHUNK_S - v0) * pps;
-          const show = x >= 0 && x <= W;
-          el.hidden = !show;
-          if (!show) return;
-          el.style.left = `${(x / W) * 100}%`;
-          el.textContent = `${(k * CHUNK_S).toFixed(1)} s`;
-          el.classList.toggle('is-start', x < 18);
-          el.classList.toggle('is-end', x > W - 18);
-        });
       }
 
       function makeCard(i) {
@@ -305,18 +266,12 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
 
       function syncCards() {
         const closed = Math.floor(t / CHUNK_S);
-        while (cards.length && cards[cards.length - 1].i >= closed)
-          cards.pop().el.remove();
-        const nextI = cards.length
-          ? cards[cards.length - 1].i + 1
-          : Math.max(0, closed - MAX_CARDS);
-        for (let i = nextI; i < closed; i++) {
+        for (let i = cards.length; i < closed; i++) {
           const el = makeCard(i);
           cardsEl.appendChild(el);
           cards.push({ i, el });
           requestAnimationFrame(() => el.classList.remove('is-new'));
         }
-        while (cards.length > MAX_CARDS) cards.shift().el.remove();
         cards.forEach((c) => {
           const since = t - (c.i + 1) * CHUNK_S;
           const st =
@@ -333,61 +288,59 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
       }
 
       function updateLive() {
-        if (staticView) {
-          liveText.textContent = `${Math.floor(t / CHUNK_S)} chunks written`;
+        const k = Math.floor(t / CHUNK_S);
+        if (t >= VIEW_S) {
+          liveText.textContent = `${k} chunks written`;
           return;
         }
-        const k = Math.floor(t / CHUNK_S);
         const into = t - k * CHUNK_S;
         liveText.textContent = `writing chunk ${pad(k + 1)} · ${into.toFixed(2)} / 0.8 s`;
       }
 
       function frame(ts) {
-        if (!running) return;
         const dt = last ? Math.min((ts - last) / 1000, 0.1) : 0;
         last = ts;
-        t += dt * SPEED;
+        t = Math.min(END_S, t + dt * SPEED);
         syncCards();
         updateLive();
         draw();
-        requestAnimationFrame(frame);
+        if (t < END_S) {
+          raf = requestAnimationFrame(frame);
+          return;
+        }
+        raf = 0;
+        // The finished pass shows every card, same as the opening frame.
+        root.classList.remove('is-live');
+        root.dispatchEvent(new CustomEvent('anim:ended'));
       }
 
-      function begin() {
-        cardsEl.textContent = '';
-        cards = [];
-        t = 0;
-        staticView = false;
-        started = true;
-        root.classList.add('is-live');
+      function stop() {
+        cancelAnimationFrame(raf);
+        raf = 0;
       }
 
-      function setButton() {
-        const playing = !userPaused;
-        toggle.setAttribute('aria-pressed', String(!playing));
-        toggle.setAttribute(
-          'aria-label',
-          playing ? 'Pause the animation' : 'Play the animation',
-        );
-        toggleText.textContent = playing ? 'Pause' : 'Play';
-        toggle.classList.toggle('is-paused', !playing);
-      }
-
-      function evaluate() {
-        const want = !userPaused && root.dataset.inview === '1';
-        if (want && !started) begin();
-        if (want === running) return;
-        running = want;
-        last = 0;
-        if (want) requestAnimationFrame(frame);
-      }
-
-      toggle.addEventListener('click', () => {
-        userPaused = !userPaused;
-        setButton();
-        evaluate();
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play() {
+          if (raf) return;
+          if (t >= END_S) {
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          last = 0;
+          raf = requestAnimationFrame(frame);
+        },
+        pause: stop,
+        reset() {
+          stop();
+          cardsEl.textContent = '';
+          cards = [];
+          t = 0;
+          root.classList.add('is-live');
+          updateLive();
+          draw();
+        },
       });
-      root.addEventListener('viz:inview', evaluate);
 
       const redraw = () => {
         size();
@@ -406,10 +359,8 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
 
       readColors();
       size();
-      setButton();
       updateLive();
       draw();
-      evaluate();
     }
     if (document.readyState !== 'loading') initChunkTimeline();
     else document.addEventListener('DOMContentLoaded', initChunkTimeline);
@@ -417,12 +368,8 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
 </script>
 
 <style>
-  .ctl__ico {
-    display: none;
-  }
-  :global(.ctl .viz-btn:not(.is-paused)) .ctl__ico--pause,
-  :global(.ctl .viz-btn.is-paused) .ctl__ico--play {
-    display: block;
+  .ctl__tools {
+    display: flex;
   }
 
   .ctl__lanehead,
@@ -465,9 +412,6 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
   }
   .ctl__axis :global(span.is-end) {
     transform: translateX(-100%);
-  }
-  .ctl__axis :global(span[hidden]) {
-    display: none;
   }
 
   .ctl__cardshead {

@@ -4,8 +4,13 @@
  * and representation at every stage. Byte counts are computed here for an
  * exact 0.8 s at 48 kHz mono so every number on screen is consistent; the
  * sample and header bytes shown are real encodings of a synthetic voice.
+ *
+ * Playback walks the stages once and rests on the final text. A stage reached
+ * during playback plays its own motion (the air wave, the packet, the partial
+ * rewrites); a stage picked by hand shows at rest until play is pressed.
  */
 import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
 
 interface Props {
   caption?: string;
@@ -258,22 +263,9 @@ const first = stages[0];
   class="pjr"
   data-pjr
 >
-  <button
-    slot="tools"
-    type="button"
-    class="viz-btn viz-btn--primary"
-    data-play
-    data-playing="false"
-    aria-pressed="false"
-  >
-    <svg viewBox="0 0 12 12" aria-hidden="true" data-icon-play>
-      <path d="M3 1.5v9l7.5-4.5z"></path>
-    </svg>
-    <svg viewBox="0 0 12 12" aria-hidden="true" data-icon-pause>
-      <path d="M2.5 1.5h2.5v9H2.5zM7 1.5h2.5v9H7z"></path>
-    </svg>
-    <span data-play-label>play</span>
-  </button>
+  <div slot="tools">
+    <AnimControls />
+  </div>
 
   <div class="pjr__head">
     <span class="pjr__count viz-mono" data-out-count>01 / 0{stages.length}</span
@@ -484,8 +476,6 @@ const first = stages[0];
       const scrub = root.querySelector('[data-scrub]');
       const prev = root.querySelector('[data-prev]');
       const next = root.querySelector('[data-next]');
-      const play = root.querySelector('[data-play]');
-      const playLabel = root.querySelector('[data-play-label]');
       const fill = root.querySelector('[data-fill]');
       const ghost = root.querySelector('[data-ghost]');
       const partialEl = root.querySelector('[data-partial]');
@@ -503,6 +493,8 @@ const first = stages[0];
         '(prefers-reduced-motion: reduce)',
       ).matches;
       const STEP_MS = 2600;
+      const PARTIAL_MS = 600;
+      const PARTIAL_STAGE = 7;
       const pad = (n) => String(n).padStart(2, '0');
       const fmt = (n) => n.toLocaleString('en-US');
 
@@ -510,32 +502,24 @@ const first = stages[0];
       let playing = false;
       let timer = 0;
       let partialTimer = 0;
+      // The stage whose run is under way, playing or paused; -1 once the
+      // reader picks a stage by hand. A run is the stage's dwell, its motion
+      // and, on the partial stage, the rewrites.
+      let runStage = -1;
+      let elapsed = 0; // ms of the run played before the last resume
+      let since = 0;
+      let partial = 0;
+
+      const runTime = () => elapsed + (playing ? performance.now() - since : 0);
 
       // The byte count follows the partial text as it is rewritten.
       function setPartial(text) {
         partialEl.textContent = text;
-        if (current === 7)
+        if (current === PARTIAL_STAGE)
           out.bytes.textContent = fmt(new TextEncoder().encode(text).length);
       }
 
-      function runPartials() {
-        clearInterval(partialTimer);
-        const list = data.partials;
-        if (current !== 7 || reduce) {
-          setPartial(list[list.length - 1]);
-          return;
-        }
-        let k = 0;
-        setPartial(list[0]);
-        partialTimer = setInterval(() => {
-          k += 1;
-          setPartial(list[Math.min(k, list.length - 1)]);
-          if (k >= list.length - 1) clearInterval(partialTimer);
-        }, 600);
-      }
-
       function go(i) {
-        const before = current;
         current = Math.max(0, Math.min(last, i));
         const s = stages[current];
         const p = current > 0 ? stages[current - 1] : null;
@@ -560,53 +544,110 @@ const first = stages[0];
         scrub.value = String(current);
         prev.disabled = current === 0;
         next.disabled = current === last;
-        if (before !== current || current === 7) runPartials();
+        if (current === PARTIAL_STAGE)
+          setPartial(data.partials[data.partials.length - 1]);
       }
 
-      function setPlaying(on) {
-        playing = on;
-        play.setAttribute('aria-pressed', String(on));
-        playLabel.textContent = on ? 'pause' : 'play';
-        play.dataset.playing = String(on);
-        clearInterval(timer);
-        if (on && root.dataset.inview !== '0') {
-          timer = setInterval(() => {
-            if (current >= last) {
-              setPlaying(false);
-              return;
-            }
-            go(current + 1);
-            if (current >= last) setPlaying(false);
-          }, STEP_MS);
-        }
-      }
-      function user(i) {
-        if (playing) setPlaying(false);
-        go(i);
+      function startRun() {
+        runStage = current;
+        elapsed = 0;
+        partial = 0;
+        const view = views[current];
+        if (reduce || !view) return;
+        view.classList.remove('is-run');
+        void view.offsetWidth; // restart the view's keyframes on a replay
+        view.classList.add('is-run');
+        if (current === PARTIAL_STAGE) setPartial(data.partials[0]);
       }
 
-      play.addEventListener('click', () => {
-        if (playing) {
-          setPlaying(false);
+      function nextPartial() {
+        const list = data.partials;
+        if (partial >= list.length - 1) return;
+        partialTimer = setTimeout(
+          () => {
+            partial += 1;
+            setPartial(list[partial]);
+            nextPartial();
+          },
+          Math.max(0, (partial + 1) * PARTIAL_MS - runTime()),
+        );
+      }
+
+      function stopTimers() {
+        clearTimeout(timer);
+        clearTimeout(partialTimer);
+      }
+
+      function schedule() {
+        stopTimers();
+        if (!playing) return;
+        since = performance.now();
+        timer = setTimeout(advance, Math.max(0, STEP_MS - elapsed));
+        if (current === PARTIAL_STAGE && !reduce) nextPartial();
+      }
+
+      function advance() {
+        go(current + 1);
+        startRun();
+        if (current >= last) {
+          playing = false;
+          root.dispatchEvent(new CustomEvent('anim:ended'));
           return;
         }
-        if (current >= last) go(0);
-        setPlaying(true);
-      });
+        schedule();
+      }
+
+      function play() {
+        if (current >= last) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        if (runStage !== current) startRun();
+        schedule();
+      }
+
+      function pause() {
+        if (!playing) return;
+        elapsed = runTime();
+        playing = false;
+        stopTimers();
+      }
+
+      function reset() {
+        playing = false;
+        stopTimers();
+        views.forEach((v) => v.classList.remove('is-run'));
+        runStage = -1;
+        elapsed = 0;
+        go(0);
+      }
+
+      // Picking a stage stops playback and shows that stage at rest.
+      function user(i) {
+        playing = false;
+        stopTimers();
+        go(i);
+        runStage = -1;
+        views[current]?.classList.remove('is-run');
+        root.dispatchEvent(
+          new CustomEvent(current >= last ? 'anim:ended' : 'anim:paused'),
+        );
+      }
+
       prev.addEventListener('click', () => user(current - 1));
       next.addEventListener('click', () => user(current + 1));
       scrub.addEventListener('input', () => user(+scrub.value));
       steps.forEach((b, k) => b.addEventListener('click', () => user(k)));
 
-      const sync = () => {
-        const visible = root.dataset.inview !== '0';
-        root.classList.toggle('is-anim', visible && !reduce);
-        if (playing) setPlaying(true);
-      };
-      root.addEventListener('viz:inview', sync);
-
       go(0);
-      sync();
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause,
+        reset,
+      });
     }
     if (document.readyState !== 'loading') initPipelineJourney();
     else document.addEventListener('DOMContentLoaded', initPipelineJourney);
@@ -676,8 +717,10 @@ const first = stages[0];
     max-width: none;
     height: 100%;
   }
-  :global(.pjr.is-anim) .pjr__air svg {
-    animation: pjr-scroll 3.2s linear infinite;
+  /* One period per run, still moving as the stage fades out; the wave is
+     periodic, so the pass ends where it began. */
+  .pjr__view.is-run .pjr__air svg {
+    animation: pjr-scroll 3.2s linear;
   }
   @keyframes pjr-scroll {
     to {
@@ -833,8 +876,9 @@ const first = stages[0];
     transform: translateY(-50%);
     background: var(--surface);
   }
-  :global(.pjr.is-anim) .pjr__view.is-on .pjr__packet {
-    animation: pjr-send 2.2s var(--ease) infinite;
+  /* Sent once per run; it stays at the speech service until the next stage. */
+  .pjr__view.is-run .pjr__packet {
+    animation: pjr-send 2.2s var(--ease) forwards;
   }
   @keyframes pjr-send {
     from {

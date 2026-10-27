@@ -2,9 +2,12 @@
 /**
  * Retry-taxonomy simulator. Pick a failure; see which of the three verdicts it
  * carries, and what that means separately for an idempotent GET and a
- * non-idempotent POST. The backoff ladder is re-rolled on every run, which is
- * the point: the delays are fully jittered, not fixed.
+ * non-idempotent POST. The backoff ladder is re-rolled for every failure picked
+ * and on Re-roll, which is the point: the delays are fully jittered, not fixed.
+ * The bars grow once when the figure scrolls into view; restart replays the
+ * same draw.
  */
+import AnimControls from './viz/AnimControls.astro';
 
 interface Failure {
   key: string;
@@ -105,6 +108,7 @@ const SCHEDULES = {
         </svg>
         Re-roll
       </button>
+      <AnimControls />
     </div>
 
     <div class="rl__chips" role="group" aria-label="Failure mode">
@@ -156,6 +160,10 @@ const SCHEDULES = {
       ).matches;
 
       let current = FAILURES[0].key;
+      // Bars that have finished growing in the current run.
+      let grown = 0;
+
+      const fills = () => lanesEl.querySelectorAll('.rl__fill');
 
       /** Exponential growth, capped, then fully jittered — as shipped. */
       function ladder(schedule) {
@@ -220,7 +228,8 @@ const SCHEDULES = {
 
             const fill = document.createElement('span');
             fill.className = 'rl__fill';
-            fill.style.width = '0%';
+            fill.style.setProperty('--w', `${(step.delay / widest) * 100}%`);
+            fill.style.setProperty('--delay', `${80 + i * 110}ms`);
             track.appendChild(fill);
             row.appendChild(track);
 
@@ -230,18 +239,6 @@ const SCHEDULES = {
             row.appendChild(val);
 
             bars.appendChild(row);
-
-            const target = `${(step.delay / widest) * 100}%`;
-            if (reduce) {
-              fill.style.width = target;
-            } else {
-              setTimeout(
-                () => {
-                  fill.style.width = target;
-                },
-                80 + i * 110,
-              );
-            }
           });
         } else {
           const empty = document.createElement('p');
@@ -254,7 +251,8 @@ const SCHEDULES = {
         return lane;
       }
 
-      function run(key) {
+      /** Shows a failure with a freshly rolled ladder, bars not grown yet. */
+      function draw(key) {
         current = key;
         const failure = FAILURES.find((f) => f.key === key) || FAILURES[0];
 
@@ -288,14 +286,61 @@ const SCHEDULES = {
             SCHEDULES.upload,
           ),
         );
+        reset();
       }
 
-      chips.forEach((chip) =>
-        chip.addEventListener('click', () => run(chip.dataset.failure)),
-      );
-      if (replayBtn) replayBtn.addEventListener('click', () => run(current));
+      function play() {
+        // Reduced motion, or a verdict with no retries, has nothing to grow.
+        if (reduce || grown >= fills().length) {
+          lanesEl.classList.add('is-done');
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        lanesEl.classList.add('is-run');
+      }
 
-      run(current);
+      function reset() {
+        lanesEl.classList.remove('is-run', 'is-done');
+        grown = 0;
+        // Restyle now, so the next play restarts the keyframes from zero.
+        void lanesEl.offsetWidth;
+      }
+
+      /** A chip or Re-roll: a new draw that grows on its own. */
+      function roll(key) {
+        draw(key);
+        if (reduce) {
+          lanesEl.classList.add('is-done');
+          return;
+        }
+        root.dispatchEvent(new CustomEvent('anim:started'));
+        play();
+      }
+
+      lanesEl.addEventListener('animationend', (e) => {
+        if (!e.target.classList.contains('rl__fill')) return;
+        grown += 1;
+        if (grown === fills().length) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+        }
+      });
+      chips.forEach((chip) =>
+        chip.addEventListener('click', () => roll(chip.dataset.failure)),
+      );
+      if (replayBtn) replayBtn.addEventListener('click', () => roll(current));
+
+      draw(current);
+      // Reduced motion rests on the grown bars until the reader plays it.
+      if (reduce) lanesEl.classList.add('is-done');
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        // The bars grow as CSS keyframes, which the runtime's paused state
+        // already holds in place.
+        pause() {},
+        reset,
+      });
     }
 
     if (document.readyState !== 'loading') initRetryLadder();
@@ -339,8 +384,9 @@ const SCHEDULES = {
   }
   .rl__top {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--sp-3);
+    gap: var(--sp-2) var(--sp-3);
   }
   .rl__label {
     font-size: var(--fs-xs);
@@ -513,9 +559,21 @@ const SCHEDULES = {
   }
   .rl :global(.rl__fill) {
     display: block;
+    width: 0;
     height: 100%;
     background: var(--accent);
-    transition: width 0.55s var(--ease);
+  }
+  .rl :global(.is-run .rl__fill) {
+    width: var(--w);
+    animation: rl-grow 0.55s var(--ease) var(--delay, 0ms) backwards;
+  }
+  .rl :global(.is-done .rl__fill) {
+    width: var(--w);
+  }
+  @keyframes rl-grow {
+    from {
+      width: 0;
+    }
   }
   .rl :global(.rl__empty) {
     font-size: var(--fs-xs);
@@ -529,12 +587,6 @@ const SCHEDULES = {
     }
     .rl__lanes {
       grid-template-columns: 1fr;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .rl :global(.rl__fill) {
-      transition: none;
     }
   }
 </style>

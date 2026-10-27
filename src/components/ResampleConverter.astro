@@ -11,8 +11,13 @@
  *     is fed in again and duplicated at the end of the output.
  *
  * Graphics are drawn at the panel's real pixel width; all text is HTML.
+ *
+ * Playback runs both parts once, side by side: (a) sweeps the output instants
+ * across the millisecond, (b) plays the converter's calls for the chosen
+ * answer. Picking a rate or an answer replays only that part.
  */
 import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
 
 interface Props {
   caption?: string;
@@ -51,9 +56,12 @@ const syllables = ['hel', 'lo', 'wor', 'ld'];
   class="rsc"
   data-rsc
 >
-  <span slot="tools" class="viz-chip viz-chip--sound" data-rate-chip
-    >48,000 → 16,000 Hz</span
-  >
+  <div slot="tools" class="rsc__tools">
+    <span class="viz-chip viz-chip--sound" data-rate-chip
+      >48,000 → 16,000 Hz</span
+    >
+    <AnimControls />
+  </div>
 
   <!-- (a) Rate conversion ------------------------------------------------ -->
   <div class="rsc__part">
@@ -233,12 +241,9 @@ const syllables = ['hel', 'lo', 'wor', 'ld'];
       </div>
     </div>
 
-    <div class="rsc__foot">
-      <button type="button" class="viz-btn" data-replay>↺ Replay</button>
-      <div class="viz-legend">
-        <span><i style="--c:var(--viz-sound)"></i>the chunk’s audio</span>
-        <span><i style="--c:var(--viz-bad)"></i>fed in again</span>
-      </div>
+    <div class="rsc__foot viz-legend">
+      <span><i style="--c:var(--viz-sound)"></i>the chunk’s audio</span>
+      <span><i style="--c:var(--viz-bad)"></i>fed in again</span>
     </div>
   </div>
 </VizFrame>
@@ -256,7 +261,34 @@ const syllables = ['hel', 'lo', 'wor', 'ld'];
       const SVG = 'http://www.w3.org/2000/svg';
       const OUT_RATE = 16000;
       const WINDOW = 0.001; // seconds shown
+      const SWEEP_MS = 2200;
       const fmt = (n) => n.toLocaleString('en-US');
+
+      let playing = false;
+
+      // Time one part has played, frozen while the figure is paused.
+      const clock = () => {
+        let base = 0;
+        let since = 0;
+        let running = false;
+        return {
+          ms: () => base + (running ? performance.now() - since : 0),
+          run() {
+            if (running) return;
+            since = performance.now();
+            running = true;
+          },
+          hold() {
+            if (!running) return;
+            base += performance.now() - since;
+            running = false;
+          },
+          zero() {
+            base = 0;
+            running = false;
+          },
+        };
+      };
 
       /* (a) waveform lanes ------------------------------------------------ */
       const laneIn = root.querySelector('[data-lane="in"]');
@@ -270,9 +302,9 @@ const syllables = ['hel', 'lo', 'wor', 'ld'];
         0.3 * Math.sin(2 * Math.PI * 2900 * t + 0.7);
 
       let rate = 48000;
+      const sweepClock = clock();
       let sweepRaf = 0;
-      let sweepTimer = 0;
-      let sweeping = false;
+      let sweepDone = false;
 
       const el = (name, attrs) => {
         const n = document.createElementNS(SVG, name);
@@ -390,31 +422,46 @@ const syllables = ['hel', 'lo', 'wor', 'ld'];
         }
       }
 
+      const sweepProgress = () =>
+        sweepDone ? 1 : Math.min(1, sweepClock.ms() / SWEEP_MS);
+
       function stopSweep() {
         cancelAnimationFrame(sweepRaf);
-        clearTimeout(sweepTimer);
-        sweeping = false;
+        sweepRaf = 0;
       }
 
-      function sweep() {
+      function runSweep() {
         stopSweep();
-        if (reduce || root.dataset.inview === '0') {
-          drawRate(1);
-          return;
-        }
-        const t0 = performance.now();
-        const DUR = 2200;
-        sweeping = true;
-        const frame = (ts) => {
-          const p = Math.min(1, Math.max(0, (ts - t0) / DUR));
+        if (sweepDone) return;
+        sweepClock.run();
+        const frame = () => {
+          const p = sweepProgress();
           drawRate(p);
-          if (p < 1) sweepRaf = requestAnimationFrame(frame);
-          else {
-            sweeping = false;
-            sweepTimer = setTimeout(sweep, 2600);
+          if (p < 1) {
+            sweepRaf = requestAnimationFrame(frame);
+            return;
           }
+          sweepRaf = 0;
+          sweepDone = true;
+          sweepClock.hold();
+          partDone();
         };
         sweepRaf = requestAnimationFrame(frame);
+      }
+      function holdSweep() {
+        stopSweep();
+        sweepClock.hold();
+      }
+      function resetSweep() {
+        stopSweep();
+        sweepClock.zero();
+        sweepDone = false;
+        drawRate(0);
+      }
+      function skipSweep() {
+        stopSweep();
+        sweepDone = true;
+        drawRate(1);
       }
 
       function setRate(next) {
@@ -431,8 +478,9 @@ const syllables = ['hel', 'lo', 'wor', 'ld'];
         rateChip.textContent = `${fmt(next)} → 16,000 Hz`;
         inRateEl.textContent = fmt(next);
         inMsEl.textContent = String(next / 1000);
-        if (root.dataset.inview === '1') sweep();
-        else drawRate(1);
+        resetSweep();
+        if (reduce) skipSweep();
+        else replay();
       }
       rateBtns.forEach((b) =>
         b.addEventListener('click', () => setRate(+b.dataset.rate)),
@@ -471,14 +519,10 @@ const syllables = ['hel', 'lo', 'wor', 'ld'];
         ],
       };
       let mode = 'once';
-      let trapTimers = [];
-      let trapPlayed = false;
-
-      const clearTrap = () => {
-        trapTimers.forEach(clearTimeout);
-        trapTimers = [];
-      };
-      const at = (ms, fn) => trapTimers.push(setTimeout(fn, reduce ? 0 : ms));
+      const trapClock = clock();
+      let trapSteps = [];
+      let trapNext = 0;
+      let trapTimer = 0;
 
       function addLine(text, cls) {
         const line = document.createElement('div');
@@ -497,34 +541,81 @@ const syllables = ['hel', 'lo', 'wor', 'ld'];
         inBuf.classList.toggle('is-again', call === 2 && mode === 'always');
       }
 
-      function playTrap() {
-        clearTrap();
-        trapPlayed = true;
+      // One run for the current answer, as timed steps in order.
+      function buildTrap() {
+        const steps = SCRIPT[mode].map((ev) => ({
+          at: ev.at,
+          run: () => {
+            if (ev.call) pull(ev.call);
+            addLine(ev.line, ev.cls);
+          },
+        }));
+        [0, 1, 2, 3].forEach((i) =>
+          steps.push({
+            at: 900 + i * 380,
+            run: () => outSegs[i].classList.add('is-in'),
+          }),
+        );
+        if (mode === 'always') {
+          steps.push({
+            at: 3300,
+            run: () =>
+              outSegs
+                .find((s) => s.dataset.out === 'dup')
+                .classList.add('is-in'),
+          });
+        }
+        steps.push({
+          at: mode === 'always' ? 3900 : 3400,
+          run: () => {
+            trap.classList.add('is-done');
+            trap.classList.remove('is-pull');
+          },
+        });
+        return steps.sort((a, b) => a.at - b.at);
+      }
+
+      const trapDone = () => trapNext >= trapSteps.length;
+
+      function runTrap() {
+        clearTimeout(trapTimer);
+        if (trapDone()) return;
+        trapClock.run();
+        trapTimer = setTimeout(
+          stepTrap,
+          Math.max(0, trapSteps[trapNext].at - trapClock.ms()),
+        );
+      }
+      function stepTrap() {
+        const now = trapClock.ms();
+        while (!trapDone() && trapSteps[trapNext].at <= now)
+          trapSteps[trapNext++].run();
+        if (!trapDone()) {
+          runTrap();
+          return;
+        }
+        trapClock.hold();
+        partDone();
+      }
+      function holdTrap() {
+        clearTimeout(trapTimer);
+        trapClock.hold();
+      }
+      function resetTrap() {
+        clearTimeout(trapTimer);
+        trapClock.zero();
+        trapSteps = buildTrap();
+        trapNext = 0;
         log.replaceChildren();
         callChip.textContent = 'idle';
         callChip.className = 'viz-chip';
         trap.classList.remove('is-pull', 'is-done');
         inBuf.classList.remove('is-again');
         outSegs.forEach((s) => s.classList.remove('is-in'));
-
-        SCRIPT[mode].forEach((ev) =>
-          at(ev.at, () => {
-            if (ev.call) pull(ev.call);
-            addLine(ev.line, ev.cls);
-          }),
-        );
-        [0, 1, 2, 3].forEach((i) =>
-          at(900 + i * 380, () => outSegs[i].classList.add('is-in')),
-        );
-        if (mode === 'always') {
-          at(3300, () =>
-            outSegs.find((s) => s.dataset.out === 'dup').classList.add('is-in'),
-          );
-        }
-        at(mode === 'always' ? 3900 : 3400, () => {
-          trap.classList.add('is-done');
-          trap.classList.remove('is-pull');
-        });
+      }
+      function skipTrap() {
+        clearTimeout(trapTimer);
+        while (!trapDone()) trapSteps[trapNext++].run();
       }
 
       function setMode(next) {
@@ -533,23 +624,50 @@ const syllables = ['hel', 'lo', 'wor', 'ld'];
         modeBtns.forEach((b) =>
           b.setAttribute('aria-pressed', String(b.dataset.modeBtn === next)),
         );
-        playTrap();
+        resetTrap();
+        if (reduce) skipTrap();
+        else replay();
       }
       modeBtns.forEach((b) =>
         b.addEventListener('click', () => setMode(b.dataset.modeBtn)),
       );
-      root.querySelector('[data-replay]').addEventListener('click', playTrap);
 
-      /* Lifecycle --------------------------------------------------------- */
-      root.addEventListener('viz:inview', (e) => {
-        if (!e.detail) {
-          stopSweep();
-          drawRate(1);
-          return;
+      /* Playback ---------------------------------------------------------- */
+      // The figure ends once both parts rest on their last frame.
+      function partDone() {
+        if (!playing || !sweepDone || !trapDone()) return;
+        playing = false;
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
+      function play() {
+        playing = true;
+        // Reduced motion lands both parts on their last frame at once.
+        if (reduce) {
+          skipSweep();
+          skipTrap();
+        } else {
+          runSweep();
+          runTrap();
         }
-        sweep();
-        if (!trapPlayed) playTrap();
-      });
+        partDone();
+      }
+      function pause() {
+        playing = false;
+        holdSweep();
+        holdTrap();
+      }
+      function reset() {
+        playing = false;
+        resetSweep();
+        resetTrap();
+      }
+
+      // A picker replays its own part; the rest of the figure plays on with it.
+      function replay() {
+        if (!playing) root.dispatchEvent(new CustomEvent('anim:started'));
+        play();
+      }
 
       if ('ResizeObserver' in window) {
         let last = 0;
@@ -557,16 +675,23 @@ const syllables = ['hel', 'lo', 'wor', 'ld'];
           const w = laneIn.clientWidth;
           if (w === last) return;
           last = w;
-          if (!sweeping) drawRate(1);
+          if (!sweepRaf) drawRate(sweepProgress());
         }).observe(laneIn);
       }
 
-      drawRate(1);
-      if (reduce) playTrap();
-      else if (root.dataset.inview === '1') {
-        sweep();
-        playTrap();
+      reset();
+      // Reduced motion rests on both final frames until the reader plays.
+      if (reduce) {
+        skipSweep();
+        skipTrap();
       }
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause,
+        reset,
+      });
     }
     if (document.readyState !== 'loading') initResampleConverter();
     else document.addEventListener('DOMContentLoaded', initResampleConverter);
@@ -574,6 +699,12 @@ const syllables = ['hel', 'lo', 'wor', 'ld'];
 </script>
 
 <style>
+  .rsc__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
   .rsc__part + .rsc__part {
     margin-top: var(--sp-5);
     padding-top: var(--sp-4);
@@ -985,11 +1116,6 @@ const syllables = ['hel', 'lo', 'wor', 'ld'];
   }
 
   .rsc__foot {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--sp-2) var(--sp-3);
     margin-top: var(--sp-3);
   }
 

@@ -2,12 +2,15 @@
 /**
  * Two panels, one scan. Left: an iPhone orbiting a chair, its depth cone
  * sweeping across the surface. Right: the point cloud that sweep produces,
- * filling in as the phone passes each face and never emptying again until the
- * loop restarts. Both panels are driven by the same orbit angle, so the right
- * side is a consequence of the left rather than a second picture of it.
- * Everything is generated in the browser - there is no photo and no scan here,
- * only the transform, drawn twice.
+ * filling in as the phone passes each face and never emptying again. One run
+ * is one orbit, then the cloud turns to rest on the finished scan. Both panels
+ * are driven by the same orbit angle, so the right side is a consequence of
+ * the left rather than a second picture of it. Everything is generated in the
+ * browser - there is no photo and no scan here, only the transform, drawn
+ * twice.
  */
+import AnimControls from './viz/AnimControls.astro';
+
 interface Props {
   /** Caption under the frame. */
   caption?: string;
@@ -35,16 +38,19 @@ const {
       </span>
     </div>
 
-    <div class="mr__readout" aria-hidden="true">
-      <span class="mr__stat">
-        points captured <b data-stat-captured>0</b>
-      </span>
-      <span class="mr__stat">
-        coverage <b data-stat-coverage>0%</b>
-      </span>
-      <span class="mr__stat">
-        triangles <b data-stat-triangles>0</b>
-      </span>
+    <div class="mr__readout">
+      <div class="mr__stats" aria-hidden="true">
+        <span class="mr__stat">
+          points captured <b data-stat-captured>0</b>
+        </span>
+        <span class="mr__stat">
+          coverage <b data-stat-coverage>0%</b>
+        </span>
+        <span class="mr__stat">
+          triangles <b data-stat-triangles>0</b>
+        </span>
+      </div>
+      <AnimControls />
     </div>
   </div>
 
@@ -502,8 +508,11 @@ const {
         };
       }
 
+      // Redraw on a theme switch: the figure spends most of its life resting
+      // on a frame, and nothing else would repaint it.
       new MutationObserver(() => {
         palette = readPalette();
+        render();
       }).observe(document.documentElement, {
         attributes: true,
         attributeFilter: ['data-theme'],
@@ -559,7 +568,8 @@ const {
       };
 
       const cloudCam = {
-        yaw: reduce ? 0.62 : 0.35,
+        // Driven by the run's clock - see cloudYawAt().
+        yaw: 0,
         pitch: -0.16,
         distance: 2.75,
         target: [0, 0.52, 0],
@@ -568,9 +578,16 @@ const {
       };
 
       const ORBIT_RADIUS = 1.05;
-      /** One full pass, then a beat on the finished cloud, then reset. */
+      /** One full pass, then a beat while the finished cloud turns to rest. */
       const SCAN_SECONDS = 11;
-      const HOLD_SECONDS = 2.5;
+      const SETTLE_SECONDS = 2.5;
+      const RUN_SECONDS = SCAN_SECONDS + SETTLE_SECONDS;
+      /** How fast the cloud panel turns while the phone orbits, rad/s. */
+      const CLOUD_SPIN = 0.24;
+      /** Where the cloud panel comes to rest - also the reduced-motion still. */
+      const REST_YAW = 0.62;
+      /** The whole turn: full speed through the scan, easing out over the settle. */
+      const CLOUD_TURN = CLOUD_SPIN * (SCAN_SECONDS + SETTLE_SECONDS / 2);
       /** How square-on a face has to be before the pass will accept it. */
       const FACING_THRESHOLD = 0.55;
       /** Half-angle of the depth cone - wide enough to contain the object. */
@@ -632,6 +649,24 @@ const {
           rect.y + rect.h / 2 + rect.h * (cam.shiftY || 0) - ry * inv,
           rz2,
         ];
+      }
+
+      /**
+       * Cloud panel angle at a point in the run. It turns at CLOUD_SPIN while
+       * the phone orbits, then slows linearly to a stop on REST_YAW, so the run
+       * ends on a still view of the result rather than a cut.
+       */
+      function cloudYawAt(seconds) {
+        const settle = Math.min(
+          Math.max(seconds - SCAN_SECONDS, 0),
+          SETTLE_SECONDS,
+        );
+        const turned =
+          CLOUD_SPIN *
+          (Math.min(seconds, SCAN_SECONDS) +
+            settle -
+            (settle * settle) / (2 * SETTLE_SECONDS));
+        return REST_YAW - CLOUD_TURN + turned;
       }
 
       function focalFor(rect, cam) {
@@ -774,7 +809,8 @@ const {
        *
        * `fresh` collects what is in view right now rather than what is new,
        * because the beam has to keep drawing after coverage plateaus - a phone
-       * that stops emitting once the cloud is full reads as a broken loop.
+       * that stops emitting before the run ends reads as broken. It goes dark
+       * on the last frame only, where the scan is over.
        */
       function advanceCapture(collectFresh) {
         freshCount = 0;
@@ -1190,37 +1226,53 @@ const {
       let last = 0;
       let running = false;
 
+      // `elapsed` only advances inside the loop, so a pause resumes on the
+      // same pose and the capture keeps everything it already has.
       function loop(now) {
         if (!running) return;
         const dt = last ? Math.min((now - last) / 1000, 0.05) : 0;
         last = now;
 
-        elapsed += dt;
-        if (elapsed > SCAN_SECONDS + HOLD_SECONDS) {
-          elapsed = 0;
-          resetScan();
-        }
+        elapsed = Math.min(elapsed + dt, RUN_SECONDS);
+        const done = elapsed >= RUN_SECONDS;
 
-        cloudCam.yaw += dt * 0.24;
+        cloudCam.yaw = cloudYawAt(elapsed);
         poseFor((Math.min(elapsed, SCAN_SECONDS) / SCAN_SECONDS) * TAU);
-        advanceCapture(true);
+        advanceCapture(!done);
         updateReadout();
         render();
 
+        if (done) {
+          running = false;
+          raf = 0;
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
         raf = requestAnimationFrame(loop);
       }
 
-      function start() {
-        if (running || reduce) return;
+      function play() {
+        if (running) return;
         running = true;
         last = 0;
         raf = requestAnimationFrame(loop);
       }
 
-      function stop() {
+      function pause() {
         running = false;
         if (raf) cancelAnimationFrame(raf);
         raf = 0;
+      }
+
+      /** The opening frame: phone at the start of its orbit, nothing captured. */
+      function reset() {
+        pause();
+        elapsed = 0;
+        resetScan();
+        cloudCam.yaw = cloudYawAt(0);
+        poseFor(0);
+        updateReadout();
+        render();
       }
 
       /**
@@ -1231,6 +1283,7 @@ const {
       function prime() {
         const STEPS = 48;
         const STOP_AT = 0.62;
+        cloudCam.yaw = REST_YAW;
         for (let i = 0; i <= STEPS; i++) {
           poseFor((i / STEPS) * STOP_AT * TAU);
           advanceCapture(i === STEPS);
@@ -1241,32 +1294,28 @@ const {
       // ---------------------------------------------------------------
       // Lifecycle
       // ---------------------------------------------------------------
+      // Repaints the current frame at the new size; playback is untouched.
       const ro = new ResizeObserver(() => {
         resize();
         render();
       });
       ro.observe(stage);
 
-      const io = new IntersectionObserver(
-        (entries) => {
-          for (const entry of entries) {
-            if (entry.isIntersecting) start();
-            else stop();
-          }
-        },
-        { threshold: 0.05 },
-      );
-      io.observe(root);
-
-      document.addEventListener('visibilitychange', () => {
-        if (document.hidden) stop();
-        else if (!reduce) start();
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause,
+        reset,
       });
 
       resize();
-      if (reduce) prime();
-      else poseFor(0);
-      render();
+      // Reduced motion rests on a mid-scan still until the reader plays it.
+      if (reduce) {
+        prime();
+        render();
+      } else {
+        reset();
+      }
     }
 
     if (document.readyState !== 'loading') initMeshReveal();
@@ -1315,11 +1364,18 @@ const {
   }
   .mr__readout {
     display: flex;
-    flex-wrap: wrap;
-    gap: var(--sp-4);
-    padding: var(--sp-3) var(--sp-4);
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
     border-top: 1px solid var(--border);
     background: var(--bg-subtle);
+  }
+  .mr__stats {
+    display: flex;
+    flex: 1;
+    flex-wrap: wrap;
+    gap: var(--sp-1) var(--sp-4);
+    min-width: 0;
   }
   .mr__stat {
     font-family: var(--font-mono);
@@ -1349,8 +1405,8 @@ const {
       top: calc(50% + var(--sp-3));
       left: var(--sp-4);
     }
-    .mr__readout {
-      gap: var(--sp-3);
+    .mr__stats {
+      column-gap: var(--sp-3);
     }
   }
 </style>

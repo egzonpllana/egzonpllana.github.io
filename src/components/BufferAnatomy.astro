@@ -5,6 +5,7 @@
  * so every number on screen is exact. Pick a slice to see its arithmetic.
  */
 import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
 
 interface Props {
   caption?: string;
@@ -57,9 +58,12 @@ const usedPct = ((SEG * SEGMENTS) / N) * 100;
   class="bfa"
   data-bfa
 >
-  <span slot="tools" class="viz-chip viz-chip--level" data-out-chip
-    >slice {peak + 1} / 100</span
-  >
+  <div slot="tools" class="bfa__tools">
+    <span class="viz-chip viz-chip--level" data-out-chip
+      >slice {peak + 1} / 100</span
+    >
+    <AnimControls />
+  </div>
 
   <div class="bfa__step">
     <span class="viz-label"
@@ -178,8 +182,12 @@ const usedPct = ((SEG * SEGMENTS) / N) * 100;
         '(prefers-reduced-motion: reduce)',
       ).matches;
       const f = (v, d = 3) => (v < 0 ? '−' : '+') + Math.abs(v).toFixed(d);
+      const SWEEP_MS = 2600;
 
-      let touched = false;
+      let built = false; // every bar is up and the selection is the reader's
+      let elapsed = 0; // ms of the sweep already played
+      let last = 0;
+      let raf = 0;
 
       function select(i) {
         const [vals, mean, rms, level] = data.slices[i];
@@ -197,9 +205,20 @@ const usedPct = ((SEG * SEGMENTS) / N) * 100;
         scrub.value = String(i + 1);
       }
 
-      function stopIntro() {
-        touched = true;
+      function stop() {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+      function build() {
+        stop();
+        built = true;
         root.classList.add('is-built');
+      }
+      // Taking hold of the bars or the slider finishes the sweep on the spot.
+      function takeOver() {
+        if (built) return;
+        build();
+        root.dispatchEvent(new CustomEvent('anim:ended'));
       }
       // Pick a slice by clicking a bar or dragging across the row; hovering alone
       // never changes the selection.
@@ -218,7 +237,7 @@ const usedPct = ((SEG * SEGMENTS) / N) * 100;
         dragging = true;
         row.setPointerCapture(e.pointerId);
         row.classList.add('is-dragging');
-        stopIntro();
+        takeOver();
         selectAt(e.clientX);
       });
       row.addEventListener('pointermove', (e) => {
@@ -231,43 +250,53 @@ const usedPct = ((SEG * SEGMENTS) / N) * 100;
       row.addEventListener('pointerup', endDrag);
       row.addEventListener('pointercancel', endDrag);
       scrub.addEventListener('input', () => {
-        stopIntro();
+        takeOver();
         select(+scrub.value - 1);
       });
 
-      // On first view, sweep the lens across the buffer and build the bars behind it.
-      function intro() {
-        if (reduce || touched) {
-          root.classList.add('is-built');
+      // Sweep the lens across the buffer and build the bars behind it, then
+      // rest on the loudest slice.
+      function frame(ts) {
+        elapsed += last ? Math.min(ts - last, 100) : 0;
+        last = ts;
+        if (elapsed >= SWEEP_MS) {
+          build();
           select(data.peak);
+          root.dispatchEvent(new CustomEvent('anim:ended'));
           return;
         }
-        const t0 = performance.now();
-        const DUR = 2600;
-        const frame = (ts) => {
-          if (touched) return;
-          const p = Math.min(1, (ts - t0) / DUR);
-          const i = Math.min(99, Math.floor(p * 100));
-          bars.forEach((b, k) => b.classList.toggle('is-built', k <= i));
-          select(i);
-          if (p < 1) requestAnimationFrame(frame);
-          else {
-            root.classList.add('is-built');
-            select(data.peak);
-          }
-        };
-        requestAnimationFrame(frame);
+        const i = Math.min(99, Math.floor((elapsed / SWEEP_MS) * 100));
+        bars.forEach((b, k) => b.classList.toggle('is-built', k <= i));
+        select(i);
+        raf = requestAnimationFrame(frame);
       }
 
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play() {
+          if (raf) return;
+          if (built) {
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          last = 0;
+          raf = requestAnimationFrame(frame);
+        },
+        pause: stop,
+        reset() {
+          stop();
+          built = false;
+          elapsed = 0;
+          root.classList.remove('is-built');
+          bars.forEach((b) => b.classList.remove('is-built'));
+          select(data.peak);
+        },
+      });
+
+      // Reduced motion shows the finished buffer until the reader plays it.
+      if (reduce) build();
       select(data.peak);
       root.classList.add('is-armed');
-      const onView = (e) => {
-        if (!e.detail) return;
-        root.removeEventListener('viz:inview', onView);
-        intro();
-      };
-      root.addEventListener('viz:inview', onView);
-      if (root.dataset.inview === '1') intro();
     }
     if (document.readyState !== 'loading') initBufferAnatomy();
     else document.addEventListener('DOMContentLoaded', initBufferAnatomy);
@@ -275,6 +304,12 @@ const usedPct = ((SEG * SEGMENTS) / N) * 100;
 </script>
 
 <style>
+  .bfa__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
   .bfa__step {
     margin: var(--sp-4) 0 var(--sp-2);
   }

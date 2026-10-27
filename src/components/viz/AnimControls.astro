@@ -1,0 +1,154 @@
+---
+/**
+ * Play / pause and restart controls for an animated figure. Place it inside
+ * the element the figure registers as `root` (see src/lib/anim/player.ts);
+ * the runtime wires the buttons and keeps their state in sync.
+ */
+interface Props {
+  /** Short mono caption in front of the buttons. */
+  label?: string;
+}
+
+const { label = 'Animation' } = Astro.props;
+---
+
+<div
+  class="anim-ctrl"
+  role="group"
+  aria-label="Animation controls"
+  data-anim-controls
+  data-state="idle"
+>
+  <span class="anim-ctrl__label" aria-hidden="true">{label}</span>
+  <button
+    type="button"
+    class="anim-ctrl__btn"
+    data-anim-toggle
+    aria-label="Play animation"
+  >
+    <svg
+      class="anim-ctrl__icon anim-ctrl__icon--pause"
+      viewBox="0 0 14 14"
+      aria-hidden="true"
+    >
+      <rect x="3" y="2" width="3" height="10" rx="1"></rect>
+      <rect x="8" y="2" width="3" height="10" rx="1"></rect>
+    </svg>
+    <svg
+      class="anim-ctrl__icon anim-ctrl__icon--play"
+      viewBox="0 0 14 14"
+      aria-hidden="true"
+    >
+      <path d="M4 2.5 L11.5 7 L4 11.5 Z"></path>
+    </svg>
+  </button>
+  <button
+    type="button"
+    class="anim-ctrl__btn"
+    data-anim-reset
+    aria-label="Restart animation"
+  >
+    <svg
+      class="anim-ctrl__icon anim-ctrl__icon--restart"
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+    >
+      <path d="M3 8a5 5 0 1 0 1.6-3.7"></path>
+      <path d="M3 2.5V5h2.5"></path>
+    </svg>
+  </button>
+</div>
+
+<script>
+  import { startAnimRuntime } from '../../lib/anim/player';
+
+  startAnimRuntime();
+</script>
+
+<style>
+  .anim-ctrl {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex: none;
+    height: 34px;
+    padding: 0 2px 0 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 17px;
+    background: var(--bg);
+  }
+  .anim-ctrl__label {
+    margin-right: 6px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    white-space: nowrap;
+  }
+  .anim-ctrl__btn {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 14px;
+    background: transparent;
+    color: var(--fg-muted);
+    cursor: pointer;
+    transition:
+      background-color 0.18s var(--ease),
+      color 0.18s var(--ease);
+  }
+  .anim-ctrl__btn:hover {
+    background: var(--surface-hover);
+    color: var(--fg);
+  }
+  .anim-ctrl__btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .anim-ctrl__icon {
+    grid-area: 1 / 1;
+    width: 13px;
+    height: 13px;
+    fill: currentColor;
+  }
+  .anim-ctrl__icon--restart {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .anim-ctrl[data-state='playing'] .anim-ctrl__icon--play,
+  .anim-ctrl:not([data-state='playing']) .anim-ctrl__icon--pause {
+    display: none;
+  }
+  /* Finished: the toggle offers a replay, so draw it in the accent. */
+  .anim-ctrl[data-state='ended'] [data-anim-toggle] {
+    color: var(--accent-text);
+  }
+
+  @media (max-width: 560px) {
+    .anim-ctrl {
+      padding-left: 2px;
+    }
+    .anim-ctrl__label {
+      display: none;
+    }
+  }
+</style>
+
+<style is:global>
+  /* Keyframe animations inside a figure hold still while it is not playing. */
+  [data-anim-state='idle'] *,
+  [data-anim-state='paused'] * {
+    animation-play-state: paused !important;
+  }
+</style>

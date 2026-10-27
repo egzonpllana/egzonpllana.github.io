@@ -6,6 +6,7 @@
  * fixed order.
  */
 import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
 
 interface Props {
   caption?: string;
@@ -115,34 +116,10 @@ const phases = [
   data-sts
 >
   <div slot="tools" class="sts__tools">
-    <button
-      type="button"
-      class="viz-btn"
-      data-play
-      data-playing="true"
-      aria-label="Pause"
-    >
-      <svg viewBox="0 0 12 12" aria-hidden="true" data-icon-pause
-        ><rect x="2" y="1.5" width="3" height="9" rx="1"></rect><rect
-          x="7"
-          y="1.5"
-          width="3"
-          height="9"
-          rx="1"></rect></svg
-      >
-      <svg viewBox="0 0 12 12" aria-hidden="true" data-icon-play
-        ><path d="M3 1.5v9l7.5-4.5z"></path></svg
-      >
-    </button>
     <button type="button" class="viz-btn" data-next aria-label="Next message"
       >step</button
     >
-    <button
-      type="button"
-      class="viz-btn"
-      data-reset
-      aria-label="Replay from the start">replay</button
-    >
+    <AnimControls />
   </div>
 
   <ol class="sts__phases" aria-label="Phases">
@@ -210,15 +187,15 @@ const phases = [
 
       const steps = [...root.querySelectorAll('.sts__step')];
       const phases = [...root.querySelectorAll('[data-phase-from]')];
-      const playBtn = root.querySelector('[data-play]');
       const reduce = window.matchMedia(
         '(prefers-reduced-motion: reduce)',
       ).matches;
       const STEP_MS = 1300;
-      const HOLD_MS = 3200;
+      const last = steps.length - 1;
 
-      let current = reduce ? steps.length - 1 : -1;
-      let playing = !reduce;
+      // Reduced motion rests on the full sequence until the reader plays it.
+      let current = reduce ? last : -1;
+      let playing = false;
       let timer = 0;
 
       function render() {
@@ -232,47 +209,56 @@ const phases = [
           p.classList.toggle('is-current', current >= from && current <= to);
           p.classList.toggle('is-done', current > to);
         });
-        playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
-        playBtn.dataset.playing = String(playing);
       }
 
       function schedule() {
         clearTimeout(timer);
-        if (!playing || root.dataset.inview !== '1') return;
-        const atEnd = current >= steps.length - 1;
+        if (!playing) return;
         timer = setTimeout(
           () => {
-            current = atEnd ? -1 : current + 1;
+            current += 1;
             render();
+            if (current >= last) {
+              playing = false;
+              root.dispatchEvent(new CustomEvent('anim:ended'));
+              return;
+            }
             schedule();
           },
-          atEnd ? HOLD_MS : current < 0 ? 400 : STEP_MS,
+          current < 0 ? 400 : STEP_MS,
         );
       }
 
-      playBtn.addEventListener('click', () => {
-        playing = !playing;
-        if (playing && current >= steps.length - 1) current = -1;
-        render();
-        schedule();
-      });
       root.querySelector('[data-next]').addEventListener('click', () => {
         playing = false;
-        current = current >= steps.length - 1 ? 0 : current + 1;
+        clearTimeout(timer);
+        current = current >= last ? 0 : current + 1;
         render();
-        schedule();
+        root.dispatchEvent(
+          new CustomEvent(current >= last ? 'anim:ended' : 'anim:paused'),
+        );
       });
-      root.querySelector('[data-reset]').addEventListener('click', () => {
-        current = reduce ? steps.length - 1 : -1;
-        playing = !reduce;
-        render();
-        schedule();
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play() {
+          playing = true;
+          schedule();
+        },
+        pause() {
+          playing = false;
+          clearTimeout(timer);
+        },
+        reset() {
+          playing = false;
+          clearTimeout(timer);
+          current = -1;
+          render();
+        },
       });
-      root.addEventListener('viz:inview', schedule);
 
       root.classList.add('is-armed');
       render();
-      schedule();
     }
     if (document.readyState !== 'loading') initSttSequence();
     else document.addEventListener('DOMContentLoaded', initSttSequence);
@@ -538,9 +524,6 @@ const phases = [
   }
 
   @media (max-width: 560px) {
-    .sts__tools [data-reset] {
-      display: none;
-    }
     .sts__lane {
       padding: 3px 6px;
       font-size: 11px;

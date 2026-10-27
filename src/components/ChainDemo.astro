@@ -4,6 +4,7 @@
  * axis. Compares a fixed +/-12h window against chained 24h neighbour links,
  * then sweeps the photos that carry no GPS at all.
  */
+import AnimControls from './viz/AnimControls.astro';
 
 // [day of month, hour, has GPS]
 const ITEMS: [number, number, number][] = [
@@ -59,23 +60,7 @@ const SEED_INDEX = 4; // May 9, 21:18 - the one photo the user starts from
             chain 24h
           </button>
         </div>
-        <button type="button" class="ce__replay" data-replay>
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 12 12"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1v2.5H8"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"></path>
-          </svg>
-          Replay
-        </button>
+        <AnimControls />
       </div>
     </div>
 
@@ -118,7 +103,6 @@ const SEED_INDEX = 4; // May 9, 21:18 - the one photo the user starts from
       const seedLine = root.querySelector('[data-seedline]');
       const captionEl = root.querySelector('[data-caption]');
       const captionText = root.querySelector('[data-caption-text]');
-      const replayBtn = root.querySelector('[data-replay]');
       if (!band) return;
 
       const reduce = window.matchMedia(
@@ -145,17 +129,50 @@ const SEED_INDEX = 4; // May 9, 21:18 - the one photo the user starts from
       const noGps = items.filter((it) => !it.gps);
 
       let mode = 'chain';
-      let timers = [];
-      let playing = false;
-      let hasRun = false;
+      const firstCaption = captionText.innerHTML;
 
+      // The run is a list of cues on one virtual clock. Pausing banks the time
+      // already played, so resuming waits out only what was left of the gap to
+      // the next cue instead of replaying a step.
+      let cues = [];
+      let next = 0;
+      let clock = 0;
+      let resumedAt = 0;
+      let timer = 0;
+      let playing = false;
+
+      /** Queue `fn` for `ms` after the current point on the timeline. */
       function later(fn, ms) {
-        timers.push(setTimeout(fn, reduce ? 0 : ms));
+        const at = clock + ms;
+        let i = cues.length;
+        while (i > next && cues[i - 1].at > at) i--;
+        cues.splice(i, 0, { at, fn });
       }
-      function clearTimers() {
-        timers.forEach(clearTimeout);
-        timers = [];
+      function fire() {
+        timer = 0;
+        clock = cues[next].at;
+        while (next < cues.length && cues[next].at <= clock) cues[next++].fn();
+        if (next < cues.length) schedule();
+        else finish();
       }
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        resumedAt = performance.now();
+        timer = setTimeout(fire, cues[next].at - clock);
+      }
+      /** Fire every remaining cue now, in order. */
+      function drain() {
+        while (next < cues.length) {
+          clock = cues[next].at;
+          cues[next++].fn();
+        }
+      }
+      function finish() {
+        playing = false;
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
       function setCaption(html, done) {
         captionText.innerHTML = html;
         captionEl.classList.toggle('is-done', !!done);
@@ -217,21 +234,18 @@ const SEED_INDEX = 4; // May 9, 21:18 - the one photo the user starts from
         return steps;
       }
 
-      function run() {
-        if (playing) return;
-        playing = true;
-        hasRun = true;
-        clearTimers();
-        resetDots();
-
+      /** Queue one run of the current strategy on an empty timeline. */
+      function queueRun() {
         const chain = mode === 'chain';
         const steps = chain ? chainSteps() : windowSteps();
-        const stride = reduce ? 0 : 70;
+        const stride = 70;
 
-        setCaption(
-          `Seed - <b>${MONTH} ${seed.day}, ${String(Math.floor(seed.hour)).padStart(2, '0')}:${String(Math.round((seed.hour % 1) * 60)).padStart(2, '0')}</b>`,
-        );
-        seed.el.classList.add('is-seed', 'is-in');
+        later(() => {
+          setCaption(
+            `Seed - <b>${MONTH} ${seed.day}, ${String(Math.floor(seed.hour)).padStart(2, '0')}:${String(Math.round((seed.hour % 1) * 60)).padStart(2, '0')}</b>`,
+          );
+          seed.el.classList.add('is-seed', 'is-in');
+        }, 0);
 
         later(() => {
           setCaption(
@@ -278,7 +292,6 @@ const SEED_INDEX = 4; // May 9, 21:18 - the one photo the user starts from
                 `Captured <b>${included.length + swept.length} of ${items.length}</b> - the whole trip, ${MONTH} ${firstDay}–${lastDay}, from one photo.`,
                 true,
               );
-              playing = false;
             },
             endOfChain + swept.length * stride + 500,
           );
@@ -288,11 +301,43 @@ const SEED_INDEX = 4; // May 9, 21:18 - the one photo the user starts from
               `Captured <b>${steps.length + 1} of ${items.length}</b> - the rest of the trip never enters the window.`,
               true,
             );
-            playing = false;
           }, endOfChain);
         }
       }
 
+      function play() {
+        if (playing) return;
+        playing = true;
+        // Reduced motion lands straight on the last frame.
+        if (reduce) drain();
+        if (next < cues.length) schedule();
+        else finish();
+      }
+      function pause() {
+        if (!playing) return;
+        playing = false;
+        clearTimeout(timer);
+        timer = 0;
+        if (next < cues.length) {
+          clock = Math.min(
+            clock + performance.now() - resumedAt,
+            cues[next].at,
+          );
+        }
+      }
+      /** Back to the empty band, with a fresh run queued for the current mode. */
+      function reset() {
+        pause();
+        cues = [];
+        next = 0;
+        clock = 0;
+        resetDots();
+        setCaption(firstCaption);
+        queueRun();
+      }
+
+      // Switching strategy replays the run under the new one. Started is
+      // reported before play, so a reduced-motion jump to the end wins.
       root.querySelectorAll('[data-mode]').forEach((chip) => {
         chip.addEventListener('click', () => {
           root
@@ -300,25 +345,22 @@ const SEED_INDEX = 4; // May 9, 21:18 - the one photo the user starts from
             .forEach((c) => c.classList.remove('is-on'));
           chip.classList.add('is-on');
           mode = chip.dataset.mode;
-          playing = false;
-          run();
+          reset();
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          play();
         });
       });
-      replayBtn.addEventListener('click', () => {
-        playing = false;
-        run();
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause,
+        reset,
       });
 
-      const io = new IntersectionObserver(
-        (entries) => {
-          if (entries[0].isIntersecting && !hasRun) {
-            run();
-            io.disconnect();
-          }
-        },
-        { threshold: 0.4 },
-      );
-      io.observe(band);
+      reset();
+      // Reduced motion rests on the finished trip until the reader plays it.
+      if (reduce) drain();
     }
 
     if (document.readyState !== 'loading') initChainDemo();
@@ -382,26 +424,6 @@ const SEED_INDEX = 4; // May 9, 21:18 - the one photo the user starts from
     background: var(--accent-text);
     color: var(--accent-fg);
   }
-  .ce__replay {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-family: var(--font-mono);
-    font-size: var(--fs-2xs);
-    font-weight: 600;
-    color: var(--fg-muted);
-    padding: 0.36rem 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--surface);
-    transition:
-      color 0.18s var(--ease),
-      border-color 0.18s var(--ease);
-  }
-  .ce__replay:hover {
-    color: var(--accent-text);
-    border-color: var(--accent);
-  }
 
   .ce__caption {
     display: flex;
@@ -424,7 +446,12 @@ const SEED_INDEX = 4; // May 9, 21:18 - the one photo the user starts from
     border-radius: 50%;
     background: var(--fg-faint);
     flex: none;
-    animation: ce-pulse 1.4s ease-in-out infinite;
+  }
+  /* Pulses only while a run is live, never at rest on the last frame. */
+  @media (prefers-reduced-motion: no-preference) {
+    .ce[data-anim-state='playing'] .ce__pulse {
+      animation: ce-pulse 1.4s ease-in-out infinite;
+    }
   }
   .ce__caption.is-done .ce__pulse {
     background: var(--accent);
@@ -565,9 +592,6 @@ const SEED_INDEX = 4; // May 9, 21:18 - the one photo the user starts from
   @media (prefers-reduced-motion: reduce) {
     .ce :global(.ce__dot) {
       transition: none;
-    }
-    .ce__pulse {
-      animation: none;
     }
   }
 </style>

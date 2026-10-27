@@ -4,6 +4,7 @@
  * into events. The grouping is computed in the browser with the same two rules
  * the article describes - time/distance split, then same-place merge.
  */
+import AnimControls from './viz/AnimControls.astro';
 
 // [day of month, hour, city index]
 const PHOTOS: [number, number, number][] = [
@@ -111,23 +112,7 @@ const MERGE_OPTIONS = [12, 24, 48];
             ))
           }
         </div>
-        <button type="button" class="cd__replay" data-replay>
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 12 12"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1v2.5H8"
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"></path>
-          </svg>
-          Replay
-        </button>
+        <AnimControls />
       </div>
     </div>
 
@@ -166,7 +151,6 @@ const MERGE_OPTIONS = [12, 24, 48];
       const eventsEl = root.querySelector('[data-events]');
       const captionEl = root.querySelector('[data-caption]');
       const captionText = root.querySelector('[data-caption-text]');
-      const replayBtn = root.querySelector('[data-replay]');
       if (!stage || !band || !eventsEl) return;
 
       const reduce = window.matchMedia(
@@ -182,12 +166,18 @@ const MERGE_OPTIONS = [12, 24, 48];
         city: p[2],
       })).sort((a, b) => a.t - b.t);
 
+      /** The dots' flight, as set on their transform transition below. */
+      const FLIGHT_MS = 900;
+
       let splitHours = 6;
       let mergeHours = 48;
       let clusters = [];
-      let timers = [];
-      let playing = false;
+      // Once a full run has started, the controls re-cluster in place instead
+      // of replaying from the unsorted library.
       let hasRun = false;
+      // Whether the dots sit in event slots rather than on the timeline.
+      let inSlots = false;
+      const firstCaption = captionText.innerHTML;
 
       // Phase 1: a new cluster starts on a time gap or a city change (the
       // 50 km distance rule - photos in different cities are always > 50 km).
@@ -296,19 +286,79 @@ const MERGE_OPTIONS = [12, 24, 48];
         });
       }
 
+      /**
+       * Where a slot sits in the stage once its card has risen into place. A
+       * fresh card starts a few pixels low and transitions up, so its current
+       * offset is taken out - otherwise dots measured mid-rise land off-slot.
+       */
       function slotPos(slotEl) {
         const r = slotEl.getBoundingClientRect();
         const s = stage.getBoundingClientRect();
-        return { x: r.left - s.left, y: r.top - s.top };
+        const card = slotEl.closest('.cd__event');
+        const rise = card
+          ? new DOMMatrixReadOnly(getComputedStyle(card).transform).m42
+          : 0;
+        return { x: r.left - s.left, y: r.top - s.top - rise };
       }
 
+      // The run is a list of cues on one virtual clock. Pausing banks the time
+      // already played, so resuming waits out only what was left of the gap to
+      // the next cue instead of replaying a step.
+      let cues = [];
+      let next = 0;
+      let clock = 0;
+      let resumedAt = 0;
+      let timer = 0;
+      let playing = false;
+      // The dots fly on CSS transitions, which a timer cannot stop - a pause
+      // holds them through the Web Animations API and play lets them go.
+      let held = [];
+
+      /** Queue `fn` for `ms` after the current point on the timeline. */
       function later(fn, ms) {
-        timers.push(setTimeout(fn, reduce ? 0 : ms));
+        const at = clock + ms;
+        let i = cues.length;
+        while (i > next && cues[i - 1].at > at) i--;
+        cues.splice(i, 0, { at, fn });
       }
-      function clearTimers() {
-        timers.forEach(clearTimeout);
-        timers = [];
+      function fire() {
+        timer = 0;
+        clock = cues[next].at;
+        while (next < cues.length && cues[next].at <= clock) cues[next++].fn();
+        if (next < cues.length) schedule();
+        else finish();
       }
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        resumedAt = performance.now();
+        timer = setTimeout(fire, cues[next].at - clock);
+      }
+      /** Fire every remaining cue now, in order. */
+      function drain() {
+        while (next < cues.length) {
+          clock = cues[next].at;
+          cues[next++].fn();
+        }
+      }
+      function finish() {
+        playing = false;
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+      function holdMotion() {
+        if (typeof stage.getAnimations !== 'function') return;
+        held = stage
+          .getAnimations({ subtree: true })
+          .filter((a) => a.playState === 'running');
+        held.forEach((a) => a.pause());
+      }
+      function releaseMotion() {
+        held.forEach((a) => {
+          if (a.playState === 'paused') a.play();
+        });
+        held = [];
+      }
+
       function setCaption(html, done) {
         captionText.innerHTML = html;
         captionEl.classList.toggle('is-done', !!done);
@@ -322,42 +372,57 @@ const MERGE_OPTIONS = [12, 24, 48];
         });
       }
 
-      function flyDots(stagger, instant) {
+      function moveDot(d, slotEl, instant) {
+        const pos = slotPos(slotEl);
+        if (instant) d.el.style.transitionDuration = '0s';
+        d.el.style.transform = `translate(${pos.x}px, ${pos.y}px)`;
+        if (instant) {
+          void d.el.offsetHeight;
+          d.el.style.transitionDuration = '';
+        }
+      }
+
+      /** Queue every dot's flight to its slot in the current events. */
+      function flyDots(stagger) {
+        inSlots = true;
         clusters.forEach((c) => {
           c.items.forEach((p, k) => {
             const d = dots[indexOf.get(p)];
-            const pos = slotPos(c.slotEls[k]);
-            const move = () => {
-              if (instant) d.el.style.transitionDuration = '0s';
-              d.el.style.transform = `translate(${pos.x}px, ${pos.y}px)`;
-              if (instant) {
-                void d.el.offsetHeight;
-                d.el.style.transitionDuration = '';
-              }
-            };
-            if (stagger) later(move, stagger * indexOf.get(p));
-            else move();
+            const slotEl = c.slotEls[k];
+            later(() => moveDot(d, slotEl), stagger * indexOf.get(p));
           });
           later(() => c.cardEl.classList.add('is-shown'), 200);
         });
       }
 
-      function reset() {
-        clearTimers();
+      /** Put every dot straight into its slot, measured at the current size. */
+      function seatDots() {
+        clusters.forEach((c) => {
+          c.items.forEach((p, k) => {
+            moveDot(dots[indexOf.get(p)], c.slotEls[k], true);
+          });
+        });
+      }
+
+      /** The unsorted library: every dot on the timeline, no events yet. */
+      function showLibrary() {
         buildEvents(rawSplit(splitHours));
         eventsEl.classList.add('is-hidden');
         dots.forEach((d) => {
           d.el.style.background = '';
         });
+        inSlots = false;
         placeOnTimeline();
       }
 
-      function play() {
-        if (playing) return;
-        playing = true;
-        hasRun = true;
-        reset();
-        setCaption(`Reading library metadata - <b>${photos.length} items</b>`);
+      /** Queue the full run - library, geocode, split, merge - from the top. */
+      function queueRun() {
+        later(() => {
+          hasRun = true;
+          setCaption(
+            `Reading library metadata - <b>${photos.length} items</b>`,
+          );
+        }, 0);
 
         later(() => {
           setCaption(
@@ -393,23 +458,75 @@ const MERGE_OPTIONS = [12, 24, 48];
             `Done - <b>${clusters.length} events</b> from ${photos.length} photos.`,
             true,
           );
-          playing = false;
         }, 5000);
       }
 
-      function refresh() {
-        clearTimers();
+      function play() {
+        if (playing) return;
+        playing = true;
+        releaseMotion();
+        // Reduced motion lands straight on the last frame.
+        if (reduce) drain();
+        if (next < cues.length) schedule();
+        else finish();
+      }
+      function pause() {
+        if (!playing) return;
         playing = false;
+        clearTimeout(timer);
+        timer = 0;
+        if (next < cues.length) {
+          clock = Math.min(
+            clock + performance.now() - resumedAt,
+            cues[next].at,
+          );
+        }
+        holdMotion();
+      }
+      /**
+       * Stop and empty the timeline. Held transitions are let go so the next
+       * style write supersedes them rather than leaving one frozen.
+       */
+      function rewind() {
+        pause();
+        releaseMotion();
+        cues = [];
+        next = 0;
+        clock = 0;
+      }
+      /** Back to the unsorted library, with a fresh full run queued. */
+      function reset() {
+        rewind();
+        showLibrary();
+        setCaption(firstCaption);
+        queueRun();
+      }
+
+      /** A control after the first run: re-cluster in place, as a short run. */
+      function refresh() {
+        rewind();
         const raw = rawSplit(splitHours);
         const merged = merge(raw, mergeHours);
         eventsEl.classList.remove('is-hidden');
         buildEvents(merged);
         colorDots();
-        flyDots(reduce ? 0 : 3);
+        flyDots(3);
+        // Hold the run open until the last dot lands, so it ends at rest.
+        later(() => {}, 3 * (dots.length - 1) + FLIGHT_MS);
         setCaption(
           `split <b>${splitHours}h</b> · merge <b>${mergeHours}h</b> - ${raw.length} clusters collapse to <b>${merged.length} events</b>. Same photos, different granularity.`,
           true,
         );
+      }
+
+      // A control change always plays: the whole story before the first run,
+      // a re-cluster after it. Started is reported before play, so a
+      // reduced-motion jump to the end wins.
+      function replay() {
+        if (hasRun) refresh();
+        else reset();
+        root.dispatchEvent(new CustomEvent('anim:started'));
+        play();
       }
 
       root.querySelectorAll('[data-split]').forEach((chip) => {
@@ -419,8 +536,7 @@ const MERGE_OPTIONS = [12, 24, 48];
             .forEach((c) => c.classList.remove('is-on'));
           chip.classList.add('is-on');
           splitHours = parseInt(chip.dataset.split, 10);
-          if (hasRun) refresh();
-          else play();
+          replay();
         });
       });
       root.querySelectorAll('[data-merge]').forEach((chip) => {
@@ -430,37 +546,38 @@ const MERGE_OPTIONS = [12, 24, 48];
             .forEach((c) => c.classList.remove('is-on'));
           chip.classList.add('is-on');
           mergeHours = parseInt(chip.dataset.merge, 10);
-          if (hasRun) refresh();
-          else play();
+          replay();
         });
       });
-      replayBtn.addEventListener('click', () => {
-        playing = false;
-        play();
-      });
 
-      let resizeTimer = null;
+      // Re-seat the dots for the new width. Only the layout is redrawn; the
+      // timeline carries on, or stays paused, exactly as it was.
+      let resizeTimer = 0;
       window.addEventListener('resize', () => {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
-          if (playing) return;
-          if (hasRun) flyDots(0, true);
+          if (inSlots) seatDots();
           else placeOnTimeline();
         }, 120);
       });
 
-      reset();
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause,
+        reset,
+      });
 
-      const io = new IntersectionObserver(
-        (entries) => {
-          if (entries[0].isIntersecting && !hasRun) {
-            play();
-            io.disconnect();
-          }
-        },
-        { threshold: 0.35 },
-      );
-      io.observe(stage);
+      reset();
+      // Reduced motion rests on the finished events until the reader plays it.
+      // That frame is measured at load, so seat the dots again once the web
+      // fonts have settled the card widths.
+      if (reduce) {
+        drain();
+        document.fonts?.ready.then(() => {
+          if (inSlots) seatDots();
+        });
+      }
     }
 
     if (document.readyState !== 'loading') initClusterDemo();
@@ -532,26 +649,6 @@ const MERGE_OPTIONS = [12, 24, 48];
     background: var(--accent-text);
     color: var(--accent-fg);
   }
-  .cd__replay {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-family: var(--font-mono);
-    font-size: var(--fs-2xs);
-    font-weight: 600;
-    color: var(--fg-muted);
-    padding: 0.36rem 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--surface);
-    transition:
-      color 0.18s var(--ease),
-      border-color 0.18s var(--ease);
-  }
-  .cd__replay:hover {
-    color: var(--accent-text);
-    border-color: var(--accent);
-  }
 
   .cd__caption {
     display: flex;
@@ -574,7 +671,12 @@ const MERGE_OPTIONS = [12, 24, 48];
     border-radius: 50%;
     background: var(--fg-faint);
     flex: none;
-    animation: cd-pulse 1.4s ease-in-out infinite;
+  }
+  /* Pulses only while a run is live, never at rest on the last frame. */
+  @media (prefers-reduced-motion: no-preference) {
+    .cd[data-anim-state='playing'] .cd__pulse {
+      animation: cd-pulse 1.4s ease-in-out infinite;
+    }
   }
   .cd__caption.is-done .cd__pulse {
     background: var(--accent);
@@ -737,9 +839,6 @@ const MERGE_OPTIONS = [12, 24, 48];
     .cd :global(.cd__dot),
     .cd :global(.cd__event) {
       transition: none;
-    }
-    .cd__pulse {
-      animation: none;
     }
   }
 </style>
