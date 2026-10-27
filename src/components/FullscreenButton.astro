@@ -1,0 +1,155 @@
+---
+/**
+ * Floating fullscreen toggle for long reads. Beside the reading column on
+ * wide screens; a thumb-reach corner button on phones and narrow windows.
+ * It slides in once the reader is inside `track` and leaves before the end;
+ * in fullscreen it stays. Where the Fullscreen API is missing (iPhone
+ * Safari) it switches an immersive in-page mode instead. Render once per
+ * page; it stays hidden without JavaScript.
+ * Logic lives in src/lib/fullscreen/reader.ts.
+ */
+interface Props {
+  /** Selector of the element the reader is reading. */
+  track?: string;
+}
+
+const { track = 'main' } = Astro.props;
+---
+
+<button
+  type="button"
+  class="fs-button"
+  data-fs-button
+  data-fs-track={track}
+  data-mode="page"
+  aria-pressed="false"
+  aria-label="Enter fullscreen"
+  aria-keyshortcuts="F"
+  title="Enter fullscreen (F)"
+>
+  <svg
+    class="fs-button__icon fs-button__icon--enter"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"></path>
+  </svg>
+  <svg
+    class="fs-button__icon fs-button__icon--exit"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"></path>
+  </svg>
+</button>
+
+<script>
+  import { startFullscreenReader } from '../lib/fullscreen/reader';
+
+  startFullscreenReader();
+</script>
+
+<style>
+  /* Wide screens: in the margin, just right of the reading column. */
+  .fs-button {
+    position: fixed;
+    top: 50%;
+    left: calc(50% + var(--container-narrow) / 2 + var(--sp-4));
+    z-index: 60;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    color: var(--fg-muted);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translate(-6px, -50%);
+    transition:
+      opacity 0.36s var(--ease),
+      transform 0.36s var(--ease),
+      color 0.18s var(--ease),
+      border-color 0.18s var(--ease),
+      visibility 0s 0.36s;
+  }
+  .fs-button.is-shown,
+  :global(html.is-fullscreen) .fs-button {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translate(0, -50%);
+    transition:
+      opacity 0.36s var(--ease),
+      transform 0.36s var(--ease),
+      color 0.18s var(--ease),
+      border-color 0.18s var(--ease),
+      visibility 0s;
+  }
+  /* Out of the way while reading; pointer activity brings it back. */
+  .fs-button.is-shown.is-idle:not(:hover, :focus-visible),
+  :global(html.is-fullscreen) .fs-button.is-idle:not(:hover, :focus-visible) {
+    opacity: 0.35;
+  }
+  @media (hover: hover) {
+    .fs-button:hover {
+      color: var(--fg);
+      border-color: var(--fg-faint);
+    }
+  }
+  .fs-button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  .fs-button__icon {
+    grid-area: 1 / 1;
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .fs-button[data-mode='page'] .fs-button__icon--exit,
+  .fs-button[data-mode='fullscreen'] .fs-button__icon--enter {
+    display: none;
+  }
+  .fs-button[data-mode='fullscreen'] {
+    color: var(--accent-text);
+    border-color: var(--accent-line);
+  }
+
+  /* No margin beside the column: thumb-reach corner, clear of the home
+     indicator and notch. */
+  @media (max-width: 920px) {
+    .fs-button {
+      top: auto;
+      left: auto;
+      right: max(var(--sp-4), env(safe-area-inset-right));
+      bottom: max(var(--sp-4), env(safe-area-inset-bottom));
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      transform: translateY(8px);
+    }
+    .fs-button.is-shown,
+    :global(html.is-fullscreen) .fs-button {
+      transform: none;
+    }
+  }
+</style>
+
+<style is:global>
+  html.is-fullscreen [data-fullscreen-hide] {
+    display: none;
+  }
+</style>
