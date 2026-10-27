@@ -37,12 +37,12 @@ const og = AI_TODAY_CARD.image
 >
   <section class="section">
     <div class="container">
-      <a class="ai-back link-accent" href="/talks/">
+      <a class="ai-back backlink" href="/talks/">
         <span aria-hidden="true">&#8592;</span> All talks
       </a>
       <SectionHeading
         as="h1"
-        number="-"
+        kicker="Talk · Slides and transcript"
         title={AI_TALK_INTRO.title}
         description={AI_TALK_INTRO.lead}
         descFull
@@ -61,17 +61,16 @@ const og = AI_TODAY_CARD.image
 
 <style>
   .ai-back {
-    display: inline-block;
-    margin-bottom: var(--sp-5);
-    font-size: var(--fs-sm);
+    margin-bottom: var(--sp-6);
   }
   .ai-date {
     display: block;
-    margin-top: calc(-1 * var(--sp-4));
+    margin-top: calc(-1 * var(--sp-5));
     margin-bottom: var(--sp-3);
     font-family: var(--font-mono);
-    font-size: var(--fs-xs);
-    letter-spacing: 0.06em;
+    font-size: var(--fs-2xs);
+    font-weight: 500;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--fg-faint);
   }

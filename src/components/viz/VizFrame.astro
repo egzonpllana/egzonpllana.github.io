@@ -95,14 +95,14 @@ const { fig, title, caption, label, class: className, ...rest } = Astro.props;
     margin-block: var(--sp-7);
     background: var(--bg-subtle);
     border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-xl);
     overflow: hidden;
   }
   :root[data-theme='dark'] .viz {
-    --viz-level: #f5a524;
-    --viz-meta: #b197fc;
-    --viz-net: #6ea0ff;
-    --viz-bad: #ff6369;
+    --viz-level: #f3b562;
+    --viz-meta: #b79dff;
+    --viz-net: #5ca9ff;
+    --viz-bad: #ff8b73;
   }
   .viz *,
   .viz *::before,
@@ -141,18 +141,19 @@ const { fig, title, caption, label, class: className, ...rest } = Astro.props;
   .viz__fig {
     font-family: var(--font-mono);
     font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
+    font-weight: 500;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--accent-text);
     padding: 2px 7px;
-    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-    border-radius: 999px;
+    border: 1px solid var(--accent-line);
+    border-radius: 6px;
     background: var(--accent-soft);
   }
   .viz__title {
     font-size: var(--fs-sm);
     font-weight: 600;
+    letter-spacing: -0.01em;
     color: var(--fg);
     flex: 1 1 auto;
     min-width: 0;

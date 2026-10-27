@@ -43,11 +43,11 @@ const withReadingTime = articles.map((a) => ({
     <div class="container">
       <SectionHeading
         as="h1"
-        number="-"
+        kicker="Tag"
         title={`Tagged: ${tag}`}
         description={`${withReadingTime.length} article${withReadingTime.length === 1 ? '' : 's'} tagged “${tag}”.`}
       />
-      <a class="tag-back link-accent" href="/articles/">
+      <a class="tag-back backlink" href="/articles/">
         <span aria-hidden="true">←</span> All articles
       </a>
       <div class="articles-grid">
@@ -78,8 +78,6 @@ const withReadingTime = articles.map((a) => ({
     align-items: stretch;
   }
   .tag-back {
-    display: inline-block;
-    font-size: var(--fs-sm);
-    margin-bottom: var(--sp-5);
+    margin-bottom: var(--sp-6);
   }
 </style>

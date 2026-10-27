@@ -62,22 +62,20 @@ const { sdk, index = 0 } = Astro.props;
     gap: var(--sp-3);
     padding: var(--sp-5);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
     background: var(--surface);
     transition:
       border-color 0.18s var(--ease),
-      transform 0.18s var(--ease),
-      box-shadow 0.18s var(--ease);
+      background-color 0.18s var(--ease);
   }
   .sdk:hover {
     border-color: var(--border-strong);
-    transform: translateY(-3px);
-    box-shadow: var(--shadow-md);
+    background: var(--surface-hover);
   }
   .sdk__link {
     position: absolute;
     inset: 0;
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
   }
   .sdk__link:focus-visible {
     outline: 2px solid var(--accent);
@@ -93,7 +91,7 @@ const { sdk, index = 0 } = Astro.props;
     font-family: var(--font-mono);
     font-size: var(--fs-md);
     font-weight: 600;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.02em;
   }
   .sdk__gh {
     display: inline-flex;
@@ -139,7 +137,7 @@ const { sdk, index = 0 } = Astro.props;
   .sdk__lang-dot {
     width: 8px;
     height: 8px;
-    border-radius: 50%;
+    border-radius: 2px;
     background: #f05138; /* Swift language color */
   }
   .sdk__stars {

@@ -174,24 +174,20 @@ const yTicks = [max, min + range / 2, min].map(
     gap: var(--sp-4);
     padding: var(--sp-5);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
     background: var(--surface);
     color: var(--fg);
-    transition:
-      border-color 0.18s var(--ease),
-      transform 0.18s var(--ease),
-      box-shadow 0.18s var(--ease);
+    transition: border-color 0.18s var(--ease);
   }
   .so-panel:hover {
     border-color: var(--border-strong);
-    transform: translateY(-3px);
-    box-shadow: var(--shadow-md);
   }
   .so-panel__label {
     font-family: var(--font-mono);
-    font-size: var(--fs-xs);
+    font-size: var(--fs-2xs);
+    font-weight: 500;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.1em;
     color: var(--fg-faint);
   }
 
@@ -208,8 +204,8 @@ const yTicks = [max, min + range / 2, min].map(
   }
   .so-rep__num {
     font-size: var(--fs-2xl);
-    font-weight: 700;
-    letter-spacing: -0.02em;
+    font-weight: 600;
+    letter-spacing: -0.03em;
     line-height: 1;
   }
   .so-chip {

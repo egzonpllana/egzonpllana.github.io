@@ -58,22 +58,20 @@ const paths: Record<SocialLink['icon'], string> = {
   .socials__link {
     display: grid;
     place-items: center;
-    width: 40px;
-    height: 40px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    border: 1px solid var(--border-strong);
     color: var(--fg-muted);
     transition:
-      color 0.16s var(--ease),
-      background 0.16s var(--ease),
-      border-color 0.16s var(--ease),
-      transform 0.16s var(--ease);
+      color 0.18s var(--ease),
+      background-color 0.18s var(--ease),
+      border-color 0.18s var(--ease);
   }
   .socials__link:hover {
-    color: var(--accent);
+    color: var(--accent-text);
     background: var(--accent-soft);
     border-color: var(--accent);
-    transform: translateY(-2px);
   }
   .socials__link svg {
     width: var(--icon-size);

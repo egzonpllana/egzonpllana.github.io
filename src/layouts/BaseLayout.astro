@@ -65,7 +65,7 @@ const fullTitle = isSiteTitle ? title : `${title} - ${SITE.name}`;
         } catch (e) {}
         document.documentElement.dataset.theme = theme;
         // Keep the browser chrome color in sync with a manual theme override.
-        const color = theme === 'dark' ? '#0b0e14' : '#ffffff';
+        const color = theme === 'dark' ? '#0b0d10' : '#f6f7f9';
         document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
           m.setAttribute('content', color);
           m.removeAttribute('media');

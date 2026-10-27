@@ -1,8 +1,8 @@
 ---
-import '@fontsource-variable/inter';
-import '@fontsource-variable/jetbrains-mono';
-import interLatinWoff2 from '@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url';
-import monoLatinWoff2 from '@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url';
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
+import sansLatinWoff2 from '@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url';
+import monoLatinWoff2 from '@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2?url';
 import { ANALYTICS_ENABLED, COUNTER_BASE, SITE } from '../data/site';
 
 interface Props {
@@ -102,7 +102,7 @@ const jsonLd = isHome
   rel="preload"
   as="font"
   type="font/woff2"
-  href={interLatinWoff2}
+  href={sansLatinWoff2}
   crossorigin
 />
 <link
@@ -118,12 +118,12 @@ const jsonLd = isHome
 <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 <meta
   name="theme-color"
-  content="#ffffff"
+  content="#f6f7f9"
   media="(prefers-color-scheme: light)"
 />
 <meta
   name="theme-color"
-  content="#0b0e14"
+  content="#0b0d10"
   media="(prefers-color-scheme: dark)"
 />
 

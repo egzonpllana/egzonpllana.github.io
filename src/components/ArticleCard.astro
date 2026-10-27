@@ -98,18 +98,15 @@ const href = `/articles/${slug}/`;
     flex-direction: column;
     overflow: hidden;
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
     background: var(--surface);
-    box-shadow: var(--shadow-sm);
     transition:
       border-color 0.18s var(--ease),
-      transform 0.18s var(--ease),
-      box-shadow 0.18s var(--ease);
+      background-color 0.18s var(--ease);
   }
   .acard:hover {
     border-color: var(--border-strong);
-    transform: translateY(-3px);
-    box-shadow: var(--shadow-md);
+    background: var(--surface-hover);
   }
   .acard__media {
     aspect-ratio: 16 / 9;
@@ -121,10 +118,6 @@ const href = `/articles/${slug}/`;
     width: 100%;
     height: 100%;
     object-fit: cover;
-    transition: transform 0.5s var(--ease);
-  }
-  .acard:hover .acard__media img {
-    transform: scale(1.04);
   }
   .acard--featured.acard--media .acard__media {
     aspect-ratio: 21 / 9;
@@ -139,7 +132,7 @@ const href = `/articles/${slug}/`;
   .acard__link {
     position: absolute;
     inset: 0;
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
     z-index: 1;
   }
   .acard__link:focus-visible {
@@ -147,26 +140,30 @@ const href = `/articles/${slug}/`;
     outline-offset: 2px;
   }
   .acard--featured {
-    border-left: 3px solid var(--accent);
+    border-color: var(--accent-line);
   }
   .acard__meta {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--sp-2);
     font-family: var(--font-mono);
-    font-size: var(--fs-xs);
+    font-size: var(--fs-2xs);
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     color: var(--fg-faint);
   }
   .acard__flag {
     color: var(--accent-text);
     border: 1px solid var(--accent);
-    border-radius: 999px;
-    padding: 0.05rem 0.5rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    border-radius: 6px;
+    padding: 0.1rem 0.45rem;
   }
   .acard__title {
     font-size: var(--fs-lg);
+    line-height: 1.2;
+    letter-spacing: -0.02em;
   }
   .acard--featured .acard__title {
     font-size: var(--fs-xl);
@@ -199,5 +196,12 @@ const href = `/articles/${slug}/`;
   .acard__read {
     font-size: var(--fs-sm);
     white-space: nowrap;
+  }
+  .acard__read span {
+    display: inline-block;
+    transition: transform 0.18s var(--ease);
+  }
+  .acard:hover .acard__read span {
+    transform: translateX(3px);
   }
 </style>

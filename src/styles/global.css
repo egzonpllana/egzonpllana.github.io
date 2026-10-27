@@ -1,47 +1,49 @@
 /* ===========================================================================
    Design tokens
+   Dark is the canonical palette: near-black canvas on a faint 48px grid,
+   hairline panels, mono labels. Light mirrors the same structure.
    Light is the default on :root; dark overrides under [data-theme="dark"].
    ========================================================================== */
 :root {
   /* Color - light */
-  --bg: #ffffff;
-  --bg-subtle: #f7f8fa;
+  --bg: #f6f7f9;
+  --bg-subtle: #eef1f4;
   --surface: #ffffff;
   --surface-hover: #f2f4f7;
-  --fg: #0d1117;
-  --fg-muted: #5b6472;
-  --fg-faint: #6e7787;
-  --border: #e6e9ee;
-  --border-strong: #d4d9e0;
+  --fg: #0b0d10;
+  --fg-muted: #4a5463;
+  --fg-faint: #5f6a79;
+  --edge: #8a95a5;
+  --border: #e1e5ea;
+  --border-strong: #c8cfd8;
+  --grid: rgba(11, 13, 16, 0.045);
   --accent: #11a14e;
-  /* Accent dark enough for 4.5:1 as small text / button fill on light bg. */
+  /* Accent dark enough for 4.5:1 as small text on the light canvas. */
   --accent-text: #0b7a3b;
   --accent-fg: #ffffff;
-  --accent-soft: rgba(46, 224, 106, 0.1);
+  --accent-soft: rgba(17, 161, 78, 0.08);
+  --accent-line: rgba(17, 161, 78, 0.55);
   --selection: rgba(46, 224, 106, 0.2);
-  --shadow-sm:
-    0 1px 2px rgba(13, 17, 23, 0.04), 0 1px 3px rgba(13, 17, 23, 0.06);
-  --shadow-md: 0 4px 14px rgba(13, 17, 23, 0.07);
-  --code-bg: #f6f8fa;
+  --code-bg: #f1f3f6;
 
   /* Typography */
   --font-sans:
-    'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
-    Roboto, Helvetica, Arial, sans-serif;
+    'Geist Variable', ui-sans-serif, system-ui, -apple-system, 'Helvetica Neue',
+    Arial, sans-serif;
   --font-mono:
-    'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas,
-    monospace;
+    'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 
-  /* Modular type scale (~1.2) */
-  --fs-2xs: 0.68rem;
-  --fs-xs: 0.78rem;
+  /* Type scale */
+  --fs-2xs: 0.6875rem;
+  --fs-xs: 0.75rem;
   --fs-sm: 0.875rem;
   --fs-base: 1rem;
   --fs-md: 1.125rem;
-  --fs-lg: 1.35rem;
-  --fs-xl: 1.7rem;
-  --fs-2xl: 2.25rem;
-  --fs-3xl: clamp(2.4rem, 1.6rem + 3.2vw, 3.6rem);
+  --fs-lg: 1.3rem;
+  --fs-xl: 1.65rem;
+  --fs-2xl: clamp(1.9rem, 1.35rem + 2.2vw, 2.75rem);
+  --fs-3xl: clamp(2.3rem, 1.5rem + 3.2vw, 3.5rem);
+  --fs-display: clamp(2.75rem, 1.4rem + 5.4vw, 5rem);
 
   /* Spacing (4 / 8 based) */
   --sp-1: 0.25rem;
@@ -55,34 +57,39 @@
   --sp-9: 6rem;
 
   /* Radii / layout */
-  --radius-sm: 6px;
+  --radius-sm: 8px;
   --radius: 12px;
-  --radius-lg: 18px;
-  --container: 1080px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --container: 1120px;
   --container-narrow: 720px;
+  --grid-size: 48px;
 
-  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  /* Motion */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-io: cubic-bezier(0.65, 0, 0.35, 1);
   color-scheme: light;
 }
 
 :root[data-theme='dark'] {
-  --bg: #0b0e14;
-  --bg-subtle: #0f131b;
-  --surface: #121722;
-  --surface-hover: #19202d;
-  --fg: #e8ecf3;
-  --fg-muted: #9aa6b8;
-  --fg-faint: #7b86a0;
-  --border: #1e2632;
-  --border-strong: #2a3442;
+  --bg: #0b0d10;
+  --bg-subtle: #11151a;
+  --surface: #151a21;
+  --surface-hover: #1c222b;
+  --fg: #eceff3;
+  --fg-muted: #aab3bf;
+  --fg-faint: #808a97;
+  --edge: #6b7889;
+  --border: #242b35;
+  --border-strong: #344050;
+  --grid: rgba(255, 255, 255, 0.028);
   --accent: #2ee06a;
   --accent-text: #2ee06a;
   --accent-fg: #052310;
-  --accent-soft: rgba(46, 224, 106, 0.13);
+  --accent-soft: rgba(46, 224, 106, 0.1);
+  --accent-line: rgba(46, 224, 106, 0.6);
   --selection: rgba(46, 224, 106, 0.26);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 8px 30px rgba(0, 0, 0, 0.45);
-  --code-bg: #0f131b;
+  --code-bg: #0f1318;
   color-scheme: dark;
 }
 
@@ -108,10 +115,17 @@ html {
 body {
   font-family: var(--font-sans);
   font-size: var(--fs-base);
-  line-height: 1.65;
+  line-height: 1.6;
   color: var(--fg);
   background-color: var(--bg);
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+  background-position: center -1px;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
   text-rendering: optimizeLegibility;
   min-height: 100dvh;
   display: flex;
@@ -147,9 +161,14 @@ h1,
 h2,
 h3,
 h4 {
-  line-height: 1.15;
-  font-weight: 680;
-  letter-spacing: -0.018em;
+  line-height: 1.12;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
 }
 
 :focus-visible {
@@ -168,20 +187,65 @@ h4 {
   padding-inline: var(--sp-5);
 }
 
+@media (max-width: 480px) {
+  .container {
+    padding-inline: var(--sp-4);
+  }
+}
+
 main {
   flex: 1 0 auto;
 }
 
 .section {
-  padding-block: var(--sp-8);
+  padding-block: clamp(3.5rem, 2.5rem + 4vw, 6rem);
 }
 
-.eyebrow {
+/* Hairline between stacked sections, like slide chrome. */
+.section + .section {
+  border-top: 1px solid var(--border);
+}
+
+/* ===========================================================================
+   Text primitives
+   ========================================================================== */
+
+/* Mono, uppercase, accent, with a leading rule. */
+.kicker {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
-  letter-spacing: 0.08em;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+.kicker::before {
+  content: '';
+  flex: none;
+  width: 28px;
+  height: 1px;
+  background: currentColor;
+}
+
+/* Small mono caption for panel headers and key/value rows. */
+.label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--fg-faint);
+}
+
+.lede {
+  font-size: var(--fs-md);
+  line-height: 1.6;
+  color: var(--fg-muted);
 }
 
 /* Visually hidden, available to assistive tech. */
@@ -214,40 +278,60 @@ main {
 }
 
 /* ===========================================================================
+   Surfaces
+   ========================================================================== */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+/* Accent-outlined callout for the one thing a block wants you to take away. */
+.callout {
+  padding: var(--sp-5);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+}
+
+/* ===========================================================================
    Buttons / links
    ========================================================================== */
 .btn {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-2);
-  padding: 0.6rem 1.1rem;
-  border-radius: var(--radius-sm);
-  font-size: var(--fs-sm);
-  font-weight: 560;
+  justify-content: center;
+  gap: 0.6rem;
+  height: 44px;
+  padding: 0 1.15rem;
   border: 1px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--fg);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
   transition:
-    background 0.18s var(--ease),
+    color 0.18s var(--ease),
     border-color 0.18s var(--ease),
-    transform 0.18s var(--ease);
+    background-color 0.18s var(--ease);
 }
 .btn:hover {
-  background: var(--surface-hover);
+  color: var(--fg);
   border-color: var(--fg-faint);
 }
-.btn:active {
-  transform: translateY(1px);
-}
 .btn--primary {
-  background: var(--accent-text);
-  color: var(--accent-fg);
-  border-color: var(--accent-text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--fg);
 }
 .btn--primary:hover {
-  filter: brightness(1.06);
-  background: var(--accent-text);
-  border-color: var(--accent-text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 .btn .arrow {
   transition: transform 0.18s var(--ease);
@@ -258,24 +342,52 @@ main {
 
 .link-accent {
   color: var(--accent-text);
-  font-weight: 540;
+  font-weight: 500;
 }
 .link-accent:hover {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
 
-/* Tag / badge */
+/* Back link above a page title. */
+.backlink {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  transition: color 0.18s var(--ease);
+}
+.backlink:hover {
+  color: var(--fg);
+}
+.backlink span {
+  transition: transform 0.18s var(--ease);
+}
+.backlink:hover span {
+  transform: translateX(-3px);
+}
+
+/* Tag / chip */
 .tag {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 0.55rem;
   font-family: var(--font-mono);
   font-size: var(--fs-2xs);
+  font-weight: 500;
+  line-height: 1;
   letter-spacing: 0.02em;
-  padding: 0.18rem 0.5rem;
-  border-radius: 999px;
+  white-space: nowrap;
+  border-radius: 6px;
   color: var(--fg-muted);
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: 1px solid var(--border-strong);
 }
 a.tag {
   transition:
@@ -297,28 +409,28 @@ a.tag:hover {
      stays visible when JavaScript is disabled or fails to run. */
   .js [data-reveal] {
     opacity: 0;
-    transform: translateY(20px);
+    transform: translateY(16px);
     transition:
-      opacity 0.7s var(--ease) var(--d, 0ms),
-      transform 0.7s var(--ease) var(--d, 0ms);
+      opacity 0.72s var(--ease) var(--d, 0ms),
+      transform 0.72s var(--ease) var(--d, 0ms);
     will-change: opacity, transform;
   }
   .js [data-reveal='left'] {
-    transform: translateX(-22px);
+    transform: translateX(-16px);
   }
   .js [data-reveal='scale'] {
-    transform: scale(0.96);
+    transform: scale(0.97);
   }
   .js [data-reveal].is-visible {
     opacity: 1;
     transform: none;
   }
 
-  /* Hero entrance: staggered fade-up on load */
+  /* Page entrance: staggered rise on load */
   .anim-in {
     opacity: 0;
     transform: translateY(16px);
-    animation: anim-in 0.7s var(--ease) forwards;
+    animation: anim-in 0.72s var(--ease) forwards;
     animation-delay: var(--d, 0ms);
   }
   @keyframes anim-in {

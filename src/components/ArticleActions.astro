@@ -84,26 +84,34 @@ const { repoUrl, showShare = false } = Astro.props;
     align-items: center;
     gap: var(--sp-3);
   }
-  .aa-repo {
+  .aa-repo,
+  .aa-btn {
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.5rem 0.9rem;
-    border-radius: var(--radius-sm);
+    height: 40px;
+    padding: 0 0.95rem;
+    border-radius: 10px;
     border: 1px solid var(--border-strong);
-    background: var(--surface);
-    font-size: var(--fs-sm);
-    font-weight: 540;
-    color: var(--fg);
+    background: transparent;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
     transition:
       border-color 0.18s var(--ease),
-      background 0.18s var(--ease),
+      background-color 0.18s var(--ease),
       color 0.18s var(--ease);
   }
-  .aa-repo:hover {
+  .aa-repo {
     border-color: var(--accent);
-    color: var(--accent-text);
     background: var(--accent-soft);
+    color: var(--fg);
+  }
+  .aa-repo:hover {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
   }
   .aa-repo svg {
     width: 17px;
@@ -118,24 +126,11 @@ const { repoUrl, showShare = false } = Astro.props;
     margin-left: auto;
   }
   .aa-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.5rem 0.8rem;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-    background: var(--surface);
     color: var(--fg-muted);
-    font-size: var(--fs-sm);
-    transition:
-      border-color 0.18s var(--ease),
-      color 0.18s var(--ease),
-      background 0.18s var(--ease);
   }
   .aa-btn:hover {
-    border-color: var(--accent);
-    color: var(--accent-text);
-    background: var(--accent-soft);
+    border-color: var(--fg-faint);
+    color: var(--fg);
   }
   .aa-btn svg {
     width: 16px;
