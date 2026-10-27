@@ -1,0 +1,530 @@
+---
+/**
+ * Oscilloscope for sampling: pick a pitch, a loudness and a sample rate, and
+ * see which instants the microphone keeps. Past half the sample rate the kept
+ * samples describe a lower, false pitch, drawn as a dashed ghost.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'The faint line is the real sound; the dots are what a recorder keeps. Push the pitch past half the sample rate and the dots start to describe a different, lower pitch.',
+} = Astro.props;
+---
+
+<VizFrame
+  fig="01"
+  title="What a microphone keeps of a sound wave"
+  caption={caption}
+  class="swl"
+  data-swl
+>
+  <span
+    slot="tools"
+    class="viz-chip viz-chip--sound"
+    data-out-verdict
+    aria-live="polite"
+  >
+    <span class="viz-dot"></span><span data-out-verdict-text
+      >captured faithfully</span
+    >
+  </span>
+
+  <div class="swl__scope viz-panel">
+    <canvas
+      class="swl__canvas"
+      data-canvas
+      role="img"
+      aria-label="A sound wave and the samples taken from it"></canvas>
+    <span class="swl__tick swl__tick--top" aria-hidden="true">+1</span>
+    <span class="swl__tick swl__tick--bot" aria-hidden="true">−1</span>
+    <span class="swl__span" aria-hidden="true">4 ms of sound</span>
+  </div>
+
+  <div class="swl__legend viz-legend" aria-hidden="true">
+    <span><i style="--c:var(--fg-faint)"></i>real sound</span>
+    <span><i style="--c:var(--viz-sound)"></i>samples kept</span>
+    <span class="swl__ghost-key"
+      ><i style="--c:var(--viz-bad)"></i>pitch the samples describe</span
+    >
+  </div>
+
+  <div class="swl__readouts" aria-live="polite">
+    <span class="viz-chip viz-chip--sound"
+      >pitch <b data-out-freq>440 Hz</b></span
+    >
+    <span class="viz-chip viz-chip--meta"
+      >keeps up to <b data-out-nyq>8,000 Hz</b></span
+    >
+    <span class="viz-chip viz-chip--sound"
+      ><b data-out-bytes>32,000</b> bytes/s · 16-bit mono</span
+    >
+    <span class="viz-chip viz-chip--bad swl__alias" data-out-alias hidden
+      >heard as <b data-out-alias-freq>0 Hz</b></span
+    >
+  </div>
+
+  <div class="swl__meter" aria-hidden="true">
+    <div class="swl__meterhead">
+      <span class="viz-label">pitch vs Nyquist limit (rate ÷ 2)</span>
+      <span class="viz-mono swl__ratio" data-out-ratio>6%</span>
+    </div>
+    <div class="swl__track" data-track>
+      <span class="swl__fill" data-fill></span>
+      <span class="swl__limit"
+        ><span class="swl__limitlab" data-out-limit>8,000 Hz</span></span
+      >
+    </div>
+  </div>
+
+  <div class="swl__controls">
+    <label class="swl__ctl">
+      <span class="swl__lab"
+        ><span class="viz-label">Pitch</span><span
+          class="viz-mono"
+          data-out-freq-in>440 Hz</span
+        ></span
+      >
+      <input
+        type="range"
+        min="100"
+        max="9000"
+        step="10"
+        value="440"
+        data-in-freq
+        aria-label="Pitch in hertz"
+      />
+    </label>
+    <label class="swl__ctl">
+      <span class="swl__lab"
+        ><span class="viz-label">Loudness</span><span
+          class="viz-mono"
+          data-out-amp>60%</span
+        ></span
+      >
+      <input
+        type="range"
+        min="5"
+        max="100"
+        step="1"
+        value="60"
+        data-in-amp
+        aria-label="Loudness in percent"
+      />
+    </label>
+    <div class="swl__ctl">
+      <span class="swl__lab"><span class="viz-label">Sample rate</span></span>
+      <div class="viz-seg" role="group" aria-label="Sample rate">
+        <button type="button" data-rate="8000" aria-pressed="false">8k</button>
+        <button type="button" data-rate="16000" aria-pressed="true">16k</button>
+        <button type="button" data-rate="48000" aria-pressed="false">48k</button
+        >
+      </div>
+    </div>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initSoundWaveLab() {
+      const root = document.querySelector('[data-swl]');
+      if (!root || root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const canvas = root.querySelector('[data-canvas]');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const inFreq = root.querySelector('[data-in-freq]');
+      const inAmp = root.querySelector('[data-in-amp]');
+      const outFreq = root.querySelector('[data-out-freq]');
+      const outFreqIn = root.querySelector('[data-out-freq-in]');
+      const outAmp = root.querySelector('[data-out-amp]');
+      const outNyq = root.querySelector('[data-out-nyq]');
+      const outLimit = root.querySelector('[data-out-limit]');
+      const outBytes = root.querySelector('[data-out-bytes]');
+      const outRatio = root.querySelector('[data-out-ratio]');
+      const outAlias = root.querySelector('[data-out-alias]');
+      const outAliasFreq = root.querySelector('[data-out-alias-freq]');
+      const verdict = root.querySelector('[data-out-verdict]');
+      const verdictText = root.querySelector('[data-out-verdict-text]');
+      const fill = root.querySelector('[data-fill]');
+      const rateButtons = [...root.querySelectorAll('[data-rate]')];
+
+      const WINDOW = 0.004; // seconds of sound on screen
+      const METER_SPAN = 1.5; // the meter track covers 0 .. 1.5 x the limit
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const fmt = (n) => Math.round(n).toLocaleString('en-US');
+
+      let rate = 16000;
+      let phase = 0;
+      let last = 0;
+      let running = false;
+      let W = 0;
+      let H = 0;
+      let colors = {};
+
+      function readColors() {
+        const cs = getComputedStyle(root);
+        const get = (n, f) => cs.getPropertyValue(n).trim() || f;
+        colors = {
+          grid: get('--border', 'gray'),
+          axis: get('--border-strong', 'gray'),
+          real: get('--fg-faint', 'gray'),
+          sound: get('--viz-sound', 'green'),
+          bad: get('--viz-bad', 'red'),
+        };
+      }
+
+      function size() {
+        W = canvas.clientWidth || 640;
+        H = canvas.clientHeight || 180;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.round(W * dpr);
+        canvas.height = Math.round(H * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+
+      const state = () => {
+        const freq = +inFreq.value;
+        const aliased = freq >= rate / 2;
+        // The samples of a pitch f at rate fs are identical to those of f - round(f / fs) * fs.
+        const ghost = freq - Math.round(freq / rate) * rate;
+        return { freq, amp: +inAmp.value / 100, aliased, ghost };
+      };
+
+      function draw() {
+        const { freq, amp, aliased, ghost } = state();
+        const mid = H / 2;
+        const A = (H / 2 - 18) * amp;
+        const y = (t, f) => mid - A * Math.sin(2 * Math.PI * f * t + phase);
+
+        ctx.clearRect(0, 0, W, H);
+
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = colors.grid;
+        ctx.beginPath();
+        for (let i = 1; i < 10; i++) {
+          const gx = Math.round((W * i) / 10) + 0.5;
+          ctx.moveTo(gx, 0);
+          ctx.lineTo(gx, H);
+        }
+        for (const gy of [H / 4, (3 * H) / 4]) {
+          ctx.moveTo(0, Math.round(gy) + 0.5);
+          ctx.lineTo(W, Math.round(gy) + 0.5);
+        }
+        ctx.stroke();
+        ctx.strokeStyle = colors.axis;
+        ctx.beginPath();
+        ctx.moveTo(0, Math.round(mid) + 0.5);
+        ctx.lineTo(W, Math.round(mid) + 0.5);
+        ctx.stroke();
+
+        const curve = (f) => {
+          ctx.beginPath();
+          for (let x = 0; x <= W; x += 1) {
+            const py = y((x / W) * WINDOW, f);
+            if (x === 0) ctx.moveTo(x, py);
+            else ctx.lineTo(x, py);
+          }
+          ctx.stroke();
+        };
+
+        ctx.strokeStyle = colors.real;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = aliased ? 0.35 : 0.7;
+        curve(freq);
+        ctx.globalAlpha = 1;
+
+        if (aliased) {
+          ctx.setLineDash([6, 5]);
+          ctx.strokeStyle = colors.bad;
+          ctx.lineWidth = 2;
+          curve(ghost);
+          ctx.setLineDash([]);
+        }
+
+        const n = Math.floor(WINDOW * rate);
+        const col = aliased ? colors.bad : colors.sound;
+        ctx.strokeStyle = col;
+        ctx.fillStyle = col;
+        const pts = [];
+        for (let i = 0; i <= n; i++) {
+          const t = i / rate;
+          pts.push([(t / WINDOW) * W, y(t, freq)]);
+        }
+        if (W / n >= 5) {
+          ctx.lineWidth = 1.2;
+          ctx.globalAlpha = 0.45;
+          ctx.beginPath();
+          pts.forEach(([px, py]) => {
+            ctx.moveTo(px, mid);
+            ctx.lineTo(px, py);
+          });
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+        const gap = W / n;
+        const r = gap < 4 ? 1.3 : gap < 9 ? 2 : 3.2;
+        pts.forEach(([px, py]) => {
+          ctx.beginPath();
+          ctx.arc(px, py, r, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      function readout() {
+        const { freq, aliased, ghost } = state();
+        const limit = rate / 2;
+        const ratio = freq / limit;
+        outFreq.textContent = `${fmt(freq)} Hz`;
+        outFreqIn.textContent = `${fmt(freq)} Hz`;
+        outAmp.textContent = `${inAmp.value}%`;
+        outNyq.textContent = `${fmt(limit)} Hz`;
+        outLimit.textContent = `${fmt(limit)} Hz`;
+        outBytes.textContent = fmt(rate * 2);
+        outRatio.textContent = `${fmt(freq)} / ${fmt(limit)} Hz · ${Math.round(ratio * 100)}%`;
+        outAlias.hidden = !aliased;
+        outAliasFreq.textContent = `${fmt(Math.abs(ghost))} Hz`;
+        verdict.classList.toggle('viz-chip--sound', !aliased);
+        verdict.classList.toggle('viz-chip--bad', aliased);
+        verdictText.textContent = aliased
+          ? 'aliased: heard lower'
+          : 'captured faithfully';
+        fill.style.width = `${Math.min(1, ratio / METER_SPAN) * 100}%`;
+        root.classList.toggle('is-aliased', aliased);
+      }
+
+      function update() {
+        readout();
+        draw();
+      }
+
+      function loop(ts) {
+        if (!running) return;
+        const dt = last ? Math.min((ts - last) / 1000, 0.1) : 0;
+        last = ts;
+        phase += dt * 5;
+        draw();
+        requestAnimationFrame(loop);
+      }
+      function play(on) {
+        if (reduce) on = false;
+        if (on === running) return;
+        running = on;
+        last = 0;
+        if (on) requestAnimationFrame(loop);
+      }
+
+      [inFreq, inAmp].forEach((el) => el.addEventListener('input', update));
+      rateButtons.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          rate = +btn.dataset.rate;
+          rateButtons.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          update();
+        }),
+      );
+
+      if ('ResizeObserver' in window) {
+        new ResizeObserver(() => {
+          size();
+          draw();
+        }).observe(canvas);
+      } else {
+        window.addEventListener('resize', () => {
+          size();
+          draw();
+        });
+      }
+      new MutationObserver(() => {
+        readColors();
+        draw();
+      }).observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme', 'class'],
+      });
+
+      root.addEventListener('viz:inview', (e) => play(e.detail));
+
+      readColors();
+      size();
+      update();
+      play(root.dataset.inview === '1');
+    }
+
+    if (document.readyState !== 'loading') initSoundWaveLab();
+    else document.addEventListener('DOMContentLoaded', initSoundWaveLab);
+  })();
+</script>
+
+<style>
+  .swl__scope {
+    position: relative;
+    overflow: hidden;
+  }
+  .swl__canvas {
+    display: block;
+    width: 100%;
+    height: 180px;
+  }
+  .swl__tick,
+  .swl__span {
+    position: absolute;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-faint);
+    pointer-events: none;
+  }
+  .swl__tick {
+    left: 8px;
+  }
+  .swl__tick--top {
+    top: 6px;
+  }
+  .swl__tick--bot {
+    bottom: 6px;
+  }
+  .swl__span {
+    right: 8px;
+    bottom: 6px;
+  }
+
+  .swl__legend {
+    margin-top: var(--sp-2);
+  }
+  .swl__ghost-key {
+    opacity: 0.4;
+    transition: opacity 0.2s var(--ease);
+  }
+  :global(.swl.is-aliased) .swl__ghost-key {
+    opacity: 1;
+  }
+  .swl__legend i {
+    height: 3px;
+    border-radius: 2px;
+  }
+
+  .swl__readouts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+  }
+  .swl__readouts b {
+    color: var(--fg);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .swl__readouts .viz-chip--bad b {
+    color: inherit;
+  }
+  .swl__alias[hidden] {
+    display: none;
+  }
+
+  .swl__meter {
+    margin-top: var(--sp-4);
+  }
+  .swl__meterhead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 4px var(--sp-3);
+    margin-bottom: 6px;
+  }
+  .swl__ratio {
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .swl__track {
+    position: relative;
+    height: 10px;
+    margin-bottom: 18px;
+    background:
+      linear-gradient(
+        90deg,
+        transparent 66.667%,
+        color-mix(in srgb, var(--viz-bad) 12%, transparent) 66.667%
+      ),
+      var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+  .swl__fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0;
+    background: var(--viz-sound);
+    border-radius: 999px;
+    transition:
+      width 0.15s var(--ease),
+      background 0.15s var(--ease);
+  }
+  :global(.swl.is-aliased) .swl__fill {
+    background: var(--viz-bad);
+  }
+  .swl__limit {
+    position: absolute;
+    top: -4px;
+    bottom: -4px;
+    left: 66.667%;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--fg);
+    border-radius: 1px;
+  }
+  .swl__limitlab {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+
+  .swl__controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    align-items: end;
+    gap: var(--sp-3) var(--sp-5);
+    margin-top: var(--sp-3);
+    padding-top: var(--sp-3);
+    border-top: 1px dashed var(--border);
+  }
+  .swl__ctl {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  .swl__lab {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--sp-2);
+  }
+  .swl__ctl .viz-seg {
+    align-self: flex-start;
+  }
+  .swl__lab .viz-mono {
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+  @media (max-width: 560px) {
+    .swl__canvas {
+      height: 150px;
+    }
+    .swl__controls {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

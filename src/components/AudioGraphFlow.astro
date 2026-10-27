@@ -1,0 +1,942 @@
+---
+/**
+ * One buffer followed through the capture graph: microphone, the audio
+ * session that wraps everything, the readiness gate that guards the tap and
+ * the engine start, the engine and its input node, then the split into the
+ * two outputs. A JS step index drives the highlight so the figure can be
+ * paused, stepped and replayed; layout is plain HTML so text stays readable.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'One buffer, followed through the graph. The engine row stays locked until the input node reports a real format; at the tap the same buffer is kept as sound for the server and measured as levels for the screen.',
+} = Astro.props;
+
+const steps = [
+  {
+    tag: 'source',
+    title: 'Microphone',
+    body: 'Air pressure becomes a voltage, and the hardware samples it at a rate it picks itself, commonly 44.1 or 48 kHz.',
+    code: 'rate: the hardware decides',
+  },
+  {
+    tag: 'session',
+    title: 'AVAudioSession',
+    body: 'Ask for play-and-record in measurement mode, which keeps the system’s own voice processing out of the way. Activate the session, and only then read the hardware sample rate; before activation it can be stale.',
+    code: 'setCategory(.playAndRecord, mode: .measurement) → setActive(true) → sampleRate',
+  },
+  {
+    tag: 'gate',
+    title: 'Readiness gate',
+    body: 'Early in a session, or right after a route change, the input node can report a sample rate or channel count of zero, and installing a tap or starting the engine in that state crashes. So check first; if the format is not valid, wait a second and look again, up to three attempts. Here the first read is empty and the second passes.',
+    code: 'inputNode.outputFormat(forBus: 0) · sampleRate > 0, channelCount > 0',
+  },
+  {
+    tag: 'engine',
+    title: 'AVAudioEngine',
+    body: 'A graph of nodes that audio flows through. Ours is deliberately tiny: the only node it needs is inputNode, the microphone.',
+    code: 'audioEngine.inputNode',
+  },
+  {
+    tag: 'tap',
+    title: 'inputNode · installTap',
+    body: 'Remove any old tap first, because a second tap on the same bus raises an exception. Then install one. The 512-frame size is only a hint: iOS delivers about 100 ms per callback, roughly 4,800 frames at 48 kHz.',
+    code: 'removeTap(onBus: 0) → installTap(onBus: 0, bufferSize: 512)',
+  },
+  {
+    tag: 'split',
+    title: 'One buffer, two outputs',
+    body: 'The same tap callback starts two jobs. Keep it: the buffer is written into a small temporary WAV file as 16-bit integers, one channel. Measure it: it is cut into 100 slices, one RMS level each, for the bars on screen.',
+    code: '→ WAV file chunk  ·  → 100 amplitudes',
+  },
+];
+---
+
+<VizFrame
+  fig="02"
+  title="One buffer through the audio graph"
+  caption={caption}
+  class="agf"
+  data-agf
+>
+  <span slot="tools" class="viz-chip" data-chip>step 1 / {steps.length}</span>
+
+  <div class="agf__wrap">
+    <div class="agf__flow">
+      <div class="agf__stage agf__mic viz-panel" data-stage="0">
+        <svg class="agf__icon" viewBox="0 0 40 20" aria-hidden="true">
+          <path d="M1 10 Q4 2 7 10 T13 10 T19 10 Q22 0 25 10 T31 10 Q34 6 37 10"
+          ></path>
+        </svg>
+        <span class="agf__name">Microphone</span>
+        <span class="agf__sub">air → samples</span>
+      </div>
+
+      <div class="agf__link" data-link="1" aria-hidden="true"><i></i></div>
+
+      <div class="agf__session" data-stage="1">
+        <div class="agf__shead">
+          <span class="agf__name">AVAudioSession</span>
+          <span class="viz-chip viz-chip--meta"
+            >.playAndRecord · .measurement</span
+          >
+        </div>
+
+        <div class="agf__gate" data-stage="2" data-gate="idle">
+          <div class="agf__gtop">
+            <span class="viz-label">readiness gate</span>
+            <span class="agf__gstate" data-gate-state>not checked</span>
+          </div>
+          <div class="agf__gcheck viz-mono">
+            sampleRate &gt; 0 · channelCount &gt; 0
+          </div>
+          <div class="agf__tries">
+            <span class="agf__try" data-try="1">
+              <b>1</b><span>0 Hz · 0 ch</span>
+            </span>
+            <span class="agf__wait" aria-hidden="true">
+              <span>wait 1 s</span><i></i>
+            </span>
+            <span class="agf__try" data-try="2">
+              <b>2</b><span>48,000 Hz · 1 ch</span>
+            </span>
+            <span class="agf__try" data-try="3">
+              <b>3</b><span>not needed</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="agf__row">
+          <span class="agf__lock viz-label">locked until the gate passes</span>
+          <div class="agf__stage viz-panel" data-stage="3">
+            <span class="agf__name">AVAudioEngine</span>
+            <span class="agf__sub">graph of nodes</span>
+          </div>
+          <div class="agf__link" data-link="4" aria-hidden="true"><i></i></div>
+          <div class="agf__stage viz-panel" data-stage="4">
+            <span class="agf__name">inputNode</span>
+            <span class="agf__sub">installTap · 512 hint</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="agf__link" data-link="5" aria-hidden="true"><i></i></div>
+
+      <div class="agf__outs" data-stage="5">
+        <div class="agf__out agf__out--sound viz-panel">
+          <span class="agf__name">WAV file chunk</span>
+          <span class="agf__sub">what the server hears</span>
+          <span class="agf__note">Float32 → Int16 · mono</span>
+        </div>
+        <div class="agf__out agf__out--level viz-panel">
+          <span class="agf__name">Amplitudes</span>
+          <span class="agf__sub">what the user sees</span>
+          <span class="agf__note">100 RMS values / buffer</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="agf__bar">
+      <div class="agf__ctrls">
+        <button
+          type="button"
+          class="viz-btn viz-btn--primary"
+          data-play
+          data-playing="1"
+        >
+          <svg viewBox="0 0 12 12" aria-hidden="true" data-icon-pause>
+            <rect x="2" y="1.5" width="3" height="9" rx="0.8"></rect>
+            <rect x="7" y="1.5" width="3" height="9" rx="0.8"></rect>
+          </svg>
+          <svg viewBox="0 0 12 12" aria-hidden="true" data-icon-play>
+            <path d="M3 1.5 L10.5 6 L3 10.5 Z"></path>
+          </svg>
+          <span data-play-label>Pause</span>
+        </button>
+        <button type="button" class="viz-btn" data-next>Step →</button>
+        <button type="button" class="viz-btn" data-replay>↺ Replay</button>
+      </div>
+      <div class="agf__pips" role="group" aria-label="Jump to a stage">
+        {
+          steps.map((s, i) => (
+            <button
+              type="button"
+              class="agf__pip"
+              data-pip={i}
+              aria-label={`Stage ${i + 1}: ${s.title}`}
+            >
+              <i />
+            </button>
+          ))
+        }
+      </div>
+    </div>
+
+    <div class="agf__detail viz-panel" data-detail aria-live="off">
+      {
+        steps.map((s, i) => (
+          <div class="agf__d" data-d={i}>
+            <span class="viz-label">
+              {i + 1} · {s.tag}
+            </span>
+            <span class="agf__dtitle">{s.title}</span>
+            <span class="agf__dbody">{s.body}</span>
+            <span class="agf__dcode viz-mono">{s.code}</span>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initAudioGraphFlow() {
+      const root = document.querySelector('[data-agf]');
+      if (!root || root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const stages = [...root.querySelectorAll('[data-stage]')];
+      const links = [...root.querySelectorAll('[data-link]')];
+      const pips = [...root.querySelectorAll('[data-pip]')];
+      const details = [...root.querySelectorAll('[data-d]')];
+      const detail = root.querySelector('[data-detail]');
+      const gate = root.querySelector('[data-gate]');
+      const gateState = root.querySelector('[data-gate-state]');
+      const chip = root.querySelector('[data-chip]');
+      const playBtn = root.querySelector('[data-play]');
+      const playLabel = root.querySelector('[data-play-label]');
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+
+      const COUNT = details.length;
+      const GATE = 2;
+      const DURATIONS = [1700, 2100, 3600, 1900, 2300, 3400];
+      const GATE_LABELS = {
+        idle: 'not checked',
+        t1: 'attempt 1 · invalid',
+        wait: 'waiting 1 s',
+        pass: 'passed on attempt 2',
+      };
+
+      let step = 0;
+      let playing = !reduce;
+      let started = false;
+      let timers = [];
+
+      const clearTimers = () => {
+        timers.forEach(clearTimeout);
+        timers = [];
+      };
+      const later = (fn, ms) => timers.push(setTimeout(fn, ms));
+
+      function setGate(state) {
+        gate.dataset.gate = state;
+        gateState.textContent = GATE_LABELS[state];
+        root.classList.toggle('is-unlocked', state === 'pass');
+      }
+
+      function render(i, animateGate) {
+        step = i;
+        stages.forEach((el) => {
+          const k = +el.dataset.stage;
+          el.classList.toggle('is-on', k === i);
+          el.classList.toggle('is-done', k < i);
+        });
+        links.forEach((el) => {
+          const k = +el.dataset.link;
+          el.classList.toggle('is-done', k < i);
+          el.classList.remove('is-flow');
+          if (k === i && !reduce) {
+            void el.offsetWidth;
+            el.classList.add('is-flow');
+          } else if (k === i) {
+            el.classList.add('is-done');
+          }
+        });
+        pips.forEach((p, k) => {
+          p.classList.toggle('is-on', k === i);
+          p.classList.toggle('is-done', k < i);
+          p.setAttribute('aria-current', k === i ? 'step' : 'false');
+        });
+        details.forEach((d, k) => d.classList.toggle('is-on', k === i));
+        chip.textContent = `step ${i + 1} / ${COUNT}`;
+
+        if (i < GATE) setGate('idle');
+        else if (i > GATE || !animateGate || reduce) setGate('pass');
+        else {
+          setGate('idle');
+          later(() => setGate('t1'), 350);
+          later(() => setGate('wait'), 800);
+          later(() => setGate('pass'), 1900);
+        }
+      }
+
+      function schedule() {
+        if (!playing || root.dataset.inview === '0') return;
+        later(() => {
+          const next = (step + 1) % COUNT;
+          clearTimers();
+          render(next, true);
+          schedule();
+        }, DURATIONS[step]);
+      }
+
+      function setPlaying(next) {
+        playing = next;
+        playLabel.textContent = next ? 'Pause' : 'Play';
+        playBtn.dataset.playing = next ? '1' : '0';
+        detail.setAttribute('aria-live', next ? 'off' : 'polite');
+        clearTimers();
+        if (next) {
+          render(step, true);
+          schedule();
+        }
+      }
+
+      function goTo(i) {
+        setPlaying(false);
+        render(i, true);
+      }
+
+      playBtn.addEventListener('click', () => setPlaying(!playing));
+      root
+        .querySelector('[data-next]')
+        .addEventListener('click', () => goTo((step + 1) % COUNT));
+      root.querySelector('[data-replay]').addEventListener('click', () => {
+        step = 0;
+        setPlaying(true);
+      });
+      pips.forEach((p, k) => p.addEventListener('click', () => goTo(k)));
+      stages.forEach((el) =>
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          goTo(+el.dataset.stage);
+        }),
+      );
+
+      root.addEventListener('viz:inview', (e) => {
+        if (!e.detail) {
+          clearTimers();
+          return;
+        }
+        if (!started) {
+          started = true;
+          step = 0;
+        }
+        if (playing) {
+          clearTimers();
+          render(step, true);
+          schedule();
+        }
+      });
+
+      if (reduce) {
+        setPlaying(false);
+        render(COUNT - 1, false);
+        root.classList.add('is-static');
+      } else {
+        render(0, false);
+        setPlaying(true);
+        if (root.dataset.inview !== '1') clearTimers();
+        else started = true;
+      }
+    }
+    if (document.readyState !== 'loading') initAudioGraphFlow();
+    else document.addEventListener('DOMContentLoaded', initAudioGraphFlow);
+  })();
+</script>
+
+<style>
+  .agf__wrap {
+    container-type: inline-size;
+  }
+
+  /* Flow -------------------------------------------------------------- */
+  .agf__flow {
+    display: grid;
+    grid-template-columns:
+      minmax(104px, 0.72fr) 24px minmax(0, 2.4fr)
+      24px minmax(0, 1.3fr);
+    align-items: center;
+  }
+
+  .agf__stage,
+  .agf__out {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 12px;
+    min-width: 0;
+    cursor: pointer;
+    transition:
+      border-color 0.25s var(--ease),
+      box-shadow 0.25s var(--ease),
+      opacity 0.25s var(--ease);
+  }
+  .agf__name {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.25;
+    color: var(--fg);
+    overflow-wrap: break-word;
+  }
+  .agf__sub {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--fg-muted);
+  }
+  .agf__note {
+    margin-top: 4px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .agf__stage.is-on {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .agf__stage.is-done {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  }
+
+  .agf__mic {
+    align-items: flex-start;
+  }
+  .agf__icon {
+    width: 40px;
+    height: 20px;
+    margin-bottom: 2px;
+  }
+  .agf__icon path {
+    fill: none;
+    stroke: var(--viz-sound);
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+
+  /* Links: a line with a packet that travels along it ------------------- */
+  .agf__link {
+    position: relative;
+    align-self: center;
+    height: 26px;
+  }
+  .agf__link::before {
+    content: '';
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    top: 50%;
+    border-top: 2px solid var(--viz-line);
+    transform: translateY(-50%);
+    transition: border-color 0.25s var(--ease);
+  }
+  .agf__link::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 50%;
+    width: 0;
+    height: 0;
+    border-left: 6px solid var(--viz-line);
+    border-block: 4px solid transparent;
+    transform: translateY(-50%);
+  }
+  .agf__link.is-done::before,
+  .agf__link.is-flow::before {
+    border-color: color-mix(in srgb, var(--viz-sound) 65%, transparent);
+  }
+  .agf__link.is-done::after,
+  .agf__link.is-flow::after {
+    border-left-color: color-mix(in srgb, var(--viz-sound) 65%, transparent);
+  }
+  .agf__link i {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 10px;
+    height: 10px;
+    margin: -5px 0 0 -5px;
+    border-radius: 50%;
+    background: var(--viz-sound);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--viz-sound) 22%, transparent);
+    opacity: 0;
+  }
+  .agf__link.is-flow i {
+    animation: agf-flow-h 0.75s var(--ease) forwards;
+  }
+  @keyframes agf-flow-h {
+    0% {
+      left: 0;
+      opacity: 0;
+    }
+    15% {
+      opacity: 1;
+    }
+    85% {
+      opacity: 1;
+    }
+    100% {
+      left: 100%;
+      opacity: 0;
+    }
+  }
+  @keyframes agf-flow-v {
+    0% {
+      top: 0;
+      opacity: 0;
+    }
+    15% {
+      opacity: 1;
+    }
+    85% {
+      opacity: 1;
+    }
+    100% {
+      top: 100%;
+      opacity: 0;
+    }
+  }
+
+  /* Session container --------------------------------------------------- */
+  .agf__session {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    min-width: 0;
+    padding: 10px;
+    border: 1.5px dashed var(--viz-line);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--viz-meta) 5%, transparent);
+    cursor: pointer;
+    transition:
+      border-color 0.25s var(--ease),
+      box-shadow 0.25s var(--ease);
+  }
+  .agf__session.is-on {
+    border-style: solid;
+    border-color: var(--viz-meta);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--viz-meta) 18%, transparent);
+  }
+  .agf__session.is-done {
+    border-color: color-mix(in srgb, var(--viz-meta) 50%, var(--border));
+  }
+  .agf__shead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .agf__shead .viz-chip {
+    white-space: normal;
+  }
+
+  /* Readiness gate ------------------------------------------------------ */
+  .agf__gate {
+    display: grid;
+    gap: 6px;
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1.5px dashed var(--border-strong);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition:
+      border-color 0.25s var(--ease),
+      box-shadow 0.25s var(--ease);
+  }
+  .agf__gate.is-on {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  .agf__gtop {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .agf__gstate {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fg-faint);
+    text-align: right;
+  }
+  .agf__gcheck {
+    color: var(--fg);
+    font-size: 11.5px;
+  }
+  .agf__tries {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+  }
+  .agf__try {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px 2px 3px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-faint);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    transition:
+      color 0.2s var(--ease),
+      border-color 0.2s var(--ease),
+      background 0.2s var(--ease);
+  }
+  .agf__try b {
+    display: inline-grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    font-size: 10px;
+    border-radius: 50%;
+    background: var(--bg-subtle);
+    color: var(--fg-muted);
+  }
+  .agf__try span {
+    opacity: 0.35;
+  }
+  .agf__wait {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-faint);
+    opacity: 0.35;
+  }
+  .agf__wait i {
+    position: relative;
+    width: 34px;
+    height: 4px;
+    border-radius: 99px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .agf__wait i::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--viz-level);
+    transform: scaleX(0);
+    transform-origin: left;
+  }
+
+  [data-gate='t1'] [data-try='1'],
+  [data-gate='wait'] [data-try='1'],
+  [data-gate='pass'] [data-try='1'] {
+    color: var(--viz-bad);
+    border-color: color-mix(in srgb, var(--viz-bad) 45%, transparent);
+    background: color-mix(in srgb, var(--viz-bad) 8%, transparent);
+  }
+  [data-gate='t1'] [data-try='1'] span,
+  [data-gate='wait'] [data-try='1'] span,
+  [data-gate='pass'] [data-try='1'] span,
+  [data-gate='pass'] [data-try='2'] span {
+    opacity: 1;
+  }
+  [data-gate='wait'] .agf__wait,
+  [data-gate='pass'] .agf__wait {
+    opacity: 1;
+    color: var(--viz-level);
+  }
+  [data-gate='wait'] .agf__wait i::after {
+    transition: transform 1s linear;
+    transform: scaleX(1);
+  }
+  [data-gate='pass'] .agf__wait i::after {
+    transform: scaleX(1);
+  }
+  [data-gate='pass'] [data-try='2'] {
+    color: var(--accent-text);
+    border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+    background: var(--accent-soft);
+  }
+  [data-gate='pass'] [data-try='2'] b {
+    color: var(--accent-fg);
+    background: var(--accent);
+  }
+  [data-gate='pass'] [data-try='3'] span {
+    opacity: 0.7;
+  }
+  [data-gate='t1'] .agf__gstate,
+  [data-gate='wait'] .agf__gstate {
+    color: var(--viz-bad);
+  }
+  [data-gate='pass'] .agf__gstate {
+    color: var(--accent-text);
+  }
+
+  /* Engine row ---------------------------------------------------------- */
+  .agf__row {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .agf__row > .agf__stage {
+    transition:
+      border-color 0.25s var(--ease),
+      box-shadow 0.25s var(--ease),
+      opacity 0.3s var(--ease);
+  }
+  :global(.agf:not(.is-unlocked)) .agf__row > .agf__stage,
+  :global(.agf:not(.is-unlocked)) .agf__row > .agf__link {
+    opacity: 0.4;
+  }
+  .agf__lock {
+    position: absolute;
+    z-index: 1;
+    left: 50%;
+    top: 0;
+    padding: 1px 8px;
+    font-size: 10px;
+    white-space: nowrap;
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    transition: opacity 0.3s var(--ease);
+  }
+  :global(.agf.is-unlocked) .agf__lock {
+    opacity: 0;
+  }
+
+  /* Outputs ------------------------------------------------------------- */
+  .agf__outs {
+    position: relative;
+    display: grid;
+    gap: var(--sp-2);
+    padding-left: 12px;
+    min-width: 0;
+  }
+  .agf__outs::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 24%;
+    bottom: 24%;
+    width: 10px;
+    border: 2px solid var(--viz-line);
+    border-right: 0;
+    border-radius: 8px 0 0 8px;
+    transition: border-color 0.25s var(--ease);
+  }
+  .agf__outs.is-on::before {
+    border-color: color-mix(in srgb, var(--viz-sound) 65%, transparent);
+  }
+  .agf__out {
+    border-left-width: 3px;
+  }
+  .agf__out--sound {
+    border-left-color: var(--viz-sound);
+  }
+  .agf__out--level {
+    border-left-color: var(--viz-level);
+  }
+  .agf__outs.is-on .agf__out--sound {
+    border-color: var(--viz-sound);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--viz-sound) 20%, transparent);
+  }
+  .agf__outs.is-on .agf__out--level {
+    border-color: var(--viz-level);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--viz-level) 20%, transparent);
+  }
+  .agf__outs.is-on .agf__out--sound .agf__name {
+    color: var(--viz-sound-text);
+  }
+  .agf__outs.is-on .agf__out--level .agf__name {
+    color: var(--viz-level);
+  }
+
+  /* Controls ------------------------------------------------------------ */
+  .agf__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+    margin-top: var(--sp-4);
+  }
+  .agf__ctrls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+  }
+  [data-play][data-playing='1'] [data-icon-play],
+  [data-play]:not([data-playing='1']) [data-icon-pause] {
+    display: none;
+  }
+  .agf__pips {
+    display: flex;
+    gap: 2px;
+  }
+  .agf__pip {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 26px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+  }
+  .agf__pip i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border-strong);
+    transition:
+      background 0.2s var(--ease),
+      transform 0.2s var(--ease);
+  }
+  .agf__pip.is-done i {
+    background: color-mix(in srgb, var(--accent) 50%, var(--border-strong));
+  }
+  .agf__pip.is-on i {
+    background: var(--accent);
+    transform: scale(1.35);
+  }
+  .agf__pip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-radius: 6px;
+  }
+
+  /* Detail panel: every step is stacked in one cell, so the height never jumps. */
+  .agf__detail {
+    display: grid;
+    margin-top: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .agf__d {
+    grid-area: 1 / 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.25s var(--ease);
+  }
+  .agf__d.is-on {
+    visibility: visible;
+    opacity: 1;
+  }
+  .agf__dtitle {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .agf__dbody {
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg-muted);
+  }
+  .agf__dcode {
+    margin-top: 2px;
+    padding: 4px 8px;
+    align-self: flex-start;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    color: var(--fg);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+
+  /* Narrow: the flow turns vertical ------------------------------------ */
+  @container (max-width: 620px) {
+    .agf__flow {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .agf__mic {
+      flex-direction: row;
+      align-items: center;
+      gap: 10px;
+    }
+    .agf__mic .agf__icon {
+      margin: 0;
+    }
+    .agf__link {
+      justify-self: center;
+      width: 26px;
+      height: 24px;
+    }
+    .agf__link::before {
+      left: 50%;
+      right: auto;
+      top: 2px;
+      bottom: 2px;
+      border-top: 0;
+      border-left: 2px solid var(--viz-line);
+      transform: translateX(-50%);
+    }
+    .agf__link::after {
+      right: auto;
+      left: 50%;
+      top: auto;
+      bottom: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 6px solid var(--viz-line);
+      border-bottom: 0;
+      transform: translateX(-50%);
+    }
+    .agf__link.is-done::before,
+    .agf__link.is-flow::before {
+      border-left-color: color-mix(in srgb, var(--viz-sound) 65%, transparent);
+    }
+    .agf__link.is-done::after,
+    .agf__link.is-flow::after {
+      border-left-color: transparent;
+      border-top-color: color-mix(in srgb, var(--viz-sound) 65%, transparent);
+    }
+    .agf__link i {
+      left: 50%;
+      top: 0;
+    }
+    .agf__link.is-flow i {
+      animation-name: agf-flow-v;
+    }
+    .agf__row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .agf__row .agf__link {
+      height: 22px;
+    }
+    .agf__outs {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      padding-left: 0;
+      padding-top: 12px;
+    }
+    .agf__outs::before {
+      left: 25%;
+      right: 25%;
+      top: 0;
+      bottom: auto;
+      width: auto;
+      height: 10px;
+      border: 2px solid var(--viz-line);
+      border-bottom: 0;
+      border-radius: 8px 8px 0 0;
+    }
+  }
+  @container (max-width: 340px) {
+    .agf__outs {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

@@ -1,0 +1,338 @@
+---
+/**
+ * Shared frame for article figures: a numbered header, a body on a faint
+ * instrument grid, and a caption. It also owns the figure colour tokens and
+ * the small set of controls (chips, buttons, segmented pickers) every figure
+ * reuses, so the visuals read as one system.
+ *
+ * Colour meaning, used the same way in every figure:
+ *   --viz-sound  the audio itself (samples, PCM bytes)
+ *   --viz-level  measurements of it (RMS, amplitudes, partial text)
+ *   --viz-meta   description of it (headers, formats, handshakes)
+ *   --viz-net    things on the wire (base64, socket messages)
+ *   --viz-bad    a bug, a lie, or lost data
+ *
+ * Each figure gets `data-inview` toggled while it is on screen, so animated
+ * figures can pause when scrolled away.
+ */
+interface Props {
+  fig: string;
+  title: string;
+  caption?: string;
+  label?: string;
+  class?: string;
+  [key: `data-${string}`]: string | undefined;
+}
+const { fig, title, caption, label, class: className, ...rest } = Astro.props;
+---
+
+<figure
+  class:list={['viz', className]}
+  data-viz
+  data-reveal
+  aria-label={label ?? title}
+  {...rest}
+>
+  <header class="viz__head">
+    <span class="viz__fig">Fig {fig}</span>
+    <span class="viz__title">{title}</span>
+    {
+      Astro.slots.has('tools') && (
+        <div class="viz__tools">
+          <slot name="tools" />
+        </div>
+      )
+    }
+  </header>
+  <div class="viz__body">
+    <slot />
+  </div>
+  {caption && <figcaption class="viz__cap">{caption}</figcaption>}
+</figure>
+
+<script is:inline>
+  (() => {
+    if (window.__vizInview) return;
+    window.__vizInview = true;
+    const bind = () => {
+      const figs = document.querySelectorAll('[data-viz]');
+      if (!('IntersectionObserver' in window)) {
+        figs.forEach((f) => (f.dataset.inview = '1'));
+        return;
+      }
+      const io = new IntersectionObserver(
+        (entries) =>
+          entries.forEach((e) => {
+            const next = e.isIntersecting ? '1' : '0';
+            if (e.target.dataset.inview === next) return;
+            e.target.dataset.inview = next;
+            e.target.dispatchEvent(
+              new CustomEvent('viz:inview', { detail: e.isIntersecting }),
+            );
+          }),
+        { threshold: 0.15 },
+      );
+      figs.forEach((f) => io.observe(f));
+    };
+    if (document.readyState !== 'loading') bind();
+    else document.addEventListener('DOMContentLoaded', bind);
+  })();
+</script>
+
+<style is:global>
+  .viz {
+    --viz-sound: var(--accent);
+    --viz-sound-text: var(--accent-text);
+    --viz-level: #b86e00;
+    --viz-meta: #7a52cc;
+    --viz-net: #2f6bd8;
+    --viz-bad: #d63b41;
+    --viz-grid: color-mix(in srgb, var(--fg) 7%, transparent);
+    --viz-panel: var(--surface);
+    --viz-line: var(--border-strong);
+    --viz-mono: 12px;
+
+    margin-block: var(--sp-7);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+  :root[data-theme='dark'] .viz {
+    --viz-level: #f5a524;
+    --viz-meta: #b197fc;
+    --viz-net: #6ea0ff;
+    --viz-bad: #ff6369;
+  }
+  .viz *,
+  .viz *::before,
+  .viz *::after {
+    box-sizing: border-box;
+  }
+  /* Figures lay out their own lists and hide parts (SVG included) with [hidden];
+     undo the article's prose spacing inside them. */
+  .prose .viz ol,
+  .prose .viz ul,
+  .viz ol,
+  .viz ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .prose .viz li,
+  .viz li {
+    margin: 0;
+  }
+  .viz [hidden],
+  .viz [data-playing='true'] [data-icon-play],
+  .viz [data-playing='false'] [data-icon-pause] {
+    display: none !important;
+  }
+
+  .viz__head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-3);
+    padding: 10px var(--sp-4);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .viz__fig {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent-text);
+    padding: 2px 7px;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 999px;
+    background: var(--accent-soft);
+  }
+  .viz__title {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .viz__tools {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-left: auto;
+  }
+
+  .viz__body {
+    position: relative;
+    padding: var(--sp-4);
+    background-image: radial-gradient(var(--viz-grid) 1px, transparent 1px);
+    background-size: 16px 16px;
+    background-position: -8px -8px;
+  }
+  @media (max-width: 560px) {
+    .viz__body {
+      padding: var(--sp-3);
+    }
+  }
+
+  .viz__cap {
+    padding: var(--sp-3) var(--sp-4) var(--sp-4);
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg-muted);
+    border-top: 1px solid var(--border);
+  }
+
+  /* Shared parts ----------------------------------------------------------- */
+  .viz-panel {
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .viz-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+  .viz-mono {
+    font-family: var(--font-mono);
+    font-size: var(--viz-mono);
+  }
+  .viz-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--c, var(--fg-muted));
+    background: color-mix(in srgb, var(--c, var(--fg-muted)) 12%, transparent);
+    border: 1px solid
+      color-mix(in srgb, var(--c, var(--fg-muted)) 40%, transparent);
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .viz-chip--sound {
+    --c: var(--viz-sound-text);
+  }
+  .viz-chip--level {
+    --c: var(--viz-level);
+  }
+  .viz-chip--meta {
+    --c: var(--viz-meta);
+  }
+  .viz-chip--net {
+    --c: var(--viz-net);
+  }
+  .viz-chip--bad {
+    --c: var(--viz-bad);
+  }
+  .viz-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: none;
+  }
+
+  .viz-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 30px;
+    padding: 4px 12px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--fg);
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    cursor: pointer;
+    transition:
+      background 0.15s var(--ease),
+      border-color 0.15s var(--ease),
+      color 0.15s var(--ease);
+  }
+  .viz-btn:hover {
+    border-color: var(--accent);
+  }
+  .viz-btn:focus-visible,
+  .viz-seg button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .viz-btn--primary {
+    color: var(--accent-fg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .viz-btn svg {
+    width: 12px;
+    height: 12px;
+    fill: currentColor;
+  }
+
+  .viz-seg {
+    display: inline-flex;
+    padding: 2px;
+    gap: 2px;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+  }
+  .viz-seg button {
+    min-height: 26px;
+    padding: 2px 11px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--fg-muted);
+    background: transparent;
+    border: 0;
+    border-radius: 999px;
+    cursor: pointer;
+    transition:
+      background 0.15s var(--ease),
+      color 0.15s var(--ease);
+  }
+  .viz-seg button[aria-pressed='true'] {
+    color: var(--accent-fg);
+    background: var(--accent);
+    font-weight: 600;
+  }
+
+  .viz-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .viz-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .viz-legend i {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    background: var(--c);
+  }
+
+  .viz input[type='range'] {
+    width: 100%;
+    height: 20px;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+</style>

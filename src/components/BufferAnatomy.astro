@@ -1,0 +1,471 @@
+---
+/**
+ * One tap buffer, zoomed in: 512 samples cut into 100 slices of 5, one RMS
+ * value per slice. Computed at build time from a synthetic "spoken syllable"
+ * so every number on screen is exact. Pick a slice to see its arithmetic.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'An illustrative 512-sample buffer: each slice of five samples becomes one bar. On a real iPhone the tap delivers about 4,800 frames (100 ms at 48 kHz), so each of the 100 slices holds about 48 samples; the arithmetic is the same.',
+} = Astro.props;
+
+const N = 512;
+const SEGMENTS = 100;
+const SEG = Math.floor(N / SEGMENTS); // 5, so the last 12 samples are not used
+
+const samples: number[] = [];
+for (let i = 0; i < N; i++) {
+  const t = i / N;
+  const env =
+    Math.exp(-Math.pow((t - 0.42) / 0.2, 2)) * (0.55 + 0.45 * Math.sin(t * 19));
+  const s =
+    0.62 * Math.sin(2 * Math.PI * 9 * t) +
+    0.28 * Math.sin(2 * Math.PI * 23 * t + 0.6) +
+    0.1 * Math.sin(2 * Math.PI * 61 * t + 1.3);
+  samples.push(Math.max(-1, Math.min(1, env * s * 1.15)));
+}
+
+const slices = Array.from({ length: SEGMENTS }, (_, s) => {
+  const vals = samples.slice(s * SEG, s * SEG + SEG);
+  const mean = vals.reduce((a, v) => a + v * v, 0) / SEG;
+  const rms = Math.sqrt(mean);
+  return { vals, mean, rms, level: Math.min(Math.max(1.1 * rms, 0), 1) };
+});
+const peak = slices.reduce(
+  (best, s, i) => (s.rms > slices[best].rms ? i : best),
+  0,
+);
+
+// Waveform in a 0..1000 x -1..1 box, stretched to the panel width.
+const wavePath = samples
+  .map(
+    (v, i) =>
+      `${i === 0 ? 'M' : 'L'}${((i / (N - 1)) * 1000).toFixed(1)} ${(-v * 100).toFixed(1)}`,
+  )
+  .join(' ');
+const usedPct = ((SEG * SEGMENTS) / N) * 100;
+---
+
+<VizFrame
+  fig="03"
+  title="Anatomy of one buffer: 512 floats in, 100 levels out"
+  caption={caption}
+  class="bfa"
+  data-bfa
+>
+  <span slot="tools" class="viz-chip viz-chip--level" data-out-chip
+    >slice {peak + 1} / 100</span
+  >
+
+  <div class="bfa__step">
+    <span class="viz-label"
+      >1 · the raw buffer, 512 Float32 samples in −1…+1</span
+    >
+  </div>
+  <div class="bfa__wave viz-panel">
+    <div class="bfa__lens" data-lens aria-hidden="true"></div>
+    <svg
+      viewBox="0 -110 1000 220"
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      <line x1="0" y1="0" x2="1000" y2="0" class="bfa__axis"></line>
+      <path d={wavePath} class="bfa__path"></path>
+    </svg>
+    <span
+      class="bfa__unused"
+      style={`left:${usedPct}%`}
+      title="12 leftover samples are not used">12 unused</span
+    >
+    <span class="bfa__tick bfa__tick--top">+1</span>
+    <span class="bfa__tick bfa__tick--bot">−1</span>
+  </div>
+
+  <div class="bfa__step">
+    <span class="viz-label"
+      >2 · per slice: square, average, square root (RMS)</span
+    >
+  </div>
+  <div class="bfa__math viz-panel" aria-live="polite">
+    <div class="bfa__row">
+      <span class="bfa__k">samples</span>
+      <span class="bfa__vals" data-out-vals></span>
+    </div>
+    <div class="bfa__row">
+      <span class="bfa__k">squared</span>
+      <span class="bfa__vals" data-out-sq></span>
+    </div>
+    <div class="bfa__row bfa__row--sum">
+      <span class="bfa__k">result</span>
+      <span class="bfa__eq">
+        mean <b data-out-mean></b>
+        <i>→</i> √ <b data-out-rms class="is-level"></b>
+        <i>→</i> ×1.1, clamp to 1 <b data-out-level class="is-level"></b>
+      </span>
+    </div>
+  </div>
+
+  <div class="bfa__step">
+    <span class="viz-label">3 · 100 values published for this buffer</span>
+  </div>
+  <div class="bfa__bars viz-panel">
+    <div class="bfa__barrow" data-bars>
+      {
+        slices.map((s, i) => (
+          <span
+            class="bfa__bar"
+            data-i={i}
+            style={`--h:${Math.max(0.035, s.level).toFixed(4)}`}
+          >
+            <i />
+          </span>
+        ))
+      }
+    </div>
+    <label class="bfa__scrub">
+      <span class="viz-label">slice</span>
+      <input
+        type="range"
+        min="1"
+        max={SEGMENTS}
+        step="1"
+        value={peak + 1}
+        data-scrub
+        aria-label="Choose a slice of the buffer"
+      />
+    </label>
+  </div>
+
+  <script
+    type="application/json"
+    data-slices
+    set:html={JSON.stringify({
+      peak,
+      seg: SEG,
+      n: N,
+      slices: slices.map((s) => [
+        s.vals.map((v) => +v.toFixed(4)),
+        +s.mean.toFixed(5),
+        +s.rms.toFixed(4),
+        +s.level.toFixed(4),
+      ]),
+    })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initBufferAnatomy() {
+      const root = document.querySelector('[data-bfa]');
+      if (!root || root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(root.querySelector('[data-slices]').textContent);
+      const bars = [...root.querySelectorAll('.bfa__bar')];
+      const lens = root.querySelector('[data-lens]');
+      const scrub = root.querySelector('[data-scrub]');
+      const chip = root.querySelector('[data-out-chip]');
+      const outVals = root.querySelector('[data-out-vals]');
+      const outSq = root.querySelector('[data-out-sq]');
+      const outMean = root.querySelector('[data-out-mean]');
+      const outRms = root.querySelector('[data-out-rms]');
+      const outLevel = root.querySelector('[data-out-level]');
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const f = (v, d = 3) => (v < 0 ? '−' : '+') + Math.abs(v).toFixed(d);
+
+      let touched = false;
+
+      function select(i) {
+        const [vals, mean, rms, level] = data.slices[i];
+        bars.forEach((b, k) => b.classList.toggle('is-on', k === i));
+        lens.style.left = `${((i * data.seg) / (data.n - 1)) * 100}%`;
+        lens.style.width = `${(data.seg / (data.n - 1)) * 100}%`;
+        chip.textContent = `slice ${i + 1} / 100`;
+        outVals.innerHTML = vals.map((v) => `<span>${f(v)}</span>`).join('');
+        outSq.innerHTML = vals
+          .map((v) => `<span>${(v * v).toFixed(3)}</span>`)
+          .join('');
+        outMean.textContent = mean.toFixed(4);
+        outRms.textContent = rms.toFixed(3);
+        outLevel.textContent = level.toFixed(3);
+        scrub.value = String(i + 1);
+      }
+
+      function stopIntro() {
+        touched = true;
+        root.classList.add('is-built');
+      }
+      // Pick a slice by clicking a bar or dragging across the row; hovering alone
+      // never changes the selection.
+      const row = root.querySelector('[data-bars]');
+      let dragging = false;
+      function selectAt(clientX) {
+        const box = row.getBoundingClientRect();
+        const p = Math.min(
+          Math.max((clientX - box.left) / box.width, 0),
+          0.9999,
+        );
+        select(Math.floor(p * bars.length));
+      }
+      row.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        dragging = true;
+        row.setPointerCapture(e.pointerId);
+        row.classList.add('is-dragging');
+        stopIntro();
+        selectAt(e.clientX);
+      });
+      row.addEventListener('pointermove', (e) => {
+        if (dragging) selectAt(e.clientX);
+      });
+      const endDrag = () => {
+        dragging = false;
+        row.classList.remove('is-dragging');
+      };
+      row.addEventListener('pointerup', endDrag);
+      row.addEventListener('pointercancel', endDrag);
+      scrub.addEventListener('input', () => {
+        stopIntro();
+        select(+scrub.value - 1);
+      });
+
+      // On first view, sweep the lens across the buffer and build the bars behind it.
+      function intro() {
+        if (reduce || touched) {
+          root.classList.add('is-built');
+          select(data.peak);
+          return;
+        }
+        const t0 = performance.now();
+        const DUR = 2600;
+        const frame = (ts) => {
+          if (touched) return;
+          const p = Math.min(1, (ts - t0) / DUR);
+          const i = Math.min(99, Math.floor(p * 100));
+          bars.forEach((b, k) => b.classList.toggle('is-built', k <= i));
+          select(i);
+          if (p < 1) requestAnimationFrame(frame);
+          else {
+            root.classList.add('is-built');
+            select(data.peak);
+          }
+        };
+        requestAnimationFrame(frame);
+      }
+
+      select(data.peak);
+      root.classList.add('is-armed');
+      const onView = (e) => {
+        if (!e.detail) return;
+        root.removeEventListener('viz:inview', onView);
+        intro();
+      };
+      root.addEventListener('viz:inview', onView);
+      if (root.dataset.inview === '1') intro();
+    }
+    if (document.readyState !== 'loading') initBufferAnatomy();
+    else document.addEventListener('DOMContentLoaded', initBufferAnatomy);
+  })();
+</script>
+
+<style>
+  .bfa__step {
+    margin: var(--sp-4) 0 var(--sp-2);
+  }
+  .bfa__step:first-of-type {
+    margin-top: 0;
+  }
+
+  .bfa__wave {
+    position: relative;
+    height: 132px;
+    overflow: hidden;
+  }
+  .bfa__wave svg {
+    position: absolute;
+    inset: 10px 0;
+    width: 100%;
+    height: calc(100% - 20px);
+  }
+  .bfa__axis {
+    stroke: var(--border-strong);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+  }
+  .bfa__path {
+    fill: none;
+    stroke: var(--viz-sound);
+    stroke-width: 1.6;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+  }
+  .bfa__lens {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    min-width: 3px;
+    background: color-mix(in srgb, var(--viz-level) 18%, transparent);
+    border-inline: 1.5px solid var(--viz-level);
+    transition: left 0.08s linear;
+  }
+  .bfa__unused {
+    position: absolute;
+    top: 6px;
+    bottom: 6px;
+    right: 0;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding-bottom: 2px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    writing-mode: vertical-rl;
+    color: var(--fg-faint);
+    background: repeating-linear-gradient(
+      135deg,
+      transparent 0 4px,
+      color-mix(in srgb, var(--fg) 8%, transparent) 4px 5px
+    );
+    border-left: 1px dashed var(--border-strong);
+  }
+  .bfa__tick {
+    position: absolute;
+    left: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-faint);
+  }
+  .bfa__tick--top {
+    top: 6px;
+  }
+  .bfa__tick--bot {
+    bottom: 6px;
+  }
+
+  .bfa__math {
+    display: grid;
+    gap: 8px;
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .bfa__row {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+  .bfa__k {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+  .bfa__vals {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .bfa__vals :global(span) {
+    padding: 3px 0;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--fg);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .bfa__row--sum {
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+  }
+  .bfa__eq {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--fg-muted);
+    line-height: 1.9;
+  }
+  .bfa__eq b {
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+  .bfa__eq b.is-level {
+    padding: 1px 6px;
+    color: var(--viz-level);
+    background: color-mix(in srgb, var(--viz-level) 12%, transparent);
+    border-radius: 5px;
+  }
+  .bfa__eq i {
+    font-style: normal;
+    color: var(--fg-faint);
+    margin-inline: 2px;
+  }
+  @media (max-width: 560px) {
+    .bfa__row {
+      grid-template-columns: 1fr;
+      gap: 4px;
+    }
+    .bfa__vals :global(span) {
+      font-size: 10.5px;
+    }
+  }
+
+  .bfa__bars {
+    padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  }
+  .bfa__barrow {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    height: 110px;
+    cursor: grab;
+    touch-action: pan-y;
+    user-select: none;
+  }
+  .bfa__barrow.is-dragging {
+    cursor: grabbing;
+  }
+  .bfa__bar {
+    flex: 1 1 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+  }
+  .bfa__bar i {
+    display: block;
+    width: 100%;
+    height: calc(var(--h) * 100%);
+    min-height: 3px;
+    border-radius: 99px;
+    background: var(--viz-level);
+    opacity: 0.55;
+    transform-origin: center;
+    transition:
+      opacity 0.15s var(--ease),
+      transform 0.35s var(--ease);
+  }
+  .bfa__bar:hover i,
+  .bfa__bar.is-on i {
+    opacity: 1;
+  }
+  .bfa__bar.is-on i {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--viz-level) 35%, transparent);
+  }
+  :global(.bfa.is-armed:not(.is-built)) .bfa__bar:not(.is-built) i {
+    transform: scaleY(0);
+  }
+  .bfa__scrub {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-top: var(--sp-2);
+  }
+  .bfa__scrub input {
+    accent-color: var(--viz-level);
+  }
+</style>

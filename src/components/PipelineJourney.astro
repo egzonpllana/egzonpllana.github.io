@@ -1,0 +1,1043 @@
+---
+/**
+ * One 0.8 s chunk followed end to end: from air to final text, with its size
+ * and representation at every stage. Byte counts are computed here for an
+ * exact 0.8 s at 48 kHz mono so every number on screen is consistent; the
+ * sample and header bytes shown are real encodings of a synthetic voice.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Sizes are for exactly 0.8 s of 48 kHz mono audio. A real chunk closes between whole tap buffers, so its length varies by about one 100 ms buffer, and 44 bytes is the common-case WAV header.',
+} = Astro.props;
+
+const SECONDS = 0.8;
+const HW_RATE = 48000;
+const OUT_RATE = 16000;
+const HEADER = 44;
+
+const hwFrames = Math.round(SECONDS * HW_RATE); // 38,400
+const outFrames = Math.round(SECONDS * OUT_RATE); // 12,800
+const floatBytes = hwFrames * 4; // 153,600
+const pcm48 = hwFrames * 2; // 76,800
+const pcm16 = outFrames * 2; // 25,600
+const b64Chars = Math.ceil(pcm16 / 3) * 4; // 34,136
+
+// A quiet synthetic voice, in the 0.01 to 0.1 RMS range of normal speech.
+const T0 = 0.0213;
+const voice = (t: number) =>
+  0.06 * Math.sin(2 * Math.PI * 180 * t) +
+  0.025 * Math.sin(2 * Math.PI * 470 * t + 0.7) +
+  0.012 * Math.sin(2 * Math.PI * 1230 * t + 1.9);
+const toInt16 = (v: number) =>
+  Math.max(-32768, Math.min(32767, Math.round(v * 32767)));
+const le16 = (v: number) => {
+  const u = v & 0xffff;
+  return [u & 0xff, u >> 8];
+};
+const le32 = (v: number) => [
+  v & 0xff,
+  (v >> 8) & 0xff,
+  (v >> 16) & 0xff,
+  (v >>> 24) & 0xff,
+];
+const ascii = (s: string) => [...s].map((c) => c.charCodeAt(0));
+
+function wavHeader(rate: number, dataBytes: number): number[] {
+  return [
+    ...ascii('RIFF'),
+    ...le32(36 + dataBytes),
+    ...ascii('WAVE'),
+    ...ascii('fmt '),
+    ...le32(16),
+    ...le16(1),
+    ...le16(1),
+    ...le32(rate),
+    ...le32(rate * 2),
+    ...le16(2),
+    ...le16(16),
+    ...ascii('data'),
+    ...le32(dataBytes),
+  ];
+}
+
+const SHOWN = 12;
+const floats48 = Array.from({ length: SHOWN }, (_, i) =>
+  voice(T0 + i / HW_RATE),
+);
+const bytes48 = floats48.flatMap((v) => le16(toInt16(v)));
+const all16 = Array.from({ length: 30 }, (_, i) => voice(T0 + i / OUT_RATE));
+const bytes16All = all16.flatMap((v) => le16(toInt16(v))); // 60 bytes, a multiple of 3
+const bytes16 = bytes16All.slice(0, SHOWN * 2);
+const header48 = wavHeader(HW_RATE, pcm48);
+const header16 = wavHeader(OUT_RATE, pcm16);
+const b64Snippet = Buffer.from(bytes16All).toString('base64');
+
+const hex = (b: number) => b.toString(16).toUpperCase().padStart(2, '0');
+const fmt = (n: number) => n.toLocaleString('en-US');
+const sgn = (v: number) => (v < 0 ? '−' : '+') + Math.abs(v).toFixed(4);
+
+const partials = [
+  'can you',
+  'can you look a',
+  'can you book a table',
+  'can you book a table for two',
+];
+const finalText = 'Can you book a table for two tonight?';
+const utf8 = (s: string) => Buffer.byteLength(s, 'utf8');
+
+type Kind = 'sound' | 'level' | 'meta' | 'net' | 'text';
+interface Stage {
+  id: string;
+  title: string;
+  rep: string;
+  kind: Kind;
+  bytes: number;
+  unit: string;
+  math: string;
+  delta: string;
+  what: string;
+}
+
+const stages: Stage[] = [
+  {
+    id: 'air',
+    title: 'Air',
+    rep: 'sound pressure',
+    kind: 'sound',
+    bytes: 0,
+    unit: 'no bytes yet',
+    math: '0.8 s of a voice',
+    delta: '',
+    what: 'A voice pushes and pulls the air in front of the phone; the microphone turns that into a changing voltage.',
+  },
+  {
+    id: 'tap',
+    title: 'Tap buffers',
+    rep: 'Float32 · 48 kHz · mono',
+    kind: 'sound',
+    bytes: floatBytes,
+    unit: 'bytes as floats',
+    math: `${fmt(hwFrames)} frames × 4 B`,
+    delta: 'about 8 buffers',
+    what: 'The tap hands over about 100 ms per callback, roughly 4,800 frames, so about eight buffers fill one chunk. The same buffers are also cut into 100 level values each for the bars.',
+  },
+  {
+    id: 'wav48',
+    title: 'WAV chunk file',
+    rep: 'Int16 · 48 kHz · mono',
+    kind: 'meta',
+    bytes: pcm48 + HEADER,
+    unit: 'bytes',
+    math: `${fmt(hwFrames)} × 2 B + ${HEADER} B header`,
+    delta: '÷ 2, + header',
+    what: 'Each buffer is written into a temporary WAV file as 16-bit integers, at the hardware rate; a timer closes the file at 0.8 s.',
+  },
+  {
+    id: 'wav16',
+    title: 'Resampled',
+    rep: 'Int16 · 16 kHz · mono',
+    kind: 'sound',
+    bytes: pcm16 + HEADER,
+    unit: 'bytes',
+    math: `${fmt(outFrames)} × 2 B + ${HEADER} B header`,
+    delta: '÷ 3 samples',
+    what: 'AVAudioConverter brings the chunk down to the 16 kHz the speech service expects: one sample kept for every three.',
+  },
+  {
+    id: 'pcm',
+    title: 'Header stripped',
+    rep: 'raw PCM · 16-bit little-endian',
+    kind: 'sound',
+    bytes: pcm16,
+    unit: 'bytes',
+    math: `${fmt(outFrames)} × 2 B`,
+    delta: `− ${HEADER} B`,
+    what: 'WAVProcessingService walks to the data chunk and keeps only the sound. The handshake already declared 16,000 Hz, 2 bytes, 1 channel.',
+  },
+  {
+    id: 'b64',
+    title: 'Base64',
+    rep: 'text inside a JSON event',
+    kind: 'net',
+    bytes: b64Chars,
+    unit: 'characters',
+    math: `⌈${fmt(pcm16)} ÷ 3⌉ × 4`,
+    delta: '× 4/3',
+    what: 'The protocol is made of JSON text events, so the bytes are written as base64, about a third larger, inside an audio event.',
+  },
+  {
+    id: 'ws',
+    title: 'WebSocket',
+    rep: 'one JSON text message',
+    kind: 'net',
+    bytes: b64Chars,
+    unit: 'characters + envelope',
+    math: 'same payload, on the wire',
+    delta: 'unchanged',
+    what: 'The event goes out over the open WebSocket while the person is still speaking; text flows back on the same connection.',
+  },
+  {
+    id: 'partial',
+    title: 'Partial text',
+    rep: 'rewritten live',
+    kind: 'level',
+    bytes: utf8(partials[partials.length - 1]),
+    unit: 'bytes of text',
+    math: 'the sentence so far',
+    delta: 'audio becomes words',
+    what: 'Partial text comes back for the sentence so far and is rewritten as the sentence grows, which is what makes words appear live.',
+  },
+  {
+    id: 'final',
+    title: 'Final text',
+    rep: 'the complete sentence',
+    kind: 'text',
+    bytes: utf8(finalText),
+    unit: 'bytes of text',
+    math: 'ends the turn',
+    delta: '',
+    what: 'The final text carries the complete sentence and ends the turn; the microphone then shuts off in a fixed order.',
+  },
+];
+
+const maxBytes = Math.max(...stages.map((s) => s.bytes));
+const chipClass: Record<Kind, string> = {
+  sound: 'viz-chip--sound',
+  level: 'viz-chip--level',
+  meta: 'viz-chip--meta',
+  net: 'viz-chip--net',
+  text: '',
+};
+const kindVar: Record<Kind, string> = {
+  sound: 'var(--viz-sound)',
+  level: 'var(--viz-level)',
+  meta: 'var(--viz-meta)',
+  net: 'var(--viz-net)',
+  text: 'var(--fg-muted)',
+};
+
+// The air wave: two identical periods side by side so it can scroll seamlessly.
+const airPath = Array.from({ length: 401 }, (_, i) => {
+  const x = (i / 400) * 2000;
+  const u = (i / 200) * Math.PI * 2;
+  const y =
+    -(
+      0.62 * Math.sin(u * 3) +
+      0.26 * Math.sin(u * 7 + 0.6) +
+      0.12 * Math.sin(u * 13 + 1.3)
+    ) * 80;
+  return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`;
+}).join(' ');
+
+const json = {
+  stages: stages.map((s) => ({
+    title: s.title,
+    rep: s.rep,
+    cls: chipClass[s.kind],
+    c: kindVar[s.kind],
+    bytes: s.bytes,
+    pct: (s.bytes / maxBytes) * 100,
+    unit: s.unit,
+    math: s.math,
+    delta: s.delta,
+    what: s.what,
+  })),
+  partials,
+};
+const first = stages[0];
+---
+
+<VizFrame
+  fig="10"
+  title="Every byte of one 0.8 s chunk"
+  caption={caption}
+  class="pjr"
+  data-pjr
+>
+  <button
+    slot="tools"
+    type="button"
+    class="viz-btn viz-btn--primary"
+    data-play
+    data-playing="false"
+    aria-pressed="false"
+  >
+    <svg viewBox="0 0 12 12" aria-hidden="true" data-icon-play>
+      <path d="M3 1.5v9l7.5-4.5z"></path>
+    </svg>
+    <svg viewBox="0 0 12 12" aria-hidden="true" data-icon-pause>
+      <path d="M2.5 1.5h2.5v9H2.5zM7 1.5h2.5v9H7z"></path>
+    </svg>
+    <span data-play-label>play</span>
+  </button>
+
+  <div class="pjr__head">
+    <span class="pjr__count viz-mono" data-out-count>01 / 0{stages.length}</span
+    >
+    <span class="pjr__title" data-out-title>{first.title}</span>
+    <span class={`viz-chip ${chipClass[first.kind]}`} data-out-rep
+      >{first.rep}</span
+    >
+  </div>
+
+  <div class="pjr__stage viz-panel" data-stagebox>
+    <div class="pjr__view pjr__view--air" data-view="0">
+      <div class="pjr__air">
+        <svg
+          viewBox="0 -100 2000 200"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <line x1="0" y1="0" x2="2000" y2="0" class="pjr__axis"></line>
+          <path d={airPath} class="pjr__airpath"></path>
+        </svg>
+      </div>
+      <div class="pjr__airlabels viz-mono">
+        <span>pressure rises</span>
+        <span>and falls</span>
+      </div>
+    </div>
+
+    <div class="pjr__view" data-view="1">
+      <div class="pjr__buffers" aria-hidden="true">
+        {
+          Array.from({ length: 8 }, (_, i) => (
+            <span class={i === 0 ? 'is-on' : ''}>~100 ms</span>
+          ))
+        }
+      </div>
+      <div class="pjr__floats">
+        {floats48.map((v) => <span>{sgn(v)}</span>)}
+        <span class="pjr__more">…</span>
+      </div>
+      <span class="viz-chip viz-chip--level pjr__branch">
+        also measured: 100 levels per buffer → bars
+      </span>
+    </div>
+
+    <div class="pjr__view" data-view="2">
+      <div class="pjr__hex">
+        {header48.map((b) => <span class="is-head">{hex(b)}</span>)}
+        {bytes48.map((b) => <span class="is-snd">{hex(b)}</span>)}
+        <span class="pjr__more">…</span>
+      </div>
+      <div class="pjr__key viz-legend">
+        <span><i style="--c: var(--viz-meta)"></i>44 B header · 48,000 Hz</span>
+        <span
+          ><i style="--c: var(--viz-sound)"></i>samples · Int16 little-endian</span
+        >
+      </div>
+    </div>
+
+    <div class="pjr__view" data-view="3">
+      <div class="pjr__hex">
+        {header16.map((b) => <span class="is-head">{hex(b)}</span>)}
+        {bytes16.map((b) => <span class="is-snd">{hex(b)}</span>)}
+        <span class="pjr__more">…</span>
+      </div>
+      <div class="pjr__key viz-legend">
+        <span
+          ><i style="--c: var(--viz-meta)"></i>header now says 16,000 Hz (80 3E
+          00 00)</span
+        >
+        <span><i style="--c: var(--viz-sound)"></i>a third as many samples</span
+        >
+      </div>
+    </div>
+
+    <div class="pjr__view" data-view="4">
+      <div class="pjr__hex">
+        {header16.map((b) => <span class="is-gone">{hex(b)}</span>)}
+        {bytes16.map((b) => <span class="is-snd">{hex(b)}</span>)}
+        <span class="pjr__more">…</span>
+      </div>
+      <div class="pjr__key viz-legend">
+        <span><i style="--c: var(--border-strong)"></i>header dropped</span>
+        <span><i style="--c: var(--viz-sound)"></i>only sound is sent</span>
+      </div>
+    </div>
+
+    <div class="pjr__view" data-view="5">
+      <span class="viz-label"
+        >audio event · JSON text, other fields not shown</span
+      >
+      <code class="pjr__b64">
+        <span class="pjr__brace">{'{ … "'}</span><span class="pjr__payload"
+          >{b64Snippet}</span
+        ><span class="pjr__brace">{'…" }'}</span>
+      </code>
+      <span class="pjr__note viz-mono">
+        every 3 bytes become 4 characters · {fmt(b64Chars)} in all
+      </span>
+    </div>
+
+    <div class="pjr__view" data-view="6">
+      <div class="pjr__wire">
+        <span class="pjr__end viz-mono">app</span>
+        <span class="pjr__track">
+          <span class="viz-chip viz-chip--net pjr__packet"
+            >{fmt(b64Chars)} chars</span
+          >
+        </span>
+        <span class="pjr__end viz-mono">speech service</span>
+      </div>
+      <span class="pjr__note viz-mono">
+        <span class="viz-chip viz-chip--meta">handshake</span>
+        format declared once up front: 16,000&nbsp;Hz · 2&nbsp;B · 1&nbsp;channel
+      </span>
+    </div>
+
+    <div class="pjr__view" data-view="7">
+      <div class="pjr__bubble pjr__bubble--partial">
+        <span class="viz-chip viz-chip--level">partial text</span>
+        <p data-partial>{partials[partials.length - 1]}</p>
+      </div>
+    </div>
+
+    <div class="pjr__view" data-view="8">
+      <div class="pjr__bubble pjr__bubble--final">
+        <span class="viz-chip">final text</span>
+        <p>{finalText}</p>
+      </div>
+    </div>
+  </div>
+
+  <p class="pjr__what" data-out-what aria-live="polite">{first.what}</p>
+
+  <div class="pjr__size">
+    <div class="pjr__sizehead">
+      <span class="viz-label">size</span>
+      <span class="pjr__num viz-mono" data-out-bytes>—</span>
+      <span class="pjr__unit viz-mono" data-out-unit>{first.unit}</span>
+      <span class="pjr__delta viz-chip" data-out-delta hidden></span>
+    </div>
+    <div class="pjr__track2" aria-hidden="true">
+      <span class="pjr__ghost" data-ghost></span>
+      <span class="pjr__fill" data-fill></span>
+    </div>
+    <span class="pjr__math viz-mono" data-out-math>{first.math}</span>
+  </div>
+
+  <div class="pjr__steps" role="group" aria-label="Stages">
+    {
+      stages.map((s, i) => (
+        <button
+          type="button"
+          class="pjr__step"
+          data-step={i}
+          style={`--c:${kindVar[s.kind]};--h:${(s.bytes ? Math.max(3, (s.bytes / maxBytes) * 100) : 0).toFixed(2)}%`}
+          aria-label={`Stage ${i + 1}: ${s.title}`}
+          aria-pressed={i === 0 ? 'true' : 'false'}
+        >
+          <span class="pjr__col">
+            <i />
+          </span>
+          <span class="pjr__steplabel">{i + 1}</span>
+        </button>
+      ))
+    }
+  </div>
+
+  <div class="pjr__controls">
+    <button type="button" class="viz-btn" data-prev aria-label="Previous stage"
+      >←</button
+    >
+    <input
+      type="range"
+      min="0"
+      max={stages.length - 1}
+      step="1"
+      value="0"
+      data-scrub
+      aria-label="Choose a stage of the journey"
+    />
+    <button type="button" class="viz-btn" data-next aria-label="Next stage"
+      >→</button
+    >
+  </div>
+
+  <script
+    type="application/json"
+    data-pjr-data
+    set:html={JSON.stringify(json)}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initPipelineJourney() {
+      const root = document.querySelector('[data-pjr]');
+      if (!root || root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-pjr-data]').textContent,
+      );
+      const stages = data.stages;
+      const last = stages.length - 1;
+      const views = [...root.querySelectorAll('[data-view]')];
+      const steps = [...root.querySelectorAll('[data-step]')];
+      const scrub = root.querySelector('[data-scrub]');
+      const prev = root.querySelector('[data-prev]');
+      const next = root.querySelector('[data-next]');
+      const play = root.querySelector('[data-play]');
+      const playLabel = root.querySelector('[data-play-label]');
+      const fill = root.querySelector('[data-fill]');
+      const ghost = root.querySelector('[data-ghost]');
+      const partialEl = root.querySelector('[data-partial]');
+      const out = {
+        count: root.querySelector('[data-out-count]'),
+        title: root.querySelector('[data-out-title]'),
+        rep: root.querySelector('[data-out-rep]'),
+        what: root.querySelector('[data-out-what]'),
+        bytes: root.querySelector('[data-out-bytes]'),
+        unit: root.querySelector('[data-out-unit]'),
+        delta: root.querySelector('[data-out-delta]'),
+        math: root.querySelector('[data-out-math]'),
+      };
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const STEP_MS = 2600;
+      const pad = (n) => String(n).padStart(2, '0');
+      const fmt = (n) => n.toLocaleString('en-US');
+
+      let current = 0;
+      let playing = false;
+      let timer = 0;
+      let partialTimer = 0;
+
+      // The byte count follows the partial text as it is rewritten.
+      function setPartial(text) {
+        partialEl.textContent = text;
+        if (current === 7)
+          out.bytes.textContent = fmt(new TextEncoder().encode(text).length);
+      }
+
+      function runPartials() {
+        clearInterval(partialTimer);
+        const list = data.partials;
+        if (current !== 7 || reduce) {
+          setPartial(list[list.length - 1]);
+          return;
+        }
+        let k = 0;
+        setPartial(list[0]);
+        partialTimer = setInterval(() => {
+          k += 1;
+          setPartial(list[Math.min(k, list.length - 1)]);
+          if (k >= list.length - 1) clearInterval(partialTimer);
+        }, 600);
+      }
+
+      function go(i) {
+        const before = current;
+        current = Math.max(0, Math.min(last, i));
+        const s = stages[current];
+        const p = current > 0 ? stages[current - 1] : null;
+        views.forEach((v, k) => v.classList.toggle('is-on', k === current));
+        steps.forEach((b, k) => {
+          b.setAttribute('aria-pressed', String(k === current));
+          b.classList.toggle('is-past', k < current);
+        });
+        out.count.textContent = `${pad(current + 1)} / ${pad(stages.length)}`;
+        out.title.textContent = s.title;
+        out.rep.className = `viz-chip ${s.cls}`;
+        out.rep.textContent = s.rep;
+        out.what.textContent = s.what;
+        out.bytes.textContent = s.bytes ? fmt(s.bytes) : '—';
+        out.unit.textContent = s.unit;
+        out.math.textContent = s.math;
+        out.delta.hidden = !s.delta;
+        out.delta.textContent = s.delta;
+        root.style.setProperty('--stage-c', s.c);
+        fill.style.width = `${s.bytes ? Math.max(s.pct, 0.6) : 0}%`;
+        ghost.style.width = `${p && p.bytes ? p.pct : 0}%`;
+        scrub.value = String(current);
+        prev.disabled = current === 0;
+        next.disabled = current === last;
+        if (before !== current || current === 7) runPartials();
+      }
+
+      function setPlaying(on) {
+        playing = on;
+        play.setAttribute('aria-pressed', String(on));
+        playLabel.textContent = on ? 'pause' : 'play';
+        play.dataset.playing = String(on);
+        clearInterval(timer);
+        if (on && root.dataset.inview !== '0') {
+          timer = setInterval(() => {
+            if (current >= last) {
+              setPlaying(false);
+              return;
+            }
+            go(current + 1);
+            if (current >= last) setPlaying(false);
+          }, STEP_MS);
+        }
+      }
+      function user(i) {
+        if (playing) setPlaying(false);
+        go(i);
+      }
+
+      play.addEventListener('click', () => {
+        if (playing) {
+          setPlaying(false);
+          return;
+        }
+        if (current >= last) go(0);
+        setPlaying(true);
+      });
+      prev.addEventListener('click', () => user(current - 1));
+      next.addEventListener('click', () => user(current + 1));
+      scrub.addEventListener('input', () => user(+scrub.value));
+      steps.forEach((b, k) => b.addEventListener('click', () => user(k)));
+
+      const sync = () => {
+        const visible = root.dataset.inview !== '0';
+        root.classList.toggle('is-anim', visible && !reduce);
+        if (playing) setPlaying(true);
+      };
+      root.addEventListener('viz:inview', sync);
+
+      go(0);
+      sync();
+    }
+    if (document.readyState !== 'loading') initPipelineJourney();
+    else document.addEventListener('DOMContentLoaded', initPipelineJourney);
+  })();
+</script>
+
+<style>
+  .pjr__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    margin-bottom: var(--sp-3);
+  }
+  .pjr__count {
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .pjr__title {
+    font-size: var(--fs-base);
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  /* All views share one grid cell, so the panel is as tall as the tallest
+     view and nothing jumps while stepping. */
+  .pjr__stage {
+    display: grid;
+    padding: var(--sp-3) var(--sp-4);
+    overflow: hidden;
+  }
+  .pjr__view {
+    grid-area: 1 / 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: var(--sp-2);
+    min-width: 0;
+    visibility: hidden;
+    opacity: 0;
+    transform: translateY(4px);
+    transition:
+      opacity 0.25s var(--ease),
+      transform 0.25s var(--ease),
+      visibility 0s linear 0.25s;
+  }
+  .pjr__view.is-on {
+    visibility: visible;
+    opacity: 1;
+    transform: none;
+    transition:
+      opacity 0.25s var(--ease),
+      transform 0.25s var(--ease),
+      visibility 0s;
+  }
+
+  .pjr__air {
+    position: relative;
+    height: 96px;
+    overflow: hidden;
+  }
+  .pjr__air svg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 200%;
+    max-width: none;
+    height: 100%;
+  }
+  :global(.pjr.is-anim) .pjr__air svg {
+    animation: pjr-scroll 3.2s linear infinite;
+  }
+  @keyframes pjr-scroll {
+    to {
+      transform: translateX(-50%);
+    }
+  }
+  .pjr__axis {
+    stroke: var(--border-strong);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+  }
+  .pjr__airpath {
+    fill: none;
+    stroke: var(--viz-sound);
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+  }
+  .pjr__airlabels {
+    display: flex;
+    justify-content: space-between;
+    color: var(--fg-faint);
+    font-size: 11px;
+  }
+
+  .pjr__buffers {
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    gap: 3px;
+  }
+  .pjr__buffers span {
+    padding: 4px 0;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-faint);
+    border: 1px solid color-mix(in srgb, var(--viz-sound) 35%, var(--border));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--viz-sound) 6%, transparent);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .pjr__buffers span.is-on {
+    color: var(--viz-sound-text);
+    background: color-mix(in srgb, var(--viz-sound) 18%, transparent);
+    border-color: var(--viz-sound);
+  }
+  .pjr__floats {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(4.6rem, 1fr));
+    gap: 4px;
+  }
+  .pjr__floats span,
+  .pjr__hex span {
+    padding: 2px 0;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    border-radius: 4px;
+  }
+  .pjr__floats span {
+    color: var(--fg);
+    background: color-mix(in srgb, var(--viz-sound) 9%, transparent);
+    border: 1px solid color-mix(in srgb, var(--viz-sound) 30%, var(--border));
+  }
+  .pjr__floats .pjr__more,
+  .pjr__hex .pjr__more {
+    color: var(--fg-faint);
+    background: none;
+    border: 0;
+  }
+  .pjr__branch {
+    align-self: flex-start;
+    white-space: normal;
+  }
+
+  .pjr__hex {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(1.7rem, 1fr));
+    gap: 3px;
+  }
+  .pjr__hex span.is-head {
+    color: var(--viz-meta);
+    background: color-mix(in srgb, var(--viz-meta) 11%, transparent);
+  }
+  .pjr__hex span.is-snd {
+    color: var(--viz-sound-text);
+    background: color-mix(in srgb, var(--viz-sound) 11%, transparent);
+  }
+  .pjr__hex span.is-gone {
+    color: var(--fg-faint);
+    text-decoration: line-through;
+    opacity: 0.45;
+  }
+  .pjr__key {
+    font-size: 10.5px;
+  }
+
+  .pjr__b64 {
+    display: block;
+    padding: var(--sp-2) var(--sp-3);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    word-break: break-all;
+    background: var(--bg-subtle);
+    border: 1px solid color-mix(in srgb, var(--viz-net) 35%, var(--border));
+    border-radius: var(--radius-sm);
+  }
+  .pjr__brace {
+    color: var(--fg-faint);
+  }
+  .pjr__payload {
+    color: var(--viz-net);
+  }
+  .pjr__note {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+
+  .pjr__wire {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-3) 0;
+  }
+  .pjr__end {
+    padding: 6px 10px;
+    text-align: center;
+    font-size: 11.5px;
+    color: var(--fg);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+  }
+  .pjr__track {
+    position: relative;
+    height: 26px;
+    min-width: 0;
+    background: linear-gradient(var(--viz-net), var(--viz-net)) center / 100%
+      1.5px no-repeat;
+    overflow: hidden;
+  }
+  .pjr__packet {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    transform: translateY(-50%);
+    background: var(--surface);
+  }
+  :global(.pjr.is-anim) .pjr__view.is-on .pjr__packet {
+    animation: pjr-send 2.2s var(--ease) infinite;
+  }
+  @keyframes pjr-send {
+    from {
+      left: 0;
+      transform: translate(0, -50%);
+    }
+    to {
+      left: 100%;
+      transform: translate(-100%, -50%);
+    }
+  }
+
+  .pjr__bubble {
+    align-self: flex-start;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    max-width: 100%;
+    padding: var(--sp-3) var(--sp-4);
+    border-radius: var(--radius) var(--radius) var(--radius) 4px;
+  }
+  .pjr__bubble p {
+    margin: 0;
+    font-size: var(--fs-base);
+    line-height: 1.45;
+    color: var(--fg);
+  }
+  .pjr__bubble--partial {
+    border: 1.5px dashed var(--viz-level);
+    background: color-mix(in srgb, var(--viz-level) 8%, transparent);
+  }
+  .pjr__bubble--partial p {
+    color: var(--fg-muted);
+    font-style: italic;
+  }
+  .pjr__bubble--final {
+    border: 1px solid var(--border-strong);
+    background: var(--bg-subtle);
+  }
+
+  .pjr__what {
+    margin: var(--sp-3) 0 0;
+    min-height: 3em;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg);
+  }
+
+  .pjr__size {
+    margin-top: var(--sp-3);
+  }
+  .pjr__sizehead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+    margin-bottom: 6px;
+  }
+  .pjr__num {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--stage-c, var(--fg));
+    font-variant-numeric: tabular-nums;
+  }
+  .pjr__unit,
+  .pjr__math {
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .pjr__delta {
+    align-self: center;
+  }
+  .pjr__track2 {
+    position: relative;
+    height: 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .pjr__ghost,
+  .pjr__fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    border-radius: 999px;
+    transition: width 0.45s var(--ease);
+  }
+  .pjr__ghost {
+    border: 1px dashed var(--fg-faint);
+    opacity: 0.6;
+  }
+  .pjr__ghost[style*='width: 0%'] {
+    border: 0;
+  }
+  .pjr__fill {
+    background: var(--stage-c, var(--fg-muted));
+  }
+  .pjr__math {
+    display: block;
+    margin-top: 4px;
+  }
+
+  .pjr__steps {
+    display: grid;
+    grid-template-columns: repeat(9, minmax(0, 1fr));
+    gap: 4px;
+    margin-top: var(--sp-4);
+  }
+  .pjr__step {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    padding: 4px 3px 3px;
+    font: inherit;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: border-color 0.15s var(--ease);
+  }
+  .pjr__step:hover {
+    border-color: var(--border-strong);
+  }
+  .pjr__step:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .pjr__col {
+    display: flex;
+    align-items: flex-end;
+    height: 38px;
+  }
+  .pjr__col i {
+    display: block;
+    width: 100%;
+    height: var(--h);
+    border-radius: 3px;
+    background: var(--c);
+    opacity: 0.35;
+  }
+  .pjr__step.is-past .pjr__col i {
+    opacity: 0.6;
+  }
+  .pjr__step[aria-pressed='true'] {
+    border-color: var(--c);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--c) 25%, transparent);
+  }
+  .pjr__step[aria-pressed='true'] .pjr__col i {
+    opacity: 1;
+  }
+  .pjr__steplabel {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-align: center;
+    color: var(--fg-faint);
+  }
+
+  .pjr__controls {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-top: var(--sp-3);
+  }
+  .pjr__controls .viz-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  @media (max-width: 560px) {
+    .pjr__stage {
+      padding: var(--sp-3);
+    }
+    .pjr__hex {
+      grid-template-columns: repeat(auto-fill, minmax(1.55rem, 1fr));
+    }
+    .pjr__hex span,
+    .pjr__floats span {
+      font-size: 10.5px;
+    }
+    .pjr__buffers span {
+      font-size: 0;
+      height: 14px;
+    }
+    .pjr__steps {
+      gap: 3px;
+    }
+    .pjr__end {
+      max-width: 5.5rem;
+      padding: 4px 8px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pjr__view,
+    .pjr__view.is-on,
+    .pjr__ghost,
+    .pjr__fill {
+      transition: none;
+    }
+  }
+</style>

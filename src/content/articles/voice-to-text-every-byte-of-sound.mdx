@@ -1,0 +1,421 @@
+---
+title: 'From Sound Waves to Words: Building Speech-to-Text, Byte by Byte'
+description: 'How a spoken sentence becomes text, live, inside an iPhone app: what sound is, how the microphone is tapped, how loudness is measured, why audio is cut into chunks, and the byte-level bugs that only show up on real devices.'
+date: 2026-10-25
+tags:
+  [
+    'iOS',
+    'Swift',
+    'AVFoundation',
+    'AVAudioEngine',
+    'Accelerate',
+    'Speech-to-Text',
+    'Audio',
+    'WebSocket',
+    'Architecture',
+  ]
+draft: false
+heroImage: '../../assets/covers/voice-to-text-every-byte-of-sound.png'
+---
+
+import SoundWaveLab from '../../components/SoundWaveLab.astro';
+import AudioGraphFlow from '../../components/AudioGraphFlow.astro';
+import BufferAnatomy from '../../components/BufferAnatomy.astro';
+import VoiceWaves from '../../components/VoiceWaves.astro';
+import ChunkTimeline from '../../components/ChunkTimeline.astro';
+import WavByteMap from '../../components/WavByteMap.astro';
+import SttSequence from '../../components/SttSequence.astro';
+import ResampleConverter from '../../components/ResampleConverter.astro';
+import SdkMap from '../../components/SdkMap.astro';
+import PipelineJourney from '../../components/PipelineJourney.astro';
+import PhaseRail from '../../components/PhaseRail.astro';
+import StatTiles from '../../components/StatTiles.astro';
+
+Someone taps a microphone button in a chat and says a sentence. A moment later, their words appear on screen, rewriting themselves as the sentence goes on, while a ribbon of waves next to them rises and falls with their voice, the way it does in a voice message.
+
+It looks like one feature. It is not. Between the air moving in front of the phone and the text appearing on screen, the sound is measured, sliced, converted, repackaged, counted, compressed into text, shipped over a network and reassembled. At every one of those steps there is a number that has to be exactly right, and a way for it to be silently wrong.
+
+**This is live speech-to-text, not a recording that gets transcribed later.** Nobody records a voice note, saves a file and uploads it for analysis afterwards. The sound is processed while the person is still speaking: it is sliced into short pieces of under a second, each piece is sent the moment it is ready, and the words come back and rewrite themselves while the sentence is still going on. Small temporary audio files do exist inside the pipeline, but they are throwaway slices of a stream, not a finished recording that anyone ever checks or keeps.
+
+This is the story of how we built that pipeline: first inside a chat app, later extracted into a dedicated Swift package. It covers what sound actually is, which Apple APIs we used to reach it, how every byte is treated on its way out, and the bugs that taught us the most. You do not need to know audio. Every section starts in plain words and then goes down to the code.
+
+<StatTiles
+  tiles={[
+    { label: 'sample rate sent', value: 16000, suffix: ' Hz', sub: 'what the speech service expects' },
+    { label: 'buffer size requested', value: 512, sub: 'frames; iOS delivers ~100 ms anyway' },
+    { label: 'slices per buffer', value: 100, sub: 'level values per callback' },
+    { label: 'WAV header', value: 44, suffix: ' B', sub: 'stripped before sending' },
+  ]}
+/>
+
+---
+
+## First, what is sound?
+
+Sound is air being pushed and pulled. A voice makes the air pressure near your phone rise and fall, hundreds of times per second. The microphone turns that rise and fall into a changing voltage.
+
+Two properties of that wiggle matter for everything that follows:
+
+- **Amplitude** is how far the pressure swings. Big swing, loud sound. A smoothed measure of this is what the live bars show.
+- **Frequency** is how fast it swings. Fast swing, high pitch. Human speech spans roughly 100 Hz up to several thousand swings per second (Hz), with most of what makes words intelligible between about 300 and 3,400 Hz.
+
+A computer cannot store a smooth, continuous wave. It stores **samples**: the height of the wave, measured at fixed instants. Measure often enough and you can redraw the wave faithfully. Measure too rarely and a fast wave gets mistaken for a slower one. Try it:
+
+<SoundWaveLab />
+
+Two things to notice. First, the rule of thumb the lab shows: you can only keep pitches **below half** the sample rate, and anything above that must be filtered out before sampling or it folds back as a false, lower pitch. At 16 kHz the limit is 8,000 Hz, high enough for nearly all of what makes speech intelligible, which is why speech services ask for 16 kHz and not the 48 kHz a phone microphone often runs at. Second, the data cost: every sample here is 2 bytes, so one second of 16 kHz mono (one microphone channel, no stereo) is exactly 32,000 bytes.
+
+> **In plain words:** the phone takes tens of thousands of tiny loudness measurements every second. Everything in this article is about what we do with that stream of numbers.
+
+---
+
+## Reaching the microphone: a session, an engine, a tap
+
+iOS does not hand an app the microphone. You negotiate for it in three layers, and our SDK owns each one.
+
+**1. The audio session** says what the app wants to do with audio. We ask for play-and-record with Bluetooth headset microphones allowed, activate the session, and only then read back the hardware sample rate the system actually gave us. Before activation that value can be stale.
+
+```swift
+try audioSession.setCategory(
+    .playAndRecord,
+    mode: .measurement,
+    options: [.allowBluetoothHFP, .defaultToSpeaker]
+)
+try audioSession.setActive(true)
+hardwareSampleRate = audioSession.sampleRate
+```
+
+This is the corrected version, and every line of it has a story. Our first version used the `spokenAudio` mode, which sounds right but is meant for apps that _play_ speech, like podcasts. For recognition, `measurement` keeps the system's own voice processing out of the way. `.allowBluetooth` has been renamed `.allowBluetoothHFP` (the hands-free profile, the one that carries a headset microphone), and `.allowBluetoothA2DP` only affects output, so it does nothing for capture. `.defaultToSpeaker` stops any sound the app plays from going to the earpiece.
+
+**2. The audio engine** ([`AVAudioEngine`](https://developer.apple.com/documentation/avfaudio/avaudioengine)) is a graph of nodes. Audio flows from node to node. Ours is deliberately tiny, because the only node we need is the one that represents the microphone: `inputNode`.
+
+**3. The tap** ([`installTap`](https://developer.apple.com/documentation/avfaudio/avaudionode/1387122-installtap)) is a listener bolted onto a node. Every time the node has a batch of fresh audio, the tap closure is called with a buffer. A tap does not change the sound; it lets you read it.
+
+<AudioGraphFlow />
+
+```swift
+let format = inputNode.outputFormat(forBus: 0)
+inputNode.removeTap(onBus: 0)
+inputNode.installTap(onBus: 0, bufferSize: 512, format: format) { buffer, _ in
+    // one batch of samples, arriving continuously while we record
+}
+```
+
+The tap sits on the node's output bus, so its format comes from `outputFormat(forBus:)`. (As of iOS 27, this closure-only `installTap` is deprecated in favour of a variant that reports errors instead of raising.)
+
+Two defensive details were learned the hard way:
+
+- **Remove before you install.** A node has numbered outputs called buses, and installing a second tap on a bus that already has one raises an exception and crashes ("Only one tap may be installed on any bus"). We always remove first.
+- **Do not trust the node until it reports a real format.** Early in a session, or right after an audio route change, the input node can briefly report a format with a sample rate or channel count of zero. Installing a tap or starting the engine in that state crashes the app. So before either we check the format, and if it is not valid we wait a second and look again, up to three attempts:
+
+```swift
+// simplified
+func waitForValidInputFormat(attempts: Int = 3) async throws -> Bool {
+    for attempt in 1...attempts {
+        let format = audioEngine.inputNode.outputFormat(forBus: 0)
+        if format.sampleRate > 0, format.channelCount > 0 { return true }
+        if attempt < attempts { try await Task.sleep(for: .seconds(1)) }
+    }
+    return false
+}
+```
+
+> **In plain words:** ask iOS politely for the microphone, build the smallest possible pipe, and refuse to switch it on until the pipe has a real shape.
+
+---
+
+## Anatomy of one buffer
+
+Each time the tap fires, it hands us an [`AVAudioPCMBuffer`](https://developer.apple.com/documentation/avfaudio/avaudiopcmbuffer). Inside it is a row of 32-bit floating-point numbers, one per frame for each channel (with one microphone channel, a frame is a single sample), nominally between -1.0 and +1.0. Zero is silence. ±1.0 is full scale; values can briefly exceed it and get clipped when converted to 16-bit. We request a buffer size of 512 frames, but that is only a hint, and it is below the 100 to 400 ms range Apple documents for taps. In practice iOS delivers about 100 ms per callback, roughly 4,800 frames at 48 kHz, which is why the code always reads the real length from the buffer instead of assuming 512.
+
+Everything we do next happens to that row of numbers, in two ways:
+
+1. **Keep it.** The buffer is written into a small temporary WAV file, converted on the way to 16-bit integers, one channel.
+2. **Measure it.** The same buffer is reduced to a row of level values for the on-screen bars.
+
+Both are kicked off from the same tap callback. The tap is not called on the real-time render thread, so it could do this work directly; instead the callback hands each buffer to its own small asynchronous task. That is simple and it mostly works, but unstructured tasks carry no ordering guarantee, so two buffers can reach the file out of sequence or race the timer that rotates files. It is the first thing we would revisit (see the end).
+
+---
+
+## Making loudness visible
+
+The waves that dance while you talk are the part users notice and the part with the most history.
+
+### Version one: one number, on a timer
+
+The first version computed one level value per buffer and stored it. A timer inside the recorder fired every 80 milliseconds and published the latest value to the screen, roughly the length of a single speech sound.
+
+It worked, but it mixed two jobs: the recorder was both measuring the sound and deciding how fast the screen should move. And because the timer and the audio callbacks ran at different paces, a tick could publish the same value twice or skip a buffer entirely.
+
+### Version two: the recorder measures, the view paces
+
+We took the timer out of the recorder. Now each buffer is cut into 100 equal slices, each slice gets its own level value, and the recorder publishes the whole batch of 100 every time a buffer arrives. It no longer has any opinion about the screen.
+
+<BufferAnatomy />
+
+The view picks its own pace. Every 0.2 seconds it takes one value from the latest batch, scales it into the range 0 to 1, and appends it as a new bar on the right while the oldest bar slides off the left. That is the scrolling ribbon you see in a voice-message bubble: five bars per second, so a screen-wide ribbon shows the last ten seconds or so of the voice. Press the button and speak, if your browser allows the microphone; the demo runs entirely on your device and nothing is recorded or sent anywhere. Without a microphone it plays a simulated voice.
+
+<VoiceWaves />
+
+The level of a slice is its **RMS** (root mean square): square every sample, average the squares, take the square root. Squaring removes the sign, since a swing downward is as loud as a swing upward. Apple's Accelerate framework does this in one vectorised call, [`vDSP_rmsqv`](https://developer.apple.com/documentation/accelerate/1450655-vdsp_rmsqv), which is much faster than a hand-written Swift loop over raw floats.
+
+```swift
+let segmentSize = frameLength / numberOfSegments
+guard segmentSize > 0 else { return }
+
+for segmentIndex in 0..<numberOfSegments {
+    let segment = bufferData.advanced(by: segmentIndex * segmentSize)
+    var rms: Float = 0
+    vDSP_rmsqv(segment, 1, &rms, vDSP_Length(segmentSize))
+
+    let decibels = 20 * log10(rms)
+    let amplitude = 1.1 * pow(10, decibels / 20)
+    let bar = min(max(amplitude, 0), 1) * 10
+    amplitudeValues.append(Double(bar))
+}
+```
+
+A detail worth being honest about: converting to decibels and straight back with `pow(10, dB / 20)` cancels out mathematically, so the bar height is simply the slice's RMS scaled by 1.1 and clamped. The decibel step is a hook for a future non-linear scale; today it is a round trip. We kept it because decibels are the natural unit to reason about loudness in, and because it costs almost nothing. A real dB scale would also help: normal speech has an RMS of roughly 0.01 to 0.1, so on a linear scale most bars stay small.
+
+Two more honest notes. The guard matters, because a buffer shorter than 100 frames would give a slice size of zero, and the resulting NaN would flow straight into the UI. And with roughly 4,800 frames per callback, each slice covers about 1 ms, shorter than a single cycle of a low voice. A slice that short follows the shape of the wave more than its loudness, which is why the bars flicker; a 10 to 30 ms window would track how loud the voice actually sounds.
+
+> **In plain words:** to draw a level bar, take a tiny slice of the wave, measure how hard it is swinging on average, and draw that. The recorder does it a hundred times per buffer; the view picks one value five times a second and scrolls.
+
+---
+
+## Cutting a river into cups
+
+We do not wait until the user stops talking and send one big recording. That would make the person sit through silence before seeing a single word. Instead the recorder works like a river filling cups: it writes into one small WAV file, and when the cup is full, closes it, hands it to the rest of the app, and opens the next one.
+
+<ChunkTimeline />
+
+How full is full? A timer, built on Combine's `Timer.publish`, closes the current file at a fixed interval. The interval can be given in seconds or in bytes, but bytes are not actually counted: the SDK converts them to a time using a fixed ratio, where the default of 100,000 bytes means a 0.8 second timer. That ratio, 125,000 bytes per second, matches no real format (48 kHz mono 16-bit is 96,000). So the real size of a chunk depends on the format the microphone delivers; at 48 kHz mono 16-bit it is about 77 KB, and after resampling to 16 kHz it shrinks to about 25 KB. And since a chunk can only close between whole tap buffers, its actual length varies by about one buffer, around 100 ms:
+
+```swift
+public enum AudioChunkSplitOption {
+    case bySeconds(seconds: TimeInterval)
+    case byData(amount: Int)
+}
+```
+
+Each finished chunk is announced through a Combine publisher, `newAudioChunkPublisher`. The recorder knows nothing about networks. It records and publishes. Whoever subscribes decides what to do with the files.
+
+---
+
+## Speaking the server's language
+
+The microphone's native rate is whatever the hardware gives, commonly 44.1 or 48 kHz. The speech service wants 16 kHz, 16-bit, one channel. Between the two sits a resampling service with two strategies:
+
+- [`AVAudioConverter`](https://developer.apple.com/documentation/avfaudio/avaudioconverter) for any ratio. It handles awkward conversions such as 44,100 to 16,000 with proper filtering, and it is the one the app uses.
+- A [`vDSP_desamp`](https://developer.apple.com/documentation/accelerate/1450349-vdsp_desamp) path for whole-number decimation ratios (48 to 16 kHz works, 44.1 to 16 kHz does not). `vDSP_desamp` filters and then keeps every Nth sample; ours uses equal-weight (box) coefficients, which is cheap but a weak anti-aliasing filter. It can only go down. It exists in the SDK but the app does not use it.
+
+```swift
+let converter = AVAudioConverter(from: buffer.format, to: outputFormat)
+var supplied = false
+var error: NSError?
+let status = converter.convert(to: outputBuffer, error: &error) { _, inputStatus in
+    guard !supplied else {
+        inputStatus.pointee = .endOfStream // flush the filter tail; this chunk is complete
+        return nil
+    }
+    supplied = true
+    inputStatus.pointee = .haveData
+    return buffer
+}
+guard status != .error, error == nil else { throw ResamplingError.conversionFailed(error) }
+```
+
+The input block is the classic trap with this API. The converter calls it whenever it wants more audio. If the block answers `.haveData` with the same buffer every time, the converter takes it at its word and feeds the start of the chunk in again, so audio is duplicated at the end of the output. Hand the buffer over once, then report `.endOfStream`.
+
+<ResampleConverter />
+
+Why not record at 16 kHz in the first place? Because the input node's format is the hardware's to decide, not ours (a Bluetooth headset can even run at a much lower rate than the phone's own microphone). We take what the microphone offers and convert afterwards, which also means the temporary chunk files are not 16 kHz yet. That keeps recording robust across devices, headsets and Bluetooth routes, and puts the one risky transformation in a single, testable place.
+
+---
+
+## The 44-byte mystery
+
+This is the bug we like telling most, because it is invisible if you only look at code and obvious the moment you look at bytes.
+
+A WAV file is a short header followed by raw sound. In the common case the header is 44 bytes that say "this is a WAV, it is mono, 16,000 samples per second, 16 bits each, and the sound is this many bytes long." After it come the samples.
+
+<WavByteMap />
+
+Every chunk we record is its own complete WAV file, with its own header. That is fine for a file. But our chunks are not independent files: they are consecutive slices of one continuous stream. While each one went out with its own header, the speech service produced audible clicks. Removing the headers made the clicks go away, so our working explanation is that the header bytes were being decoded as if they were sound at every chunk boundary. One caveat: each chunk is also resampled on its own, so the converter's filter starts fresh at every boundary. That leaves a much smaller seam than 44 bytes of noise, but it is a seam, and one more reason to stream instead of filing (see the end).
+
+The fix was a small byte-level service that strips the header and sends only the sound. The format is not lost, because the connection handshake already declares it up front: 16,000 Hz, 2 bytes per sample, 1 channel.
+
+The original intent was to keep the header on the very first chunk only. In practice the "is this the first chunk?" check runs after the chunk has already been added to the recorded list, so it never sees an empty list and every chunk, the first included, goes out header-free. Nothing breaks, because the handshake carries the format, but it is a good reminder to test what the code does, not what you meant it to do.
+
+Stripping a header sounds like "drop the first 44 bytes". It is not quite that, because a WAV header can legally carry extra chunks (Apple's own file writer, for one, can pad the header with `JUNK` and `FLLR` chunks, pushing the sound to byte 4,096). So the parser walks the file the way the format intends:
+
+```swift
+let data = Data(wavData) // re-base so indices start at 0
+guard data.count >= 12,
+      data.prefix(4) == Data("RIFF".utf8),
+      data[8..<12] == Data("WAVE".utf8)
+else { return nil }
+
+func readUInt32(at offset: Int) -> Int {
+    Int(UInt32(littleEndian: data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self) }))
+}
+
+var offset = 12
+while offset + 8 <= data.count {
+    let chunkID = data[offset..<offset + 4]
+    let chunkSize = readUInt32(at: offset + 4)
+    let start = offset + 8
+
+    if chunkID == Data("data".utf8) {
+        let end = min(start + chunkSize, data.count)
+        return data.subdata(in: start..<(end - (end - start) % 2)) // whole 16-bit samples only
+    }
+    offset = start + chunkSize + (chunkSize & 1) // chunks are padded to an even length
+}
+return nil
+```
+
+Check the magic words, then hop from chunk to chunk, reading each one's four-letter name and its little-endian size, until you land on `data`. Take exactly that many bytes, and never an odd count, because one stray byte would shift every 16-bit sample after it in the stream. A header-only chunk correctly comes back as empty data rather than a failure. If anything else fails, fall back to sending the original chunk, because slightly noisy audio beats lost audio.
+
+> **In plain words:** a sound file starts with a label describing itself. The server was told what the sound is when the conversation began, so the label is dead weight, and worse, it caused clicks.
+
+---
+
+## Over the wire
+
+Now each chunk is 16 kHz, header removed, ready to travel. The transport is a WebSocket, a connection that stays open so audio can flow one way while text flows back the other, in real time.
+
+The speech service's protocol is made of JSON text events, so the binary audio is wrapped as base64 (a way of writing any bytes as plain text, at about a third more size) inside a small JSON event. A WebSocket can carry binary frames too, and a protocol that accepted them would skip that overhead. The handshake that opens the conversation, and every message after it, follows a strict order:
+
+<SttSequence />
+
+Three design decisions in that diagram carry most of the weight:
+
+- **The socket gates the microphone.** We do not start recording until the server has confirmed it is ready. There is no point capturing audio that has nowhere to go.
+- **The handshake states the format.** The app's opening message declares 16,000 Hz, 2 bytes per sample, 1 channel. The server never has to guess what the bytes mean, which is exactly why the WAV header is not needed.
+- **Text arrives in two flavours.** A **partial text** message carries text that is rewritten as the sentence grows, which is what makes words appear live. A **final text** message carries the complete sentence and ends the turn.
+
+---
+
+## The bugs that taught us the most
+
+None of these are exotic. All of them only appear on a real device with real timing.
+
+<PhaseRail
+  phases={[
+    {
+      title: 'The first word never arrived',
+      body: 'Users would start talking the instant the interface said it was listening, and the first word was missing from the text. We first added a short pause after starting the recorder, then moved it to before the start call. That helped, but not for the reason we first thought: a pause before the engine starts cannot warm the engine. What it does is give the freshly activated audio session and its route a moment to settle. A fixed delay is still a guess, so the robust fix is to flip the interface to "listening" only when the first tap buffer actually arrives.',
+      params: [
+        { name: 'likely cause', value: 'session and route settling' },
+        { name: 'fix', value: '500 ms wait; better: first buffer' },
+      ],
+    },
+    {
+      title: 'Stopping in the wrong order',
+      body: 'Stopping a session touches three things: the on-screen state, the audio engine and the server. The order we first shipped let those steps interleave badly. The fix is boring and precise: reset the state first, then stop the engine, then tell the server. And when the final text arrives, we start the stop before forwarding the text, so the two cannot overlap in the wrong order.',
+      params: [
+        { name: 'order', value: 'state, engine, server' },
+      ],
+    },
+    {
+      title: 'A reconnect that restarted recording',
+      body: 'When the connection dropped and came back, the reconnect handler re-ran the handshake, which could start recording again even if the user had already stopped. One guard fixed it: the handshake only runs if a recording session is still active.',
+      params: [
+        { name: 'guard', value: 'is still recording' },
+      ],
+    },
+    {
+      title: 'Clicks between chunks',
+      body: 'The 44-byte header problem described above. The lesson is general: a protocol that carries a continuous stream should be fed a continuous stream, not a series of complete files.',
+      params: [
+        { name: 'likely cause', value: 'header on every chunk' },
+        { name: 'fix', value: 'send raw sound only' },
+      ],
+    },
+    {
+      title: 'Empty messages',
+      body: 'A speech result with no text could still be forwarded onward as an empty message. We now refuse to send an empty string to the backend. (Text that is only spaces still gets through, which is the kind of edge you find the second time round.)',
+      params: [
+        { name: 'rule', value: 'never send empty text' },
+      ],
+    },
+  ]}
+/>
+
+---
+
+## One app, then one SDK
+
+The whole thing started inside the chat app itself, as ordinary view-model code. As it grew, three things became clear:
+
+- Audio capture, resampling and WAV handling are not chat features. They are a reusable capability.
+- They needed their own tests and their own release cadence.
+- The view model had started to know far too much about audio.
+
+So the voice code moved into a dedicated Swift package. The app is now a client of it. The package exposes small protocol-based services that the app can compose or replace:
+
+- **`AudioEngineRecordingService`** records, chunks and measures levels, and publishes chunks, amplitudes and duration as Combine streams.
+- **`AudioResamplingService`** converts any recorded file to the sample rate a service expects.
+- **`WAVProcessingService`** takes the header off a chunk.
+- **`AudioSessionManager`** and **`AudioFileManager`** wrap the system session and file handling behind protocols, so the recorder can be tested without a microphone.
+
+<SdkMap />
+
+From the app's side, using it is a handful of subscriptions: one for new chunks, one for amplitudes. (A publisher here is just a stream of values you can subscribe to, from Apple's Combine framework.)
+
+---
+
+## What it added up to
+
+A person speaks, and while they are still talking:
+
+- Their voice is **sampled by the hardware**, tapped through one input node, and used two ways: written into a small file for the server, and reduced to level values for the screen.
+- It is **cut into small files** continuously, so recognition starts while they are still talking.
+- Each file is **resampled to 16 kHz**, stripped to raw sound, **base64 encoded**, and sent over an open WebSocket.
+- Partial text streams back and rewrites itself; the final text closes the turn and the microphone shuts off in a fixed, safe order.
+
+<PipelineJourney />
+
+The result is a speech feature that the rest of the app treats as three Combine publishers and two method calls. All the sound is behind that line.
+
+---
+
+## What we would do differently
+
+Honest engineering notes, in the order we would tackle them:
+
+- **Stream, don't file.** Resample inside the tap with one long-lived converter and send raw 16 kHz PCM every few hundred milliseconds. The headers, the temporary files, the bytes-to-seconds timer and the per-chunk filter seams all disappear at once.
+- **Do not spawn a task per audio buffer.** Unstructured tasks do not run in order, so buffers can reach the file out of sequence or race the timer that rotates files. The tap is not the real-time render thread, so write from it directly, or hand buffers to one serial writer.
+- **Flush the last chunk before saying goodbye.** "End of audio" must only go out after the final, partial chunk has been closed, resampled and sent, or the last words of a sentence can be lost.
+- **Count real bytes, or just use time.** The bytes-to-seconds ratio hides the fact that chunk size depends on the hardware rate. A plain duration would be clearer.
+- **Test the first-chunk logic.** A one-line unit test would have shown that the header check never fires.
+- **Measure latency end to end.** We tuned chunk length by feel. A timestamp at the tap and another at the first partial text would turn that into a number.
+
+---
+
+## Takeaways
+
+> **Look at the bytes.** The clicking bug lived in a 44-byte header that no amount of reading Swift would have revealed.
+
+> **Let the recorder measure and the view pace.** Moving the timer out of the recorder made each side simpler; the next step is a 10 to 30 ms window and a dB scale that match what the eye expects.
+
+> **Do not trust a node until it has a real format.** Check sample rate and channel count before installing the tap and before starting the engine, or crash.
+
+> **Let the microphone choose its own rate, then convert**, and tell the server the format once, up front.
+
+> **Test what the code does, not what you meant.** An "is this the first chunk?" check that can never be true is invisible until you trace it.
+
+---
+
+## References
+
+**Capture** — [`AVAudioSession`](https://developer.apple.com/documentation/avfaudio/avaudiosession) · [`AVAudioEngine`](https://developer.apple.com/documentation/avfaudio/avaudioengine) · [`AVAudioInputNode`](https://developer.apple.com/documentation/avfaudio/avaudioinputnode) · [`installTap(onBus:bufferSize:format:block:)`](https://developer.apple.com/documentation/avfaudio/avaudionode/1387122-installtap) · [`AVAudioPCMBuffer`](https://developer.apple.com/documentation/avfaudio/avaudiopcmbuffer) · [`AVAudioFile`](https://developer.apple.com/documentation/avfaudio/avaudiofile)
+
+**Processing** — [`AVAudioConverter`](https://developer.apple.com/documentation/avfaudio/avaudioconverter) · [Accelerate vDSP](https://developer.apple.com/documentation/accelerate/vdsp) · [`vDSP_rmsqv`](https://developer.apple.com/documentation/accelerate/1450655-vdsp_rmsqv) · [`vDSP_desamp`](https://developer.apple.com/documentation/accelerate/1450349-vdsp_desamp)
+
+**Transport and reactive plumbing** — [`URLSessionWebSocketTask`](https://developer.apple.com/documentation/foundation/urlsessionwebsockettask) · [Combine](https://developer.apple.com/documentation/combine) · [`Timer.publish`](https://developer.apple.com/documentation/foundation/timer/3329589-publish)
+
+**Try it yourself** — [MediaInfo Online](https://mediaarea.net/MediaInfoOnline) (inspect a recorded file's sample rate, bit depth and channels) · [Base64 audio encoder](https://base64.guru/converter/encode/audio/wav) (WAV to base64) · [Base64 audio decoder](https://base64.guru/converter/decode/audio) (base64 back to playable audio)
+
+**Background** — [Nyquist-Shannon sampling theorem](https://en.wikipedia.org/wiki/Nyquist%E2%80%93Shannon_sampling_theorem) · [WAVE file format (RIFF)](https://en.wikipedia.org/wiki/WAV)

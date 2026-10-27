@@ -1,0 +1,764 @@
+---
+/**
+ * The voice SDK as a map: the chat app on top as a client, the Swift package
+ * below it behind a line of protocols. Pick a service to light up what it
+ * talks to; switch to "tests" to see the session and file managers replaced
+ * by test doubles, which is what lets the recorder run without a microphone.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'The app only sees protocols. The recorder publishes chunks, amplitudes and duration as Combine streams and never talks to the network; the session and file managers wrap the system so tests can swap them out.',
+} = Astro.props;
+
+type Kind = 'sound' | 'level' | 'meta';
+interface Node {
+  id: string;
+  name: string;
+  kind: Kind;
+  handles: string;
+  device: string;
+  tests: string;
+}
+
+const nodes: Node[] = [
+  {
+    id: 'rec',
+    name: 'Audio<wbr>Engine<wbr>Recording<wbr>Service',
+    kind: 'sound',
+    handles: 'samples + levels',
+    device:
+      'Records, chunks and measures levels, and publishes chunks, amplitudes and duration as Combine streams.',
+    tests:
+      'The real recorder, under test: it runs against the two test doubles below, so no microphone is needed.',
+  },
+  {
+    id: 'res',
+    name: 'Audio<wbr>Resampling<wbr>Service',
+    kind: 'sound',
+    handles: 'samples',
+    device:
+      'Converts any recorded file to the sample rate a service expects: 16 kHz, 16-bit, one channel here.',
+    tests:
+      'Converts any recorded file to the sample rate a service expects; testable on its own with fixture files.',
+  },
+  {
+    id: 'wav',
+    name: 'WAV<wbr>Processing<wbr>Service',
+    kind: 'meta',
+    handles: 'headers',
+    device:
+      'Takes the header off a chunk, walking the RIFF chunks to data, so only raw sound is sent.',
+    tests:
+      'Takes the header off a chunk; pure byte work, so it is tested with plain Data values.',
+  },
+  {
+    id: 'ses',
+    name: 'Audio<wbr>Session<wbr>Manager',
+    kind: 'meta',
+    handles: 'session + format',
+    device:
+      'Wraps the system audio session: category, mode, activation and the hardware sample rate it reports.',
+    tests:
+      'A test double behind the same protocol: the recorder gets a session without the system audio session.',
+  },
+  {
+    id: 'fil',
+    name: 'Audio<wbr>File<wbr>Manager',
+    kind: 'meta',
+    handles: 'chunk files',
+    device:
+      'Wraps file handling for the small temporary WAV files the recorder writes and rotates.',
+    tests:
+      'A test double behind the same protocol: chunk files are handled without touching the real file system.',
+  },
+];
+
+const app = {
+  device: {
+    title: 'Chat app',
+    sub: 'view model, a client of the package',
+    line: 'The client: a handful of subscriptions (new chunks, amplitudes) and two method calls. All the sound is behind the protocol line.',
+  },
+  tests: {
+    title: 'Unit tests',
+    sub: 'a client of the same protocols',
+    line: 'The test target uses the package the way the app does, with the session and file managers replaced by test doubles.',
+  },
+};
+
+const sys = [
+  {
+    id: 'sys-ses',
+    for: 'ses',
+    name: 'System audio session',
+    sub: 'microphone, route, rate',
+  },
+  {
+    id: 'sys-fil',
+    for: 'fil',
+    name: 'Temporary files',
+    sub: 'WAV chunks on disk',
+  },
+];
+
+// [from, to]; the app's calls go down, the recorder's streams come back up.
+const edges: [string, string][] = [
+  ['app', 'rec'],
+  ['app', 'res'],
+  ['app', 'wav'],
+  ['rec', 'ses'],
+  ['rec', 'fil'],
+  ['ses', 'sys-ses'],
+  ['fil', 'sys-fil'],
+];
+
+const kindVar: Record<Kind, string> = {
+  sound: 'var(--viz-sound)',
+  level: 'var(--viz-level)',
+  meta: 'var(--viz-meta)',
+};
+const detailData = {
+  app,
+  nodes: Object.fromEntries(
+    nodes.map((n) => [
+      n.id,
+      {
+        name: n.name.replace(/<wbr>/g, ''),
+        kind: n.kind,
+        device: n.device,
+        tests: n.tests,
+      },
+    ]),
+  ),
+  sys: Object.fromEntries(sys.map((s) => [s.id, { name: s.name, for: s.for }])),
+  edges,
+};
+---
+
+<VizFrame
+  fig="09"
+  title="One app, then one SDK"
+  caption={caption}
+  class="sdk"
+  data-sdk
+  data-mode="device"
+>
+  <div
+    slot="tools"
+    class="viz-seg"
+    role="group"
+    aria-label="Who uses the package"
+  >
+    <button type="button" data-mode-btn="device" aria-pressed="true"
+      >real device</button
+    >
+    <button type="button" data-mode-btn="tests" aria-pressed="false"
+      >tests</button
+    >
+  </div>
+
+  <div class="sdk__map" data-map>
+    <svg class="sdk__wires" data-wires aria-hidden="true"></svg>
+
+    <button type="button" class="sdk__app viz-panel" data-node="app">
+      <span class="viz-label" data-app-sub>{app.device.sub}</span>
+      <span class="sdk__app-title" data-app-title>{app.device.title}</span>
+    </button>
+
+    <div
+      class="sdk__band"
+      aria-label="Combine publishers flowing up to the client"
+    >
+      <span class="sdk__streams">
+        <span class="viz-chip viz-chip--sound" data-stream>
+          <span aria-hidden="true">↑</span> newAudioChunkPublisher
+        </span>
+        <span class="viz-chip viz-chip--level" data-stream>
+          <span aria-hidden="true">↑</span> amplitudes
+        </span>
+        <span class="viz-chip viz-chip--level" data-stream>
+          <span aria-hidden="true">↑</span> duration
+        </span>
+      </span>
+    </div>
+
+    <div class="sdk__line" aria-hidden="true">
+      <span class="viz-label">protocols</span>
+    </div>
+
+    <div class="sdk__pkg">
+      <span class="viz-label sdk__pkg-label">Swift package</span>
+      <div class="sdk__grid">
+        {
+          nodes.map((n) => (
+            <button
+              type="button"
+              class={`sdk__node sdk__node--${n.id}`}
+              data-node={n.id}
+              style={`--c:${kindVar[n.kind]}`}
+            >
+              <span class="sdk__name viz-mono" set:html={n.name} />
+              <span class="sdk__meta">
+                <span class="sdk__handles">
+                  <i class="viz-dot" aria-hidden="true" />
+                  {n.handles}
+                </span>
+                {(n.id === 'ses' || n.id === 'fil') && (
+                  <span class="viz-chip sdk__double">test double</span>
+                )}
+                {n.id === 'rec' && (
+                  <span class="viz-chip viz-chip--sound sdk__under">
+                    under test
+                  </span>
+                )}
+              </span>
+            </button>
+          ))
+        }
+        <div class="sdk__legend viz-legend" aria-hidden="true">
+          <span><i style="--c: var(--viz-sound)"></i>touches samples</span>
+          <span><i style="--c: var(--viz-level)"></i>measurements</span>
+          <span
+            ><i style="--c: var(--viz-meta)"></i>format, headers, system</span
+          >
+        </div>
+      </div>
+    </div>
+
+    <div class="sdk__sys">
+      {
+        sys.map((s) => (
+          <div class={`sdk__sysbox sdk__sysbox--${s.for}`} data-node={s.id}>
+            <span class="sdk__sysname">{s.name}</span>
+            <span class="sdk__syssub" data-sys-sub>
+              {s.sub}
+            </span>
+            <span class="sdk__sysoff">not touched in tests</span>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+
+  <div class="sdk__detail viz-panel" aria-live="polite">
+    <div class="sdk__detail-head">
+      <span class="sdk__detail-name viz-mono" data-out-name></span>
+      <span class="viz-chip" data-out-kind></span>
+    </div>
+    <p class="sdk__detail-line" data-out-line></p>
+    <p class="sdk__detail-links" data-out-links></p>
+  </div>
+
+  <script
+    type="application/json"
+    data-sdk-data
+    set:html={JSON.stringify(detailData)}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initSdkMap() {
+      const root = document.querySelector('[data-sdk]');
+      if (!root || root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-sdk-data]').textContent,
+      );
+      const map = root.querySelector('[data-map]');
+      const svg = root.querySelector('[data-wires]');
+      const nodeEls = new Map(
+        [...root.querySelectorAll('[data-node]')].map((el) => [
+          el.dataset.node,
+          el,
+        ]),
+      );
+      const modeBtns = [...root.querySelectorAll('[data-mode-btn]')];
+      const streams = [...root.querySelectorAll('[data-stream]')];
+      const appTitle = root.querySelector('[data-app-title]');
+      const appSub = root.querySelector('[data-app-sub]');
+      const outName = root.querySelector('[data-out-name]');
+      const outKind = root.querySelector('[data-out-kind]');
+      const outLine = root.querySelector('[data-out-line]');
+      const outLinks = root.querySelector('[data-out-links]');
+      const NS = 'http://www.w3.org/2000/svg';
+      const kindLabel = {
+        sound: ['viz-chip--sound', 'samples'],
+        level: ['viz-chip--level', 'measurements'],
+        meta: ['viz-chip--meta', 'format and system'],
+      };
+
+      let mode = 'device';
+      let pinned = 'rec';
+      let shown = 'rec';
+
+      const label = (id) => {
+        if (id === 'app') return data.app[mode].title;
+        if (data.nodes[id]) {
+          const n = data.nodes[id].name;
+          return mode === 'tests' && (id === 'ses' || id === 'fil')
+            ? `${n} (test double)`
+            : n;
+        }
+        return data.sys[id].name;
+      };
+      const neighbours = (id) =>
+        data.edges
+          .filter(([a, b]) => a === id || b === id)
+          .map(([a, b]) => (a === id ? b : a))
+          .filter((n) => !(mode === 'tests' && n.startsWith('sys-')));
+
+      // Wires are drawn in real pixels, so nothing in the SVG ever scales.
+      function draw() {
+        const box = map.getBoundingClientRect();
+        if (!box.width) return;
+        svg.setAttribute('viewBox', `0 0 ${box.width} ${box.height}`);
+        svg.setAttribute('width', String(box.width));
+        svg.setAttribute('height', String(box.height));
+        svg.replaceChildren();
+        data.edges.forEach(([from, to]) => {
+          const a = nodeEls.get(from).getBoundingClientRect();
+          const b = nodeEls.get(to).getBoundingClientRect();
+          const tx = b.left + b.width / 2 - box.left;
+          const fx =
+            from === 'app'
+              ? tx
+              : Math.min(
+                  Math.max(tx, a.left - box.left + 24),
+                  a.right - box.left - 24,
+                );
+          const fy = a.bottom - box.top;
+          const ty = b.top - box.top;
+          const mid = (fy + ty) / 2;
+          const path = document.createElementNS(NS, 'path');
+          path.setAttribute(
+            'd',
+            `M${fx.toFixed(1)} ${fy.toFixed(1)} C${fx.toFixed(1)} ${mid.toFixed(1)} ${tx.toFixed(1)} ${mid.toFixed(1)} ${tx.toFixed(1)} ${ty.toFixed(1)}`,
+          );
+          path.setAttribute(
+            'class',
+            `sdk__wire${to.startsWith('sys-') ? ' sdk__wire--sys' : ''}`,
+          );
+          path.dataset.from = from;
+          path.dataset.to = to;
+          svg.appendChild(path);
+        });
+        paint();
+      }
+
+      function paint() {
+        const near = new Set([shown, ...neighbours(shown)]);
+        nodeEls.forEach((el, id) => {
+          el.classList.toggle('is-active', id === shown);
+          el.classList.toggle('is-linked', id !== shown && near.has(id));
+          el.classList.toggle('is-dim', !near.has(id));
+        });
+        svg.querySelectorAll('path').forEach((p) => {
+          const on = p.dataset.from === shown || p.dataset.to === shown;
+          p.classList.toggle('is-on', on);
+        });
+        const streamOn = shown === 'rec' || shown === 'app';
+        streams.forEach((s) => s.classList.toggle('is-dim', !streamOn));
+
+        if (shown === 'app') {
+          outName.textContent = data.app[mode].title;
+          outKind.className = 'viz-chip';
+          outKind.textContent = 'client';
+          outLine.textContent = data.app[mode].line;
+        } else {
+          const n = data.nodes[shown];
+          const [cls, txt] = kindLabel[n.kind];
+          outName.textContent = label(shown);
+          outKind.className = `viz-chip ${cls}`;
+          outKind.textContent = txt;
+          outLine.textContent = n[mode];
+        }
+        const list = neighbours(shown).map(label);
+        outLinks.textContent = list.length
+          ? `Connected to: ${list.join(', ')}`
+          : '';
+      }
+
+      function show(id) {
+        if (!data.nodes[id] && id !== 'app') return;
+        shown = id;
+        paint();
+      }
+
+      nodeEls.forEach((el, id) => {
+        if (el.tagName !== 'BUTTON') return;
+        el.addEventListener('mouseenter', () => show(id));
+        el.addEventListener('focus', () => {
+          pinned = id;
+          show(id);
+        });
+        el.addEventListener('click', () => {
+          pinned = id;
+          show(id);
+        });
+      });
+      map.addEventListener('mouseleave', () => show(pinned));
+
+      modeBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          mode = btn.dataset.modeBtn;
+          root.dataset.mode = mode;
+          modeBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          appTitle.textContent = data.app[mode].title;
+          appSub.textContent = data.app[mode].sub;
+          paint();
+        }),
+      );
+
+      if ('ResizeObserver' in window) new ResizeObserver(draw).observe(map);
+      else window.addEventListener('resize', draw);
+      draw();
+    }
+    if (document.readyState !== 'loading') initSdkMap();
+    else document.addEventListener('DOMContentLoaded', initSdkMap);
+  })();
+</script>
+
+<style>
+  .sdk__map {
+    position: relative;
+    display: grid;
+    gap: 0;
+  }
+  .sdk__wires {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: visible;
+  }
+  .sdk__wires :global(.sdk__wire) {
+    fill: none;
+    stroke: var(--border-strong);
+    stroke-width: 1.5;
+    transition:
+      stroke 0.15s var(--ease),
+      opacity 0.15s var(--ease);
+  }
+  .sdk__wires :global(.sdk__wire--sys) {
+    stroke-dasharray: 3 4;
+  }
+  .sdk__wires :global(.sdk__wire.is-on) {
+    stroke: var(--accent);
+    stroke-width: 2;
+  }
+  :global(.sdk[data-mode='tests']) .sdk__wires :global(.sdk__wire--sys) {
+    opacity: 0.25;
+  }
+
+  .sdk__app,
+  .sdk__node,
+  .sdk__sysbox {
+    position: relative;
+    z-index: 1;
+    font: inherit;
+    text-align: left;
+    color: var(--fg);
+    transition:
+      border-color 0.15s var(--ease),
+      opacity 0.15s var(--ease),
+      box-shadow 0.15s var(--ease);
+  }
+  .sdk__app,
+  .sdk__node {
+    cursor: pointer;
+  }
+  .sdk__app:focus-visible,
+  .sdk__node:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .sdk__app {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .sdk__app-title {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+  }
+
+  .sdk__band {
+    position: relative;
+    z-index: 1;
+    padding: var(--sp-5) 0 var(--sp-3);
+  }
+  .sdk__streams {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .sdk__streams .viz-chip {
+    background: var(--surface);
+    background-image: linear-gradient(
+      color-mix(in srgb, var(--c) 12%, transparent),
+      color-mix(in srgb, var(--c) 12%, transparent)
+    );
+    transition: opacity 0.15s var(--ease);
+  }
+  .sdk__streams .viz-chip.is-dim {
+    opacity: 0.45;
+  }
+
+  .sdk__line {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-5);
+  }
+  .sdk__line::before,
+  .sdk__line::after {
+    content: '';
+    flex: 1;
+    border-top: 1.5px dashed var(--fg-faint);
+  }
+  .sdk__line .viz-label {
+    padding: 2px 8px;
+    color: var(--fg-muted);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+  }
+
+  .sdk__pkg {
+    position: relative;
+    padding: var(--sp-5) var(--sp-3) var(--sp-3);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--surface) 55%, transparent);
+  }
+  .sdk__pkg-label {
+    position: absolute;
+    top: 7px;
+    left: var(--sp-3);
+  }
+  .sdk__grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-5) var(--sp-3);
+  }
+
+  .sdk__node {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid color-mix(in srgb, var(--c) 45%, var(--border));
+    border-left: 3px solid var(--c);
+    border-radius: var(--radius-sm);
+  }
+  .sdk__name {
+    font-weight: 600;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+  .sdk__meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .sdk__handles {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--c);
+  }
+  .sdk__double,
+  .sdk__under {
+    display: none;
+  }
+  .sdk__double {
+    --c: var(--fg-muted);
+    border-style: dashed;
+  }
+  :global(.sdk[data-mode='tests']) .sdk__double,
+  :global(.sdk[data-mode='tests']) .sdk__under {
+    display: inline-flex;
+  }
+  :global(.sdk[data-mode='tests']) .sdk__node--ses,
+  :global(.sdk[data-mode='tests']) .sdk__node--fil {
+    border-style: dashed;
+    border-left-style: solid;
+  }
+
+  .sdk__node.is-active,
+  .sdk__app.is-active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .sdk__node.is-linked,
+  .sdk__app.is-linked {
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  }
+  .sdk__node.is-dim,
+  .sdk__app.is-dim,
+  .sdk__sysbox.is-dim {
+    opacity: 0.5;
+  }
+
+  /* Desktop: recorder, resampler, WAV in a row; session and file under the recorder side. */
+  .sdk__node--rec {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .sdk__node--res {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .sdk__node--wav {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .sdk__node--ses {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .sdk__node--fil {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .sdk__legend {
+    grid-column: 3;
+    grid-row: 2;
+    flex-direction: column;
+    align-self: center;
+    gap: 6px;
+  }
+
+  .sdk__sys {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-3);
+    padding: var(--sp-5) var(--sp-3) 0;
+  }
+  .sdk__sysbox {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 12px;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg-subtle);
+  }
+  .sdk__sysname {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--fg-muted);
+  }
+  .sdk__syssub,
+  .sdk__sysoff {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+  .sdk__sysoff {
+    display: none;
+  }
+  :global(.sdk[data-mode='tests']) .sdk__sysbox {
+    opacity: 0.55;
+  }
+  :global(.sdk[data-mode='tests']) .sdk__sysname {
+    text-decoration: line-through;
+  }
+  :global(.sdk[data-mode='tests']) .sdk__syssub {
+    display: none;
+  }
+  :global(.sdk[data-mode='tests']) .sdk__sysoff {
+    display: block;
+  }
+
+  .sdk__detail {
+    margin-top: var(--sp-4);
+    padding: var(--sp-3) var(--sp-4);
+    min-height: 92px;
+  }
+  .sdk__detail-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+  }
+  .sdk__detail-name {
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .sdk__detail-line {
+    margin: 6px 0 0;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg);
+  }
+  .sdk__detail-links {
+    margin: 4px 0 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+
+  /* Phone: two columns. The resampler and WAV service sit on top so the
+     app's wire to the recorder runs through the gap between them. */
+  @media (max-width: 600px) {
+    .sdk__grid,
+    .sdk__sys {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .sdk__node--res {
+      grid-column: 1;
+      grid-row: 1;
+    }
+    .sdk__node--wav {
+      grid-column: 2;
+      grid-row: 1;
+    }
+    .sdk__node--rec {
+      grid-column: 1 / span 2;
+      grid-row: 2;
+    }
+    .sdk__node--ses {
+      grid-column: 1;
+      grid-row: 3;
+    }
+    .sdk__node--fil {
+      grid-column: 2;
+      grid-row: 3;
+    }
+    .sdk__legend {
+      grid-column: 1 / span 2;
+      grid-row: 4;
+      flex-direction: row;
+      gap: 6px 12px;
+    }
+    .sdk__node {
+      padding: 8px 10px;
+    }
+    .sdk__pkg {
+      padding-inline: var(--sp-2);
+    }
+    .sdk__sys {
+      padding-inline: var(--sp-2);
+      gap: var(--sp-2);
+    }
+  }
+</style>

@@ -1,0 +1,555 @@
+---
+/**
+ * Message sequence between the app, the recorder and the speech socket, played
+ * one message at a time. The point is the order: the socket gates the
+ * microphone, the format travels in the handshake, and shutdown runs in a
+ * fixed order.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'The recorder is the last thing to start and the first thing to stop. The socket decides when listening is allowed.',
+} = Astro.props;
+
+type Kind = 'meta' | 'sound' | 'net' | 'level';
+interface Step {
+  from: 0 | 1 | 2;
+  to: 0 | 1 | 2;
+  label: string;
+  note: string;
+  kind: Kind;
+  loop?: boolean;
+}
+
+const lanes = ['App', 'Recorder', 'Speech socket'];
+const steps: Step[] = [
+  {
+    from: 0,
+    to: 2,
+    label: 'open connection',
+    note: 'microphone permission already granted',
+    kind: 'meta',
+  },
+  {
+    from: 0,
+    to: 2,
+    label: 'hello + declare audio format',
+    note: '16,000 Hz · 2 bytes per sample · 1 channel',
+    kind: 'meta',
+  },
+  {
+    from: 2,
+    to: 0,
+    label: 'ready',
+    note: 'only now is it allowed to listen',
+    kind: 'meta',
+  },
+  {
+    from: 0,
+    to: 1,
+    label: 'start recording',
+    note: 'engine warms up first, see the first-word bug',
+    kind: 'sound',
+  },
+  {
+    from: 1,
+    to: 0,
+    label: 'new chunk (0.8 s file)',
+    note: 'published on newAudioChunkPublisher',
+    kind: 'sound',
+    loop: true,
+  },
+  {
+    from: 0,
+    to: 2,
+    label: 'audio chunk (base64)',
+    note: 'resampled to 16 kHz, header stripped',
+    kind: 'net',
+    loop: true,
+  },
+  {
+    from: 2,
+    to: 0,
+    label: 'partial text',
+    note: 'rewritten as more audio arrives',
+    kind: 'level',
+    loop: true,
+  },
+  {
+    from: 2,
+    to: 0,
+    label: 'final text',
+    note: 'the sentence is complete, the turn ends',
+    kind: 'level',
+  },
+  {
+    from: 0,
+    to: 1,
+    label: 'stop recording',
+    note: 'state reset first, then engine, then...',
+    kind: 'sound',
+  },
+  {
+    from: 0,
+    to: 2,
+    label: 'end of audio',
+    note: '...tell the server we are done',
+    kind: 'net',
+  },
+];
+const phases = [
+  { name: 'handshake', from: 0, to: 2 },
+  { name: 'listening', from: 3, to: 6 },
+  { name: 'shutdown', from: 7, to: 9 },
+];
+---
+
+<VizFrame
+  fig="08"
+  title="The conversation over the socket, in order"
+  caption={caption}
+  class="sts"
+  data-sts
+>
+  <div slot="tools" class="sts__tools">
+    <button
+      type="button"
+      class="viz-btn"
+      data-play
+      data-playing="true"
+      aria-label="Pause"
+    >
+      <svg viewBox="0 0 12 12" aria-hidden="true" data-icon-pause
+        ><rect x="2" y="1.5" width="3" height="9" rx="1"></rect><rect
+          x="7"
+          y="1.5"
+          width="3"
+          height="9"
+          rx="1"></rect></svg
+      >
+      <svg viewBox="0 0 12 12" aria-hidden="true" data-icon-play
+        ><path d="M3 1.5v9l7.5-4.5z"></path></svg
+      >
+    </button>
+    <button type="button" class="viz-btn" data-next aria-label="Next message"
+      >step</button
+    >
+    <button
+      type="button"
+      class="viz-btn"
+      data-reset
+      aria-label="Replay from the start">replay</button
+    >
+  </div>
+
+  <ol class="sts__phases" aria-label="Phases">
+    {
+      phases.map((p) => (
+        <li data-phase-from={p.from} data-phase-to={p.to}>
+          <span>{p.name}</span>
+        </li>
+      ))
+    }
+  </ol>
+
+  <div class="sts__board viz-panel">
+    <div class="sts__lanes" aria-hidden="true">
+      {lanes.map((l) => <span class="sts__lane">{l}</span>)}
+    </div>
+    <div class="sts__lifelines" aria-hidden="true"><i></i><i></i><i></i></div>
+    <ol class="sts__steps" data-steps aria-live="polite">
+      {
+        steps.map((s, i) => {
+          const lo = Math.min(s.from, s.to);
+          const hi = Math.max(s.from, s.to);
+          const dir = s.to > s.from ? 'right' : 'left';
+          return (
+            <li
+              class={`sts__step sts__step--${s.kind}`}
+              data-i={i}
+              style={`--start:${lo * 2 + 2};--end:${hi * 2 + 2}`}
+              aria-label={`${lanes[s.from]} to ${lanes[s.to]}: ${s.label}. ${s.note}`}
+            >
+              <span class="sts__label">
+                <b>{String(i + 1).padStart(2, '0')}</b> {s.label}
+                {s.loop && <em title="repeats every chunk">↻</em>}
+              </span>
+              <span class={`sts__arrow sts__arrow--${dir}`} aria-hidden="true">
+                <i />
+              </span>
+              <span class="sts__note">{s.note}</span>
+            </li>
+          );
+        })
+      }
+    </ol>
+  </div>
+
+  <div class="sts__foot">
+    <div class="viz-legend" aria-hidden="true">
+      <span><i style="--c:var(--viz-meta)"></i>handshake</span>
+      <span><i style="--c:var(--viz-sound)"></i>recorder</span>
+      <span><i style="--c:var(--viz-net)"></i>audio on the wire</span>
+      <span><i style="--c:var(--viz-level)"></i>text coming back</span>
+    </div>
+    <span class="viz-mono sts__loopnote"
+      >↻ repeats every 0.8 s while the user speaks</span
+    >
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initSttSequence() {
+      const root = document.querySelector('[data-sts]');
+      if (!root || root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const steps = [...root.querySelectorAll('.sts__step')];
+      const phases = [...root.querySelectorAll('[data-phase-from]')];
+      const playBtn = root.querySelector('[data-play]');
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const STEP_MS = 1300;
+      const HOLD_MS = 3200;
+
+      let current = reduce ? steps.length - 1 : -1;
+      let playing = !reduce;
+      let timer = 0;
+
+      function render() {
+        steps.forEach((s, i) => {
+          s.classList.toggle('is-shown', i <= current);
+          s.classList.toggle('is-current', i === current);
+        });
+        phases.forEach((p) => {
+          const from = +p.dataset.phaseFrom;
+          const to = +p.dataset.phaseTo;
+          p.classList.toggle('is-current', current >= from && current <= to);
+          p.classList.toggle('is-done', current > to);
+        });
+        playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+        playBtn.dataset.playing = String(playing);
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing || root.dataset.inview !== '1') return;
+        const atEnd = current >= steps.length - 1;
+        timer = setTimeout(
+          () => {
+            current = atEnd ? -1 : current + 1;
+            render();
+            schedule();
+          },
+          atEnd ? HOLD_MS : current < 0 ? 400 : STEP_MS,
+        );
+      }
+
+      playBtn.addEventListener('click', () => {
+        playing = !playing;
+        if (playing && current >= steps.length - 1) current = -1;
+        render();
+        schedule();
+      });
+      root.querySelector('[data-next]').addEventListener('click', () => {
+        playing = false;
+        current = current >= steps.length - 1 ? 0 : current + 1;
+        render();
+        schedule();
+      });
+      root.querySelector('[data-reset]').addEventListener('click', () => {
+        current = reduce ? steps.length - 1 : -1;
+        playing = !reduce;
+        render();
+        schedule();
+      });
+      root.addEventListener('viz:inview', schedule);
+
+      root.classList.add('is-armed');
+      render();
+      schedule();
+    }
+    if (document.readyState !== 'loading') initSttSequence();
+    else document.addEventListener('DOMContentLoaded', initSttSequence);
+  })();
+</script>
+
+<style>
+  .sts__tools {
+    display: flex;
+    gap: 6px;
+  }
+
+  .sts__phases {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin: 0 0 var(--sp-3);
+    padding: 0;
+    list-style: none;
+  }
+  .sts__phases li {
+    position: relative;
+    padding-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    transition: color 0.3s var(--ease);
+  }
+  .sts__phases li::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto;
+    height: 3px;
+    border-radius: 3px;
+    background: var(--border-strong);
+    transition: background 0.3s var(--ease);
+  }
+  .sts__phases li.is-current {
+    color: var(--fg);
+  }
+  .sts__phases li.is-current::before,
+  .sts__phases li.is-done::before {
+    background: var(--accent);
+  }
+
+  .sts__board {
+    position: relative;
+    padding: 0 0 var(--sp-3);
+    overflow: hidden;
+  }
+  .sts__lanes,
+  .sts__step {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .sts__lanes {
+    position: relative;
+    z-index: 1;
+    padding: var(--sp-3) 0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .sts__lane {
+    grid-column: span 2;
+    justify-self: center;
+    padding: 4px 10px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--fg);
+    text-align: center;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--bg-subtle);
+  }
+  .sts__lifelines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .sts__lifelines i {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed var(--border-strong);
+  }
+  .sts__lifelines i:nth-child(1) {
+    left: calc(100% / 6);
+  }
+  .sts__lifelines i:nth-child(2) {
+    left: 50%;
+  }
+  .sts__lifelines i:nth-child(3) {
+    left: calc(500% / 6);
+  }
+
+  .sts__steps {
+    position: relative;
+    margin: 0;
+    padding: var(--sp-2) 0 0;
+    list-style: none;
+  }
+  .sts__step {
+    --c: var(--fg-muted);
+    row-gap: 3px;
+    padding: 7px 0;
+    transition:
+      opacity 0.4s var(--ease),
+      transform 0.4s var(--ease);
+  }
+  .sts__step--meta {
+    --c: var(--viz-meta);
+  }
+  .sts__step--sound {
+    --c: var(--viz-sound);
+  }
+  .sts__step--net {
+    --c: var(--viz-net);
+  }
+  .sts__step--level {
+    --c: var(--viz-level);
+  }
+  :global(.sts.is-armed) .sts__step:not(.is-shown) {
+    opacity: 0.12;
+  }
+  .sts__step.is-current .sts__label {
+    color: var(--fg);
+  }
+  .sts__step.is-current .sts__label b {
+    color: var(--accent-fg);
+    background: var(--c);
+  }
+
+  .sts__label,
+  .sts__arrow,
+  .sts__note {
+    grid-column: var(--start) / var(--end);
+    padding-inline: 6px;
+    text-align: center;
+    min-width: 0;
+  }
+  .sts__label {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--fg-muted);
+  }
+  .sts__label b {
+    display: inline-block;
+    margin-right: 4px;
+    padding: 0 5px;
+    font-size: 10px;
+    color: var(--c);
+    border: 1px solid var(--c);
+    border-radius: 4px;
+    transition:
+      background 0.2s var(--ease),
+      color 0.2s var(--ease);
+  }
+  .sts__label em {
+    margin-left: 4px;
+    font-style: normal;
+    color: var(--fg-faint);
+  }
+  .sts__note {
+    font-size: 11.5px;
+    line-height: 1.35;
+    color: var(--fg-faint);
+  }
+  .sts__arrow {
+    position: relative;
+    height: 10px;
+    padding: 0;
+  }
+  .sts__arrow i {
+    position: absolute;
+    top: 4px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--c);
+    border-radius: 2px;
+    transform-origin: left;
+  }
+  .sts__arrow--left i {
+    transform-origin: right;
+  }
+  .sts__arrow i::after {
+    content: '';
+    position: absolute;
+    top: -4px;
+    border: 5px solid transparent;
+  }
+  .sts__arrow--right i::after {
+    right: -2px;
+    border-left: 8px solid var(--c);
+    border-right: 0;
+  }
+  .sts__arrow--left i::after {
+    left: -2px;
+    border-right: 8px solid var(--c);
+    border-left: 0;
+  }
+  .sts__step.is-current .sts__arrow i {
+    animation: sts-draw 0.55s var(--ease) both;
+  }
+  .sts__step.is-current .sts__arrow i::before {
+    content: '';
+    position: absolute;
+    top: -3px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--c);
+    box-shadow: 0 0 10px var(--c);
+    animation: sts-packet 0.55s var(--ease) both;
+  }
+  .sts__arrow--left i::before {
+    right: 0;
+  }
+  @keyframes sts-draw {
+    from {
+      transform: scaleX(0);
+    }
+  }
+  @keyframes sts-packet {
+    from {
+      left: 0;
+      opacity: 1;
+    }
+    to {
+      left: calc(100% - 8px);
+      opacity: 0;
+    }
+  }
+  .sts__step.is-current .sts__arrow--left i::before {
+    animation-name: sts-packet-left;
+  }
+  @keyframes sts-packet-left {
+    from {
+      right: 0;
+      opacity: 1;
+    }
+    to {
+      right: calc(100% - 8px);
+      opacity: 0;
+    }
+  }
+
+  .sts__foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-4);
+    margin-top: var(--sp-3);
+  }
+  .sts__loopnote {
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+
+  @media (max-width: 560px) {
+    .sts__tools [data-reset] {
+      display: none;
+    }
+    .sts__lane {
+      padding: 3px 6px;
+      font-size: 11px;
+    }
+    .sts__label {
+      font-size: 11px;
+    }
+    .sts__note {
+      font-size: 10.5px;
+    }
+  }
+</style>

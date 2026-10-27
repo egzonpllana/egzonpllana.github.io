@@ -1,0 +1,1018 @@
+---
+/**
+ * Resampling to the rate the speech service expects, in two parts.
+ *
+ * (a) One millisecond of voice at the microphone rate and at 16 kHz. At
+ *     48 kHz every output instant lands on an input sample (3:1, a whole
+ *     number); at 44.1 kHz it falls between samples (2.75625:1), so the
+ *     value has to be interpolated with proper filtering.
+ * (b) The converter's input block. Hand the buffer over once, then report
+ *     .endOfStream; answer .haveData every time and the start of the chunk
+ *     is fed in again and duplicated at the end of the output.
+ *
+ * Graphics are drawn at the panel's real pixel width; all text is HTML.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Top: the same millisecond of voice at the microphone’s rate and at 16 kHz, with the counts for one nominal 0.8 s chunk. Bottom: what the converter’s input block answers decides whether a chunk ends cleanly or repeats its own beginning.',
+} = Astro.props;
+
+const CHUNK_SECONDS = 0.8;
+const OUT_RATE = 16000;
+const fmtN = (n: number) => n.toLocaleString('en-US');
+const rates = [48000, 44100].map((rate) => {
+  const ratio = rate / OUT_RATE;
+  const inSamples = Math.round(rate * CHUNK_SECONDS);
+  const outSamples = Math.round(OUT_RATE * CHUNK_SECONDS);
+  return {
+    rate,
+    key: String(rate),
+    label: rate === 48000 ? '48 kHz' : '44.1 kHz',
+    ratio: Number.isInteger(ratio) ? String(ratio) : String(ratio),
+    whole: Number.isInteger(ratio),
+    inSamples: fmtN(inSamples),
+    inBytes: fmtN(inSamples * 2),
+    outSamples: fmtN(outSamples),
+    outBytes: fmtN(outSamples * 2),
+    perMs: rate / 1000,
+  };
+});
+const syllables = ['hel', 'lo', 'wor', 'ld'];
+---
+
+<VizFrame
+  fig="06"
+  title="Speaking the server’s language: resampling to 16 kHz"
+  caption={caption}
+  class="rsc"
+  data-rsc
+>
+  <span slot="tools" class="viz-chip viz-chip--sound" data-rate-chip
+    >48,000 → 16,000 Hz</span
+  >
+
+  <!-- (a) Rate conversion ------------------------------------------------ -->
+  <div class="rsc__part">
+    <div class="rsc__bar">
+      <span class="viz-label">a · rate conversion</span>
+      <div class="viz-seg" role="group" aria-label="Microphone sample rate">
+        {
+          rates.map((r, i) => (
+            <button
+              type="button"
+              aria-pressed={i === 0 ? 'true' : 'false'}
+              data-rate={r.key}
+            >
+              {r.label}
+            </button>
+          ))
+        }
+      </div>
+    </div>
+
+    <div class="rsc__grid">
+      <div class="rsc__plot viz-panel">
+        <div class="rsc__lanehead">
+          <span class="rsc__dotkey rsc__dotkey--in"></span>
+          <span class="viz-mono"
+            >in · <b data-in-rate>48,000</b> Hz ·
+            <b data-in-ms>48</b> samples per ms</span
+          >
+        </div>
+        <svg
+          class="rsc__lane"
+          data-lane="in"
+          aria-hidden="true"
+          preserveAspectRatio="none"></svg>
+        <div class="rsc__lanehead">
+          <span class="rsc__dotkey rsc__dotkey--out"></span>
+          <span class="viz-mono"
+            >out · <b>16,000</b> Hz · <b>16</b> samples per ms</span
+          >
+        </div>
+        <svg
+          class="rsc__lane"
+          data-lane="out"
+          aria-hidden="true"
+          preserveAspectRatio="none"></svg>
+        <span class="rsc__axis viz-mono">1 ms of voice</span>
+      </div>
+
+      <div class="rsc__side">
+        {
+          rates.map((r, i) => (
+            <div
+              class="rsc__ratio viz-panel"
+              data-ratio={r.key}
+              hidden={i !== 0}
+            >
+              <span class="viz-label">ratio</span>
+              <span class="rsc__big">
+                {r.ratio}
+                <small> : 1</small>
+              </span>
+              {r.whole ? (
+                <span class="viz-chip viz-chip--meta">whole number</span>
+              ) : (
+                <span class="viz-chip">not a whole number</span>
+              )}
+              <span class="rsc__verdict">
+                {r.whole ? (
+                  <>
+                    Every 3rd input instant is an output instant.{' '}
+                    <b>vDSP_desamp</b> could do it: filter, keep every 3rd. The
+                    app still uses <b>AVAudioConverter</b>.
+                  </>
+                ) : (
+                  <>
+                    Output instants fall between input samples, so
+                    <b> vDSP_desamp</b> cannot do it. <b>AVAudioConverter</b>{' '}
+                    handles any ratio with proper filtering.
+                  </>
+                )}
+              </span>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+
+    <div class="rsc__counts">
+      {
+        rates.map((r, i) => (
+          <div class="rsc__countrow" data-counts={r.key} hidden={i !== 0}>
+            <div class="rsc__tile viz-panel">
+              <span class="viz-label">recorded chunk · {r.label}</span>
+              <span class="rsc__num">{r.inSamples}</span>
+              <span class="rsc__unit">
+                samples · {r.inBytes} bytes at 16-bit
+              </span>
+            </div>
+            <span class="rsc__arrow" aria-hidden="true">
+              ÷ {r.ratio}
+            </span>
+            <div class="rsc__tile rsc__tile--out viz-panel">
+              <span class="viz-label">sent · 16 kHz</span>
+              <span class="rsc__num">{r.outSamples}</span>
+              <span class="rsc__unit">
+                samples · {r.outBytes} bytes at 16-bit
+              </span>
+            </div>
+          </div>
+        ))
+      }
+      <span class="rsc__note">per nominal 0.8 s chunk, mono</span>
+    </div>
+  </div>
+
+  <!-- (b) The input-block trap ------------------------------------------- -->
+  <div class="rsc__part rsc__part--trap" data-mode="once">
+    <div class="rsc__bar">
+      <span class="viz-label">b · the input block</span>
+      <div
+        class="viz-seg"
+        role="group"
+        aria-label="What the input block answers"
+      >
+        <button type="button" aria-pressed="true" data-mode-btn="once"
+          >once, then .endOfStream</button
+        >
+        <button type="button" aria-pressed="false" data-mode-btn="always"
+          >always .haveData</button
+        >
+      </div>
+    </div>
+
+    <div class="rsc__trap viz-panel">
+      <div class="rsc__track">
+        <span class="rsc__tlabel viz-mono"
+          >input · one chunk at the mic rate</span
+        >
+        <div class="rsc__buf rsc__buf--in" data-inbuf>
+          {
+            syllables.map((s) => (
+              <span class="rsc__seg">
+                <b>{s}</b>
+              </span>
+            ))
+          }
+        </div>
+      </div>
+
+      <div class="rsc__conv">
+        <span class="rsc__pull" aria-hidden="true"><i></i></span>
+        <div class="rsc__convbox">
+          <div class="rsc__convhead">
+            <span class="rsc__convname">AVAudioConverter</span>
+            <span class="viz-chip" data-call-chip>idle</span>
+          </div>
+          <div class="rsc__log viz-mono" data-log aria-live="polite"></div>
+        </div>
+        <span class="rsc__pull rsc__pull--out" aria-hidden="true"><i></i></span>
+      </div>
+
+      <div class="rsc__track">
+        <span class="rsc__tlabel viz-mono">output · 16 kHz buffer</span>
+        <div class="rsc__buf rsc__buf--out" data-outbuf>
+          {
+            syllables.map((s, i) => (
+              <span class="rsc__seg rsc__seg--out" data-out={i}>
+                <b>{s}</b>
+              </span>
+            ))
+          }
+          <span class="rsc__seg rsc__seg--out rsc__seg--dup" data-out="dup">
+            <b>{syllables[0]}</b>
+          </span>
+          <span class="rsc__spare viz-mono">spare capacity</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="rsc__foot">
+      <button type="button" class="viz-btn" data-replay>↺ Replay</button>
+      <div class="viz-legend">
+        <span><i style="--c:var(--viz-sound)"></i>the chunk’s audio</span>
+        <span><i style="--c:var(--viz-bad)"></i>fed in again</span>
+      </div>
+    </div>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initResampleConverter() {
+      const root = document.querySelector('[data-rsc]');
+      if (!root || root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const SVG = 'http://www.w3.org/2000/svg';
+      const OUT_RATE = 16000;
+      const WINDOW = 0.001; // seconds shown
+      const fmt = (n) => n.toLocaleString('en-US');
+
+      /* (a) waveform lanes ------------------------------------------------ */
+      const laneIn = root.querySelector('[data-lane="in"]');
+      const laneOut = root.querySelector('[data-lane="out"]');
+      const rateBtns = [...root.querySelectorAll('[data-rate]')];
+      const rateChip = root.querySelector('[data-rate-chip]');
+      const inRateEl = root.querySelector('[data-in-rate]');
+      const inMsEl = root.querySelector('[data-in-ms]');
+      const voice = (t) =>
+        0.62 * Math.sin(2 * Math.PI * 1100 * t) +
+        0.3 * Math.sin(2 * Math.PI * 2900 * t + 0.7);
+
+      let rate = 48000;
+      let sweepRaf = 0;
+      let sweepTimer = 0;
+      let sweeping = false;
+
+      const el = (name, attrs) => {
+        const n = document.createElementNS(SVG, name);
+        Object.entries(attrs).forEach(([k, v]) => n.setAttribute(k, v));
+        return n;
+      };
+
+      function lane(svg, height) {
+        const w = Math.max(
+          200,
+          svg.clientWidth || svg.parentElement.clientWidth,
+        );
+        svg.setAttribute('viewBox', `0 0 ${w} ${height}`);
+        svg.style.height = `${height}px`;
+        svg.replaceChildren();
+        const pad = 8;
+        const x = (t) => pad + (t / WINDOW) * (w - pad * 2);
+        const y = (v) => height / 2 - v * (height / 2 - 8);
+        svg.appendChild(
+          el('line', {
+            x1: pad,
+            x2: w - pad,
+            y1: height / 2,
+            y2: height / 2,
+            class: 'rsc__zero',
+          }),
+        );
+        let d = '';
+        for (let i = 0; i <= 240; i++) {
+          const t = (i / 240) * WINDOW;
+          d += `${i ? 'L' : 'M'}${x(t).toFixed(1)} ${y(voice(t)).toFixed(1)}`;
+        }
+        svg.appendChild(el('path', { d, class: 'rsc__wave' }));
+        return { w, x, y, height };
+      }
+
+      function drawRate(progress) {
+        const A = lane(laneIn, 104);
+        const B = lane(laneOut, 92);
+        const nIn = Math.floor(rate * WINDOW + 1e-9);
+        const nOut = Math.round(OUT_RATE * WINDOW);
+        const step = rate / OUT_RATE;
+        const shownOut = Math.ceil(progress * nOut);
+
+        // Output instants, drawn as guides through the input lane.
+        for (let k = 0; k < shownOut; k++) {
+          const t = k / OUT_RATE;
+          const onSample = Math.abs(k * step - Math.round(k * step)) < 1e-6;
+          laneIn.appendChild(
+            el('line', {
+              x1: A.x(t),
+              x2: A.x(t),
+              y1: 4,
+              y2: A.height - 4,
+              class: `rsc__guide${onSample ? '' : ' rsc__guide--between'}`,
+            }),
+          );
+          if (!onSample) {
+            laneIn.appendChild(
+              el('circle', {
+                cx: A.x(t),
+                cy: A.y(voice(t)),
+                r: 4.5,
+                class: 'rsc__interp',
+              }),
+            );
+          }
+        }
+        for (let i = 0; i < nIn; i++) {
+          const t = i / rate;
+          const kept = Math.abs(i / step - Math.round(i / step)) < 1e-6;
+          const hit = kept && Math.round(i / step) < shownOut;
+          laneIn.appendChild(
+            el('circle', {
+              cx: A.x(t),
+              cy: A.y(voice(t)),
+              r: hit ? 3.6 : 2.6,
+              class: `rsc__in${hit ? ' is-hit' : ''}`,
+            }),
+          );
+        }
+        for (let k = 0; k < shownOut; k++) {
+          const t = k / OUT_RATE;
+          laneOut.appendChild(
+            el('line', {
+              x1: B.x(t),
+              x2: B.x(t),
+              y1: B.height / 2,
+              y2: B.y(voice(t)),
+              class: 'rsc__stem',
+            }),
+          );
+          laneOut.appendChild(
+            el('circle', {
+              cx: B.x(t),
+              cy: B.y(voice(t)),
+              r: 4,
+              class: 'rsc__out',
+            }),
+          );
+        }
+        if (progress < 1) {
+          const cx = A.x(progress * WINDOW);
+          [laneIn, laneOut].forEach((svg) =>
+            svg.appendChild(
+              el('line', {
+                x1: cx,
+                x2: cx,
+                y1: 0,
+                y2: svg === laneIn ? A.height : B.height,
+                class: 'rsc__cursor',
+              }),
+            ),
+          );
+        }
+      }
+
+      function stopSweep() {
+        cancelAnimationFrame(sweepRaf);
+        clearTimeout(sweepTimer);
+        sweeping = false;
+      }
+
+      function sweep() {
+        stopSweep();
+        if (reduce || root.dataset.inview === '0') {
+          drawRate(1);
+          return;
+        }
+        const t0 = performance.now();
+        const DUR = 2200;
+        sweeping = true;
+        const frame = (ts) => {
+          const p = Math.min(1, Math.max(0, (ts - t0) / DUR));
+          drawRate(p);
+          if (p < 1) sweepRaf = requestAnimationFrame(frame);
+          else {
+            sweeping = false;
+            sweepTimer = setTimeout(sweep, 2600);
+          }
+        };
+        sweepRaf = requestAnimationFrame(frame);
+      }
+
+      function setRate(next) {
+        rate = next;
+        rateBtns.forEach((b) =>
+          b.setAttribute('aria-pressed', String(+b.dataset.rate === next)),
+        );
+        root
+          .querySelectorAll('[data-ratio]')
+          .forEach((n) => (n.hidden = +n.dataset.ratio !== next));
+        root
+          .querySelectorAll('[data-counts]')
+          .forEach((n) => (n.hidden = +n.dataset.counts !== next));
+        rateChip.textContent = `${fmt(next)} → 16,000 Hz`;
+        inRateEl.textContent = fmt(next);
+        inMsEl.textContent = String(next / 1000);
+        if (root.dataset.inview === '1') sweep();
+        else drawRate(1);
+      }
+      rateBtns.forEach((b) =>
+        b.addEventListener('click', () => setRate(+b.dataset.rate)),
+      );
+
+      /* (b) input-block trap ---------------------------------------------- */
+      const trap = root.querySelector('.rsc__part--trap');
+      const modeBtns = [...root.querySelectorAll('[data-mode-btn]')];
+      const log = root.querySelector('[data-log]');
+      const callChip = root.querySelector('[data-call-chip]');
+      const inBuf = root.querySelector('[data-inbuf]');
+      const outSegs = [...root.querySelectorAll('[data-out]')];
+      const SCRIPT = {
+        once: [
+          { at: 300, call: 1, line: 'call 1 → .haveData, return buffer' },
+          { at: 2700, call: 2, line: 'call 2 → .endOfStream, return nil' },
+          {
+            at: 3400,
+            line: 'filter tail flushed · 12,800 frames · chunk ends cleanly',
+            cls: 'is-ok',
+          },
+        ],
+        always: [
+          { at: 300, call: 1, line: 'call 1 → .haveData, return buffer' },
+          {
+            at: 2700,
+            call: 2,
+            line: 'call 2 → .haveData, return the same buffer',
+            cls: 'is-bad',
+          },
+          {
+            at: 3900,
+            line: 'start of the chunk fed in again → duplicated at the end',
+            cls: 'is-bad',
+          },
+        ],
+      };
+      let mode = 'once';
+      let trapTimers = [];
+      let trapPlayed = false;
+
+      const clearTrap = () => {
+        trapTimers.forEach(clearTimeout);
+        trapTimers = [];
+      };
+      const at = (ms, fn) => trapTimers.push(setTimeout(fn, reduce ? 0 : ms));
+
+      function addLine(text, cls) {
+        const line = document.createElement('div');
+        line.textContent = text;
+        if (cls) line.className = cls;
+        log.appendChild(line);
+      }
+      function pull(call) {
+        callChip.textContent = `call ${call}`;
+        callChip.className = `viz-chip ${
+          call === 2 && mode === 'always' ? 'viz-chip--bad' : 'viz-chip--meta'
+        }`;
+        trap.classList.remove('is-pull');
+        void trap.offsetWidth;
+        trap.classList.add('is-pull');
+        inBuf.classList.toggle('is-again', call === 2 && mode === 'always');
+      }
+
+      function playTrap() {
+        clearTrap();
+        trapPlayed = true;
+        log.replaceChildren();
+        callChip.textContent = 'idle';
+        callChip.className = 'viz-chip';
+        trap.classList.remove('is-pull', 'is-done');
+        inBuf.classList.remove('is-again');
+        outSegs.forEach((s) => s.classList.remove('is-in'));
+
+        SCRIPT[mode].forEach((ev) =>
+          at(ev.at, () => {
+            if (ev.call) pull(ev.call);
+            addLine(ev.line, ev.cls);
+          }),
+        );
+        [0, 1, 2, 3].forEach((i) =>
+          at(900 + i * 380, () => outSegs[i].classList.add('is-in')),
+        );
+        if (mode === 'always') {
+          at(3300, () =>
+            outSegs.find((s) => s.dataset.out === 'dup').classList.add('is-in'),
+          );
+        }
+        at(mode === 'always' ? 3900 : 3400, () => {
+          trap.classList.add('is-done');
+          trap.classList.remove('is-pull');
+        });
+      }
+
+      function setMode(next) {
+        mode = next;
+        trap.dataset.mode = next;
+        modeBtns.forEach((b) =>
+          b.setAttribute('aria-pressed', String(b.dataset.modeBtn === next)),
+        );
+        playTrap();
+      }
+      modeBtns.forEach((b) =>
+        b.addEventListener('click', () => setMode(b.dataset.modeBtn)),
+      );
+      root.querySelector('[data-replay]').addEventListener('click', playTrap);
+
+      /* Lifecycle --------------------------------------------------------- */
+      root.addEventListener('viz:inview', (e) => {
+        if (!e.detail) {
+          stopSweep();
+          drawRate(1);
+          return;
+        }
+        sweep();
+        if (!trapPlayed) playTrap();
+      });
+
+      if ('ResizeObserver' in window) {
+        let last = 0;
+        new ResizeObserver(() => {
+          const w = laneIn.clientWidth;
+          if (w === last) return;
+          last = w;
+          if (!sweeping) drawRate(1);
+        }).observe(laneIn);
+      }
+
+      drawRate(1);
+      if (reduce) playTrap();
+      else if (root.dataset.inview === '1') {
+        sweep();
+        playTrap();
+      }
+    }
+    if (document.readyState !== 'loading') initResampleConverter();
+    else document.addEventListener('DOMContentLoaded', initResampleConverter);
+  })();
+</script>
+
+<style>
+  .rsc__part + .rsc__part {
+    margin-top: var(--sp-5);
+    padding-top: var(--sp-4);
+    border-top: 1px dashed var(--border-strong);
+  }
+  .rsc__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .rsc__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+  @media (max-width: 480px) {
+    .rsc__bar .viz-seg button {
+      padding-inline: 8px;
+      font-size: 10.5px;
+    }
+  }
+
+  /* (a) ----------------------------------------------------------------- */
+  .rsc__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 13.5rem);
+    gap: var(--sp-3);
+  }
+  @media (max-width: 640px) {
+    .rsc__grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .rsc__plot {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: var(--sp-3);
+    min-width: 0;
+  }
+  .rsc__lanehead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--fg-muted);
+    font-size: 11px;
+  }
+  .rsc__lanehead .viz-mono {
+    font-size: 11px;
+  }
+  .rsc__lanehead b {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .rsc__lanehead + .rsc__lane + .rsc__lanehead {
+    margin-top: 6px;
+  }
+  .rsc__dotkey {
+    flex: none;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+  }
+  .rsc__dotkey--in {
+    border: 1.5px solid var(--viz-sound);
+  }
+  .rsc__dotkey--out {
+    background: var(--viz-sound);
+  }
+  .rsc__lane {
+    display: block;
+    width: 100%;
+    height: 100px;
+    overflow: visible;
+  }
+  .rsc__axis {
+    align-self: flex-end;
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .rsc__lane :global(.rsc__zero) {
+    stroke: var(--border-strong);
+    stroke-width: 1;
+  }
+  .rsc__lane :global(.rsc__wave) {
+    fill: none;
+    stroke: color-mix(in srgb, var(--viz-sound) 45%, transparent);
+    stroke-width: 1.5;
+  }
+  .rsc__lane :global(.rsc__in) {
+    fill: var(--surface);
+    stroke: var(--viz-sound);
+    stroke-width: 1.3;
+  }
+  .rsc__lane :global(.rsc__in.is-hit) {
+    fill: var(--viz-sound);
+  }
+  .rsc__lane :global(.rsc__guide) {
+    stroke: color-mix(in srgb, var(--viz-sound) 40%, transparent);
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+  }
+  .rsc__lane :global(.rsc__guide--between) {
+    stroke: color-mix(in srgb, var(--viz-level) 60%, transparent);
+  }
+  .rsc__lane :global(.rsc__interp) {
+    fill: none;
+    stroke: var(--viz-level);
+    stroke-width: 1.6;
+  }
+  .rsc__lane :global(.rsc__stem) {
+    stroke: color-mix(in srgb, var(--viz-sound) 55%, transparent);
+    stroke-width: 1.5;
+  }
+  .rsc__lane :global(.rsc__out) {
+    fill: var(--viz-sound);
+    stroke: var(--surface);
+    stroke-width: 1.5;
+  }
+  .rsc__lane :global(.rsc__cursor) {
+    stroke: var(--fg-muted);
+    stroke-width: 1;
+  }
+
+  .rsc__side {
+    display: grid;
+    min-width: 0;
+  }
+  .rsc__ratio {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .rsc__ratio[hidden] {
+    display: none;
+  }
+  .rsc__big {
+    font-family: var(--font-mono);
+    font-size: 1.9rem;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+  .rsc__big small {
+    font-size: 1.1rem;
+    color: var(--fg-muted);
+  }
+  .rsc__verdict {
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+  .rsc__verdict b {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--fg);
+  }
+
+  .rsc__counts {
+    margin-top: var(--sp-3);
+  }
+  .rsc__countrow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .rsc__countrow[hidden] {
+    display: none;
+  }
+  .rsc__tile {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 12px;
+    min-width: 0;
+  }
+  .rsc__tile--out {
+    border-color: color-mix(in srgb, var(--viz-sound) 50%, var(--border));
+  }
+  .rsc__num {
+    font-family: var(--font-mono);
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+  .rsc__tile--out .rsc__num {
+    color: var(--viz-sound-text);
+  }
+  .rsc__unit {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .rsc__arrow {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+  .rsc__note {
+    display: block;
+    margin-top: 6px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  @media (max-width: 480px) {
+    .rsc__countrow {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .rsc__arrow {
+      justify-self: center;
+    }
+  }
+
+  /* (b) ----------------------------------------------------------------- */
+  .rsc__trap {
+    display: grid;
+    gap: var(--sp-2);
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .rsc__track {
+    display: grid;
+    gap: 6px;
+  }
+  .rsc__tlabel {
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .rsc__buf {
+    position: relative;
+    display: grid;
+    gap: 3px;
+    height: 34px;
+  }
+  .rsc__buf--in {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 80%;
+    transition: box-shadow 0.25s var(--ease);
+    border-radius: 7px;
+  }
+  .rsc__buf--out {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    padding: 3px;
+    height: 40px;
+    border: 1.5px dashed var(--border-strong);
+    border-radius: 9px;
+  }
+  .rsc__seg {
+    display: grid;
+    place-items: center;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--viz-sound-text);
+    background: color-mix(in srgb, var(--viz-sound) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--viz-sound) 45%, transparent);
+    border-radius: 5px;
+  }
+  .rsc__seg b {
+    font-weight: 600;
+  }
+  .rsc__seg--out {
+    opacity: 0;
+    transform: translateY(-6px);
+    transition:
+      opacity 0.3s var(--ease),
+      transform 0.3s var(--ease);
+  }
+  .rsc__seg--out.is-in {
+    opacity: 1;
+    transform: none;
+  }
+  .rsc__seg--dup {
+    grid-column: 5;
+    grid-row: 1;
+    z-index: 1;
+    color: var(--viz-bad);
+    background: color-mix(in srgb, var(--viz-bad) 16%, transparent);
+    border-color: var(--viz-bad);
+  }
+  .rsc__spare {
+    grid-column: 5;
+    grid-row: 1;
+    display: grid;
+    place-items: center;
+    font-size: 10px;
+    color: var(--fg-faint);
+    text-align: center;
+    line-height: 1.1;
+  }
+  .rsc__spare {
+    transition: opacity 0.2s var(--ease);
+  }
+  .rsc__seg--dup.is-in ~ .rsc__spare {
+    opacity: 0;
+  }
+  .rsc__buf--in.is-again {
+    box-shadow: 0 0 0 2px var(--viz-bad);
+  }
+  .rsc__buf--in.is-again .rsc__seg:first-child {
+    color: var(--viz-bad);
+    border-color: var(--viz-bad);
+    background: color-mix(in srgb, var(--viz-bad) 16%, transparent);
+  }
+  :global(.rsc__part--trap.is-pull) .rsc__buf--in:not(.is-again) {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--viz-sound) 55%, transparent);
+  }
+
+  .rsc__conv {
+    display: grid;
+    gap: 4px;
+  }
+  .rsc__pull {
+    position: relative;
+    justify-self: start;
+    margin-left: 18%;
+    width: 2px;
+    height: 16px;
+    background: var(--viz-line);
+  }
+  .rsc__pull::after {
+    content: '';
+    position: absolute;
+    left: -4px;
+    bottom: -2px;
+    border-inline: 5px solid transparent;
+    border-top: 6px solid var(--viz-line);
+  }
+  .rsc__pull i {
+    position: absolute;
+    left: -3px;
+    top: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--viz-sound);
+    opacity: 0;
+  }
+  :global(.rsc__part--trap.is-pull) .rsc__pull i {
+    animation: rsc-drop 0.7s var(--ease) 2;
+  }
+  @keyframes rsc-drop {
+    0% {
+      top: -2px;
+      opacity: 0;
+    }
+    30% {
+      opacity: 1;
+    }
+    100% {
+      top: 12px;
+      opacity: 0;
+    }
+  }
+  .rsc__convbox {
+    display: grid;
+    gap: 6px;
+    padding: 8px 12px;
+    background: color-mix(in srgb, var(--viz-meta) 6%, transparent);
+    border: 1.5px solid color-mix(in srgb, var(--viz-meta) 40%, var(--border));
+    border-radius: var(--radius-sm);
+  }
+  .rsc__convhead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .rsc__convname {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .rsc__log {
+    display: grid;
+    gap: 3px;
+    min-height: calc(3 * 1.5em + 6px);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+  .rsc__log :global(div) {
+    animation: rsc-in 0.3s var(--ease);
+    overflow-wrap: anywhere;
+  }
+  .rsc__log :global(div.is-ok) {
+    color: var(--viz-sound-text);
+    font-weight: 600;
+  }
+  .rsc__log :global(div.is-bad) {
+    color: var(--viz-bad);
+    font-weight: 600;
+  }
+  @keyframes rsc-in {
+    from {
+      opacity: 0;
+      transform: translateY(3px);
+    }
+  }
+
+  .rsc__foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 480px) {
+    .rsc__buf--in {
+      width: 80%;
+    }
+    .rsc__seg {
+      font-size: 11px;
+    }
+    .rsc__spare {
+      font-size: 10px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rsc__seg--out,
+    .rsc__log :global(div) {
+      transition: none;
+      animation: none;
+    }
+    :global(.rsc__part--trap.is-pull) .rsc__pull i {
+      animation: none;
+    }
+  }
+</style>
