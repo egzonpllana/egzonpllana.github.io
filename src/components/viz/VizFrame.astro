@@ -6,7 +6,7 @@
  * reuses, so the visuals read as one system.
  *
  * Colour meaning, used the same way in every figure:
- *   --viz-sound  the audio itself (samples, PCM bytes)
+ *   --viz-sound  the audio itself (samples, PCM bytes); the content accent
  *   --viz-level  measurements of it (RMS, amplitudes, partial text)
  *   --viz-meta   description of it (headers, formats, handshakes)
  *   --viz-net    things on the wire (base64, socket messages)
@@ -85,7 +85,7 @@ const { fig, title, caption, label, class: className, ...rest } = Astro.props;
     --viz-sound-text: var(--accent-text);
     --viz-level: #b86e00;
     --viz-meta: #7a52cc;
-    --viz-net: #2f6bd8;
+    --viz-net: #c0307a;
     --viz-bad: #d63b41;
     --viz-grid: color-mix(in srgb, var(--fg) 7%, transparent);
     --viz-panel: var(--surface);
@@ -101,7 +101,7 @@ const { fig, title, caption, label, class: className, ...rest } = Astro.props;
   :root[data-theme='dark'] .viz {
     --viz-level: #f3b562;
     --viz-meta: #b79dff;
-    --viz-net: #5ca9ff;
+    --viz-net: #ff8dc7;
     --viz-bad: #ff8b73;
   }
   .viz *,

@@ -494,8 +494,9 @@ const {
       // ---------------------------------------------------------------
       let palette = readPalette();
 
+      // Read from the figure, so the page's content palette applies.
       function readPalette() {
-        const s = getComputedStyle(document.documentElement);
+        const s = getComputedStyle(root);
         const get = (name, fallback) =>
           (s.getPropertyValue(name) || fallback).trim();
         return {
@@ -548,10 +549,20 @@ const {
         dark: { wall: [38, 40, 46], floor: [28, 30, 35] },
       };
 
-      const accent = (alpha) =>
-        palette.dark
-          ? `rgba(46, 224, 106, ${alpha})`
-          : `rgba(11, 122, 59, ${alpha})`;
+      /** The accent at an alpha; accepts #rgb or #rrggbb. */
+      const accent = (alpha) => {
+        const hex = palette.accent.replace('#', '');
+        const full =
+          hex.length === 3
+            ? hex
+                .split('')
+                .map((c) => c + c)
+                .join('')
+            : hex;
+        const n = parseInt(full, 16);
+        if (Number.isNaN(n)) return palette.accent;
+        return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+      };
 
       // ---------------------------------------------------------------
       // Cameras. The rig panel is fixed so the phone is the only thing that

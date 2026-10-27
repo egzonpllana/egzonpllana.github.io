@@ -52,17 +52,27 @@
 .prose ol {
   padding-left: 1.4rem;
 }
+.prose li::marker {
+  color: var(--accent);
+}
+.prose ol > li::marker {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
 .prose li + li {
   margin-top: var(--sp-2);
 }
 
-/* Callout: accent hairline, faint accent wash. */
+/* Callout: accent hairline, faint accent wash, accent lead-in. */
 .prose blockquote {
   padding: var(--sp-4) var(--sp-5);
   border: 1px solid var(--accent-line);
   border-radius: var(--radius-lg);
   background: var(--accent-soft);
   color: var(--fg);
+}
+.prose blockquote > :first-child > strong:first-child {
+  color: var(--accent-text);
 }
 .prose blockquote > * + * {
   margin-top: var(--sp-3);
@@ -151,6 +161,7 @@
 .prose :not(pre) > code {
   font-family: var(--font-mono);
   font-size: 0.86em;
+  color: var(--code-ink, inherit);
   background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: 6px;

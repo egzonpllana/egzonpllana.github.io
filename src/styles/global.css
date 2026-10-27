@@ -94,6 +94,32 @@
 }
 
 /* ===========================================================================
+   Content palette
+   Long reads (articles, written talks) keep the brand green out entirely:
+   blue leads (links, callouts, active states, focus) and the figures carry
+   the other hues. Everything inside reads the accent tokens, so overriding
+   them here is the whole rule. Apply with class="palette-content".
+   ========================================================================== */
+.palette-content {
+  --accent: #2f6bd8;
+  --accent-text: #1f56b8;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(47, 107, 216, 0.08);
+  --accent-line: rgba(47, 107, 216, 0.5);
+  --selection: rgba(47, 107, 216, 0.18);
+  --code-ink: #6a43c2;
+}
+:root[data-theme='dark'] .palette-content {
+  --accent: #5ca9ff;
+  --accent-text: #7db9ff;
+  --accent-fg: #06182e;
+  --accent-soft: rgba(92, 169, 255, 0.1);
+  --accent-line: rgba(92, 169, 255, 0.55);
+  --selection: rgba(92, 169, 255, 0.26);
+  --code-ink: #c3adff;
+}
+
+/* ===========================================================================
    Reset
    ========================================================================== */
 *,
