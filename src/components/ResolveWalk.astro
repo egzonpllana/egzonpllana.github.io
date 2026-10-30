@@ -1,0 +1,610 @@
+---
+/**
+ * Resolving the example app's UsersViewModel one call at a time: the registry
+ * the container looks keys up in, the call stack on the one thread doing the
+ * work, and how deep the lock is held. The NSLock variant stops at the first
+ * nested resolve, where the thread waits for itself.
+ *
+ * The registry and both walks mirror OrbitCore's Container.resolve() and the
+ * example app's composition root; the app module is called "MyApp".
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'The example app’s graph: the view model needs a user service and a logger, and the user service needs the logger too. Every builder runs inside the outer resolve() call, on the same thread, while the lock is held. Switch to NSLock to see why the lock has to be recursive.',
+} = Astro.props;
+
+type Policy = '.default' | '.strong';
+type FrameState = 'build' | 'wait' | 'hit' | 'ret' | 'blocked';
+interface Frame {
+  type: string;
+  state: FrameState;
+  note: string;
+}
+interface Step {
+  frames: Frame[];
+  depth: number;
+  row: number;
+  cached: boolean;
+  builds: number;
+  text: string;
+  end?: 'ok' | 'bad';
+}
+
+const registry: { key: string; policy: Policy }[] = [
+  { key: 'MyApp.UsersViewModel', policy: '.default' },
+  { key: 'MyApp.UserServiceProtocol', policy: '.default' },
+  { key: 'MyApp.LoggingServiceProtocol', policy: '.strong' },
+];
+const LOGGER_ROW = 2;
+
+const VM = 'UsersViewModel';
+const US = 'UserServiceProtocol';
+const LS = 'LoggingServiceProtocol';
+
+const first: Step = {
+  frames: [{ type: VM, state: 'build', note: 'builder running' }],
+  depth: 1,
+  row: 0,
+  cached: false,
+  builds: 1,
+  text: 'resolve<UsersViewModel>() takes the lock, turns the type into the key MyApp.UsersViewModel and finds a .default factory. Nothing is cached for .default, so the builder runs, with the lock still held.',
+};
+
+const recursive: Step[] = [
+  first,
+  {
+    frames: [
+      { type: VM, state: 'wait', note: 'needs UserServiceProtocol' },
+      { type: US, state: 'build', note: 'builder running' },
+    ],
+    depth: 2,
+    row: 1,
+    cached: false,
+    builds: 2,
+    text: 'The builder calls resolve() on the same thread. NSRecursiveLock sees that this thread already owns it, counts a second lock() and lets it through. UserServiceProtocol is .default as well, so another builder runs.',
+  },
+  {
+    frames: [
+      { type: VM, state: 'wait', note: 'needs UserServiceProtocol' },
+      { type: US, state: 'wait', note: 'needs LoggingServiceProtocol' },
+      { type: LS, state: 'build', note: 'cache empty, builder running' },
+    ],
+    depth: 3,
+    row: LOGGER_ROW,
+    cached: false,
+    builds: 3,
+    text: 'UserService needs the logger: lock depth 3. LoggingServiceProtocol is .strong and its cache slot is empty, so this is the one time its builder runs.',
+  },
+  {
+    frames: [
+      { type: VM, state: 'wait', note: 'needs UserServiceProtocol' },
+      { type: US, state: 'wait', note: 'needs LoggingServiceProtocol' },
+      { type: LS, state: 'ret', note: 'LoggingService #1, stored' },
+    ],
+    depth: 2,
+    row: LOGGER_ROW,
+    cached: true,
+    builds: 3,
+    text: 'LoggingService #1 is stored in instances[key] and returned. The defer unlocks once: depth 2.',
+  },
+  {
+    frames: [
+      { type: VM, state: 'wait', note: 'needs UserServiceProtocol' },
+      { type: US, state: 'ret', note: 'UserService, not stored' },
+    ],
+    depth: 1,
+    row: 1,
+    cached: true,
+    builds: 3,
+    text: 'UserService is built around logger #1 and handed back. A .default result is never stored. Depth 1.',
+  },
+  {
+    frames: [
+      { type: VM, state: 'wait', note: 'needs LoggingServiceProtocol' },
+      { type: LS, state: 'hit', note: 'cache hit, #1 again' },
+    ],
+    depth: 2,
+    row: LOGGER_ROW,
+    cached: true,
+    builds: 3,
+    text: 'Back in the view model’s builder, the second dependency is the logger again. Depth 2, cache hit: the same #1 comes back and no builder runs.',
+  },
+  {
+    frames: [
+      { type: VM, state: 'ret', note: 'cast as? UsersViewModel, returned' },
+    ],
+    depth: 0,
+    row: 0,
+    cached: true,
+    builds: 3,
+    end: 'ok',
+    text: 'The view model is built and cast with as? UsersViewModel; a failed cast would throw typeMismatch. The outermost defer releases the lock. Three builders ran, one instance is cached, and one thread held the lock three deep.',
+  },
+];
+
+const plain: Step[] = [
+  first,
+  {
+    frames: [
+      { type: VM, state: 'wait', note: 'needs UserServiceProtocol' },
+      { type: US, state: 'blocked', note: 'lock() never returns' },
+    ],
+    depth: 1,
+    row: 0,
+    cached: false,
+    builds: 1,
+    end: 'bad',
+    text: 'The builder calls resolve() on the same thread, which calls lock() again. NSLock does not track who owns it, so the thread now waits for itself to unlock. Nothing crashes and nothing is logged: the app freezes.',
+  },
+];
+
+const variants = { recursive, plain };
+const STATE_LABEL: Record<FrameState, string> = {
+  build: 'building',
+  wait: 'waiting',
+  hit: 'cache hit',
+  ret: 'returned',
+  blocked: 'deadlock',
+};
+---
+
+<VizFrame
+  fig="01"
+  title="One resolve() call walking the graph"
+  caption={caption}
+  class="rw"
+  data-rw
+>
+  <div slot="tools" class="rw__tools">
+    <button type="button" class="viz-btn" data-next aria-label="Next step"
+      >step</button
+    >
+    <AnimControls label="Resolve" />
+  </div>
+
+  <div class="rw__bar">
+    <div class="viz-seg" role="group" aria-label="Lock used by the container">
+      <button type="button" aria-pressed="true" data-variant="recursive"
+        >NSRecursiveLock</button
+      >
+      <button type="button" aria-pressed="false" data-variant="plain"
+        >NSLock</button
+      >
+    </div>
+    <span class="viz-chip viz-chip--level" data-builds>builders run: 1</span>
+  </div>
+
+  <div class="rw__grid">
+    <section class="rw__col" aria-label="Registry">
+      <span class="viz-label">registry · key → factory</span>
+      <ul class="rw__reg viz-panel">
+        {
+          registry.map((r, i) => (
+            <li class="rw__row" data-row={i}>
+              <span class="rw__key">{r.key}</span>
+              <span class="viz-chip viz-chip--meta">{r.policy}</span>
+              <span class="rw__cache" data-cache={i}>
+                {r.policy === '.strong' ? 'cache: empty' : 'never cached'}
+              </span>
+            </li>
+          ))
+        }
+      </ul>
+    </section>
+
+    <section class="rw__col" aria-label="Call stack">
+      <div class="rw__stackhead">
+        <span class="viz-label">call stack · thread 1</span>
+        <span class="rw__lock" data-lock>
+          <span class="rw__pips" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span data-lock-text>lock held ×1</span>
+        </span>
+      </div>
+      <ol class="rw__stack viz-panel" data-stack></ol>
+    </section>
+  </div>
+
+  <p class="rw__note" data-note aria-live="polite"></p>
+
+  <div class="viz-legend rw__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-meta)"></i>key and policy</span>
+    <span><i style="--c:var(--viz-sound)"></i>instance being built</span>
+    <span><i style="--c:var(--viz-net)"></i>lock held by thread 1</span>
+    <span><i style="--c:var(--viz-bad)"></i>deadlock</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-rw-data
+    set:html={JSON.stringify({ variants, labels: STATE_LABEL })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = 2600;
+
+    function initResolveWalk(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(root.querySelector('[data-rw-data]').textContent);
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const stackEl = root.querySelector('[data-stack]');
+      const noteEl = root.querySelector('[data-note]');
+      const lockEl = root.querySelector('[data-lock]');
+      const lockText = root.querySelector('[data-lock-text]');
+      const pips = [...root.querySelectorAll('.rw__pips i')];
+      const buildsEl = root.querySelector('[data-builds]');
+      const rows = [...root.querySelectorAll('[data-row]')];
+      const loggerCache = root.querySelector('[data-cache="2"]');
+      const segBtns = [...root.querySelectorAll('[data-variant]')];
+
+      let variant = 'recursive';
+      let current = 0;
+      let playing = false;
+      let timer = 0;
+
+      const steps = () => data.variants[variant];
+      const last = () => steps().length - 1;
+
+      function frameEl(frame, i) {
+        const li = document.createElement('li');
+        li.className = `rw__frame rw__frame--${frame.state}`;
+        li.style.setProperty('--lvl', String(i));
+        const idx = document.createElement('span');
+        idx.className = 'rw__idx';
+        idx.textContent = String(i + 1);
+        const call = document.createElement('span');
+        call.className = 'rw__call';
+        call.textContent = `resolve<${frame.type}>()`;
+        const state = document.createElement('span');
+        state.className = 'rw__state';
+        state.textContent = data.labels[frame.state];
+        const note = document.createElement('span');
+        note.className = 'rw__fnote';
+        note.textContent = frame.note;
+        li.append(idx, call, state, note);
+        return li;
+      }
+
+      function render() {
+        const step = steps()[current];
+        stackEl.replaceChildren(...step.frames.map(frameEl));
+        noteEl.textContent = `${current + 1} / ${steps().length} · ${step.text}`;
+        noteEl.dataset.end = step.end || '';
+        rows.forEach((row, i) => row.classList.toggle('is-on', i === step.row));
+        loggerCache.textContent = step.cached ? 'cache: #1' : 'cache: empty';
+        loggerCache.classList.toggle('is-filled', step.cached);
+        buildsEl.textContent = `builders run: ${step.builds}`;
+
+        const blocked = step.end === 'bad';
+        pips.forEach((p, i) => p.classList.toggle('is-on', i < step.depth));
+        lockEl.classList.toggle('is-bad', blocked);
+        lockEl.classList.toggle('is-free', step.depth === 0);
+        if (blocked) lockText.textContent = 'thread 1 waits on itself';
+        else if (step.depth === 0) lockText.textContent = 'lock free';
+        else lockText.textContent = `lock held ×${step.depth}`;
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(() => {
+          current += 1;
+          render();
+          if (current >= last()) {
+            playing = false;
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          schedule();
+        }, STEP_MS);
+      }
+
+      function play() {
+        if (playing) return;
+        if (current >= last()) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        schedule();
+      }
+
+      function reset() {
+        stop();
+        current = 0;
+        render();
+      }
+
+      root.querySelector('[data-next]').addEventListener('click', () => {
+        stop();
+        current = current >= last() ? 0 : current + 1;
+        render();
+        root.dispatchEvent(
+          new CustomEvent(current >= last() ? 'anim:ended' : 'anim:paused'),
+        );
+      });
+
+      segBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.variant === variant) return;
+          variant = btn.dataset.variant;
+          segBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          reset();
+          // Reduced motion lands on the outcome; otherwise the walk replays.
+          if (reduce) {
+            current = last();
+            render();
+            return;
+          }
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          play();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      // Reduced motion rests on the finished walk until the reader plays it.
+      current = reduce ? last() : 0;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-rw]').forEach(initResolveWalk);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .rw__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rw__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+
+  .rw__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: var(--sp-4);
+  }
+  @media (max-width: 680px) {
+    .rw__grid {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--sp-3);
+    }
+  }
+  .rw__col {
+    display: grid;
+    align-content: start;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+
+  .rw__reg {
+    display: grid;
+    padding: 4px;
+  }
+  .rw__row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 4px var(--sp-2);
+    padding: 8px 10px;
+    border-radius: 8px;
+    transition: background 0.25s var(--ease);
+  }
+  .rw__row + .rw__row {
+    border-top: 1px dashed var(--border);
+  }
+  .rw__row.is-on {
+    background: color-mix(in srgb, var(--viz-meta) 10%, transparent);
+  }
+  .rw__key {
+    grid-column: 1 / -1;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .rw__row.is-on .rw__key {
+    color: var(--viz-meta);
+  }
+  .rw__cache {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+  .rw__cache.is-filled {
+    color: var(--viz-sound-text);
+    font-weight: 600;
+  }
+
+  .rw__stackhead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .rw__lock {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 9px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--viz-net);
+    border: 1px solid color-mix(in srgb, var(--viz-net) 40%, transparent);
+    background: color-mix(in srgb, var(--viz-net) 10%, transparent);
+    border-radius: 999px;
+    transition:
+      color 0.2s var(--ease),
+      border-color 0.2s var(--ease),
+      background 0.2s var(--ease);
+  }
+  .rw__lock.is-free {
+    color: var(--fg-faint);
+    border-color: var(--border-strong);
+    background: transparent;
+  }
+  .rw__lock.is-bad {
+    color: var(--viz-bad);
+    border-color: color-mix(in srgb, var(--viz-bad) 50%, transparent);
+    background: color-mix(in srgb, var(--viz-bad) 12%, transparent);
+  }
+  .rw__pips {
+    display: inline-flex;
+    gap: 3px;
+  }
+  .rw__pips i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    border: 1px solid currentColor;
+    transition: background 0.2s var(--ease);
+  }
+  .rw__pips i.is-on {
+    background: currentColor;
+  }
+
+  .rw__stack {
+    display: grid;
+    gap: 6px;
+    min-height: 13.5rem;
+    padding: var(--sp-3);
+    align-content: start;
+  }
+  .rw__stack :global(.rw__frame) {
+    --c: var(--fg-faint);
+    display: grid;
+    grid-template-columns: 1.1rem minmax(0, 1fr);
+    align-items: center;
+    gap: 2px 8px;
+    margin-left: calc(var(--lvl) * 14px);
+    padding: 7px 10px;
+    border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+    border-left: 3px solid var(--c);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--c) 7%, var(--surface));
+    animation: rw-in 0.35s var(--ease) both;
+  }
+  .rw__stack :global(.rw__frame--build),
+  .rw__stack :global(.rw__frame--ret),
+  .rw__stack :global(.rw__frame--hit) {
+    --c: var(--viz-sound);
+  }
+  .rw__stack :global(.rw__frame--wait) {
+    --c: var(--fg-faint);
+    animation: none;
+  }
+  .rw__stack :global(.rw__frame--blocked) {
+    --c: var(--viz-bad);
+  }
+  .rw__stack :global(.rw__idx) {
+    grid-row: span 3;
+    align-self: start;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .rw__stack :global(.rw__call) {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .rw__stack :global(.rw__state) {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--c);
+  }
+  .rw__stack :global(.rw__frame--wait .rw__state) {
+    color: var(--fg-faint);
+  }
+  .rw__stack :global(.rw__fnote) {
+    grid-column: 2;
+    font-size: 11.5px;
+    line-height: 1.35;
+    color: var(--fg-muted);
+  }
+  @keyframes rw-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+  @media (max-width: 480px) {
+    .rw__stack :global(.rw__frame) {
+      margin-left: calc(var(--lvl) * 8px);
+      padding: 6px 8px;
+    }
+    .rw__stack :global(.rw__call) {
+      font-size: 11px;
+    }
+  }
+
+  .rw__note {
+    margin: var(--sp-3) 0 0;
+    padding: var(--sp-3) var(--sp-4);
+    min-height: 5.6rem;
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--viz-net);
+    border-radius: var(--radius-sm);
+  }
+  .rw__note[data-end='bad'] {
+    border-left-color: var(--viz-bad);
+  }
+  .rw__note[data-end='ok'] {
+    border-left-color: var(--viz-sound);
+  }
+  .rw__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rw__stack :global(.rw__frame) {
+      animation: none;
+    }
+  }
+</style>

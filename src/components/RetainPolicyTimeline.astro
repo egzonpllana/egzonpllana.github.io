@@ -1,0 +1,651 @@
+---
+/**
+ * The same seven events played against the three retain policies. Pick an
+ * event to see what the container keeps, which screen holds which instance,
+ * and on which events a builder ran. The value-type variant shows why .weak
+ * only means something for classes.
+ *
+ * Every lane is simulated at build time from the rules in OrbitCore's
+ * Container: .default stores nothing, .strong keeps instances[key], .weak
+ * keeps a weak NSMapTable entry, and reset() drops both caches.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Screens A to D each resolve the same registration and keep the result while they are open. After reset(), the container forgets its cached instance but cannot take it back from a screen that already holds it, so the next resolve builds a second one.',
+} = Astro.props;
+
+type Policy = 'default' | 'strong' | 'weak';
+type Kind = 'class' | 'struct';
+type Op =
+  | { type: 'resolve'; holder: string }
+  | { type: 'release'; holder: string }
+  | { type: 'reset' };
+
+const EVENTS: { label: string; text: string; op: Op }[] = [
+  {
+    label: 'A opens',
+    text: 'Screen A resolves the image cache and keeps it.',
+    op: { type: 'resolve', holder: 'A' },
+  },
+  {
+    label: 'B opens',
+    text: 'Screen B resolves it while A is still open.',
+    op: { type: 'resolve', holder: 'B' },
+  },
+  {
+    label: 'A closes',
+    text: 'Screen A closes and drops its reference.',
+    op: { type: 'release', holder: 'A' },
+  },
+  {
+    label: 'B closes',
+    text: 'Screen B closes. Nothing outside the container holds the cache now.',
+    op: { type: 'release', holder: 'B' },
+  },
+  {
+    label: 'C opens',
+    text: 'Screen C opens and resolves it.',
+    op: { type: 'resolve', holder: 'C' },
+  },
+  {
+    label: 'reset()',
+    text: 'Logout calls reset(ignoreDependencies: []) while screen C is still on screen.',
+    op: { type: 'reset' },
+  },
+  {
+    label: 'D opens',
+    text: 'Screen D opens and resolves it.',
+    op: { type: 'resolve', holder: 'D' },
+  },
+];
+
+interface Held {
+  holder: string;
+  id: number;
+}
+interface LaneStep {
+  keeps: string;
+  keepsKind: 'none' | 'strong' | 'weak' | 'nil' | 'value';
+  held: Held[];
+  note: string;
+  built: boolean;
+  builds: number;
+  split: boolean;
+}
+
+/** Plays the events against one policy and returns the state after each. */
+function simulate(policy: Policy, kind: Kind): LaneStep[] {
+  let next = 1;
+  let builds = 0;
+  const holders = new Map<string, number>();
+  let strongRef: number | null = null;
+  let weakRef: number | null = null;
+  let weakNil = false;
+  const isClass = kind === 'class';
+  const ownersOf = (id: number) =>
+    [...holders.entries()].filter(([, v]) => v === id).map(([h]) => h);
+  const alive = (id: number) =>
+    ownersOf(id).length > 0 || (isClass && strongRef === id);
+
+  return EVENTS.map(({ op }) => {
+    let note = '';
+    let built = false;
+
+    if (op.type === 'resolve') {
+      let id: number;
+      if (policy === 'strong' && strongRef !== null) {
+        id = strongRef;
+        note = isClass ? `cache hit, #${id}` : `a copy of #${id}`;
+      } else if (policy === 'weak' && isClass && weakRef !== null) {
+        id = weakRef;
+        note = `cache hit, #${id}`;
+      } else {
+        id = next++;
+        built = true;
+        note = `builder ran, #${id}`;
+        if (policy === 'strong') {
+          strongRef = id;
+          note += ' kept';
+        }
+        if (policy === 'weak') {
+          if (isClass) {
+            weakRef = id;
+            weakNil = false;
+          } else {
+            weakNil = true;
+            note += ', its box freed at once';
+          }
+        }
+      }
+      if (built) builds += 1;
+      holders.set(op.holder, id);
+    } else if (op.type === 'release') {
+      const id = holders.get(op.holder);
+      holders.delete(op.holder);
+      if (id === undefined) {
+        note = 'nothing held';
+      } else if (!isClass) {
+        note = `${op.holder}’s copy goes away`;
+      } else if (alive(id)) {
+        const by = ownersOf(id);
+        note = `#${id} still held by ${by.length ? by.join(', ') : 'the container'}`;
+      } else {
+        note = `#${id} freed`;
+        if (weakRef === id) {
+          weakRef = null;
+          weakNil = true;
+          note += ', weak ref turns nil';
+        }
+      }
+    } else {
+      const had = policy === 'strong' ? strongRef : weakRef;
+      strongRef = null;
+      weakRef = null;
+      weakNil = false;
+      if (policy === 'default') note = 'nothing cached, nothing to clear';
+      else if (had === null) note = 'cache already empty';
+      else {
+        const by = ownersOf(had);
+        note = by.length
+          ? `cache cleared; ${by.join(', ')} still holds #${had}`
+          : `cache cleared; #${had} freed`;
+      }
+    }
+
+    let keeps = 'nothing';
+    let keepsKind: LaneStep['keepsKind'] = 'none';
+    if (policy === 'strong' && strongRef !== null) {
+      keeps = isClass ? `strong ref → #${strongRef}` : `value #${strongRef}`;
+      keepsKind = isClass ? 'strong' : 'value';
+    } else if (policy === 'weak' && weakRef !== null) {
+      keeps = `weak ref → #${weakRef}`;
+      keepsKind = 'weak';
+    } else if (policy === 'weak' && weakNil) {
+      keeps = 'weak ref → nil';
+      keepsKind = 'nil';
+    }
+
+    const held = [...holders.entries()].map(([holder, id]) => ({
+      holder,
+      id,
+    }));
+    const ids = new Set(held.map((h) => h.id));
+    return {
+      keeps,
+      keepsKind,
+      held,
+      note,
+      built,
+      builds,
+      split: isClass && policy !== 'default' && ids.size > 1,
+    };
+  });
+}
+
+const POLICIES: { id: Policy; name: string; rule: string }[] = [
+  { id: 'default', name: '.default', rule: 'builds on every resolve' },
+  { id: 'strong', name: '.strong', rule: 'keeps a strong reference' },
+  { id: 'weak', name: '.weak', rule: 'keeps a weak reference' },
+];
+
+const variants = {
+  class: POLICIES.map((p) => simulate(p.id, 'class')),
+  struct: POLICIES.map((p) => simulate(p.id, 'struct')),
+};
+const START = 5; // rest on reset(), where the policies differ most
+---
+
+<VizFrame
+  fig="02"
+  title="Three retain policies, the same seven events"
+  caption={caption}
+  class="rpt"
+  data-rpt
+>
+  <div slot="tools" class="rpt__tools">
+    <AnimControls label="Timeline" />
+  </div>
+
+  <div class="rpt__bar">
+    <div class="viz-seg" role="group" aria-label="Registered type">
+      <button type="button" aria-pressed="true" data-kind="class">class</button>
+      <button type="button" aria-pressed="false" data-kind="struct"
+        >struct</button
+      >
+    </div>
+    <span class="viz-mono rpt__reg"
+      >register(with: policy) {'{'} _ in ImageCache() {'}'}</span
+    >
+  </div>
+
+  <div class="rpt__track" role="group" aria-label="Events">
+    {
+      EVENTS.map((e, i) => (
+        <button
+          type="button"
+          class="rpt__tick"
+          data-ev={i}
+          aria-label={`Event ${i + 1}: ${e.label}`}
+          aria-pressed={i === START ? 'true' : 'false'}
+        >
+          <b>{i + 1}</b>
+          <span>{e.label}</span>
+        </button>
+      ))
+    }
+  </div>
+  <p class="rpt__event" data-event aria-live="polite"></p>
+
+  <div class="rpt__lanes">
+    {
+      POLICIES.map((p, li) => (
+        <section class="rpt__lane viz-panel" data-lane={li} aria-label={p.name}>
+          <header class="rpt__lhead">
+            <span class="viz-chip viz-chip--meta">{p.name}</span>
+            <span class="rpt__rule">{p.rule}</span>
+          </header>
+          <dl class="rpt__dl">
+            <div>
+              <dt class="viz-label">container keeps</dt>
+              <dd class="viz-mono" data-keeps />
+            </div>
+            <div>
+              <dt class="viz-label">screens hold</dt>
+              <dd class="rpt__held" data-held />
+            </div>
+          </dl>
+          <p class="rpt__note" data-note />
+          <div class="rpt__builds">
+            <span class="viz-label">builder ran</span>
+            <span class="rpt__cells" aria-hidden="true">
+              {EVENTS.map(() => (
+                <i />
+              ))}
+            </span>
+            <span class="viz-mono rpt__count" data-count />
+          </div>
+        </section>
+      ))
+    }
+  </div>
+
+  <div class="viz-legend rpt__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>instance</span>
+    <span
+      ><i style="--c:var(--viz-meta)"></i>policy and container reference</span
+    >
+    <span><i style="--c:var(--viz-level)"></i>builder ran</span>
+    <span><i style="--c:var(--viz-bad)"></i>two live instances</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-rpt-data
+    set:html={JSON.stringify({
+      variants,
+      events: EVENTS.map((e) => e.text),
+      start: START,
+    })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = 1700;
+
+    function initRetainTimeline(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-rpt-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const ticks = [...root.querySelectorAll('[data-ev]')];
+      const eventEl = root.querySelector('[data-event]');
+      const lanes = [...root.querySelectorAll('[data-lane]')];
+      const kindBtns = [...root.querySelectorAll('[data-kind]')];
+      const last = ticks.length - 1;
+
+      let kind = 'class';
+      let current = data.start;
+      let playing = false;
+      let timer = 0;
+
+      function chip(text, cls) {
+        const el = document.createElement('span');
+        el.className = `viz-chip ${cls}`;
+        el.textContent = text;
+        return el;
+      }
+
+      function render() {
+        ticks.forEach((t, i) => {
+          t.setAttribute('aria-pressed', String(i === current));
+          t.classList.toggle('is-past', i < current);
+        });
+        eventEl.textContent = `${current + 1} / ${ticks.length} · ${data.events[current]}`;
+
+        lanes.forEach((lane, li) => {
+          const states = data.variants[kind][li];
+          const s = states[current];
+          const keeps = lane.querySelector('[data-keeps]');
+          keeps.textContent = s.keeps;
+          keeps.dataset.kind = s.keepsKind;
+
+          const held = lane.querySelector('[data-held]');
+          held.replaceChildren(
+            ...(s.held.length
+              ? s.held.map((h) =>
+                  chip(
+                    `${h.holder} → #${h.id}`,
+                    s.split ? 'viz-chip--bad' : 'viz-chip--sound',
+                  ),
+                )
+              : [chip('no screen open', '')]),
+          );
+
+          const note = lane.querySelector('[data-note]');
+          note.textContent = s.note;
+          note.classList.toggle('is-built', s.built);
+          lane.classList.toggle('is-split', s.split);
+
+          lane.querySelectorAll('.rpt__cells i').forEach((cell, i) => {
+            cell.classList.toggle('is-on', i <= current && states[i].built);
+            cell.classList.toggle('is-now', i === current);
+            cell.classList.toggle('is-future', i > current);
+          });
+          lane.querySelector('[data-count]').textContent =
+            `${s.builds} build${s.builds === 1 ? '' : 's'}`;
+        });
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(() => {
+          current += 1;
+          render();
+          if (current >= last) {
+            playing = false;
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          schedule();
+        }, STEP_MS);
+      }
+
+      function goTo(i) {
+        stop();
+        current = Math.max(0, Math.min(last, i));
+        render();
+        root.dispatchEvent(
+          new CustomEvent(current >= last ? 'anim:ended' : 'anim:paused'),
+        );
+      }
+
+      ticks.forEach((t, i) => t.addEventListener('click', () => goTo(i)));
+      root.querySelector('.rpt__track').addEventListener('keydown', (e) => {
+        const delta = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+        if (!delta) return;
+        e.preventDefault();
+        goTo(current + delta);
+        ticks[current].focus();
+      });
+
+      kindBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.kind === kind) return;
+          kind = btn.dataset.kind;
+          kindBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play() {
+          if (playing) return;
+          if (current >= last) {
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          playing = true;
+          schedule();
+        },
+        pause: stop,
+        reset() {
+          stop();
+          current = 0;
+          render();
+        },
+      });
+
+      // Until it plays, and always with reduced motion, rest on reset().
+      current = reduce ? last : data.start;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-rpt]').forEach(initRetainTimeline);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .rpt__tools {
+    display: flex;
+    align-items: center;
+  }
+  .rpt__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .rpt__reg {
+    font-size: 11.5px;
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+  }
+
+  .rpt__track {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .rpt__tick {
+    display: grid;
+    justify-items: center;
+    gap: 4px;
+    padding: 6px 2px;
+    font: inherit;
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition:
+      border-color 0.2s var(--ease),
+      background 0.2s var(--ease),
+      color 0.2s var(--ease);
+  }
+  .rpt__tick b {
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .rpt__tick span {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    line-height: 1.2;
+    text-align: center;
+  }
+  .rpt__tick.is-past {
+    color: var(--fg);
+    border-color: var(--border-strong);
+  }
+  .rpt__tick[aria-pressed='true'] {
+    color: var(--accent-fg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .rpt__tick:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  @media (max-width: 560px) {
+    .rpt__tick span {
+      display: none;
+    }
+  }
+
+  .rpt__event {
+    margin: var(--sp-2) 0 var(--sp-3);
+    min-height: 2.8em;
+    font-size: var(--fs-sm);
+    line-height: 1.45;
+    color: var(--fg);
+  }
+
+  .rpt__lanes {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-3);
+  }
+  @media (max-width: 760px) {
+    .rpt__lanes {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .rpt__lane {
+    display: grid;
+    align-content: start;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    transition: border-color 0.25s var(--ease);
+  }
+  .rpt__lane.is-split {
+    border-color: color-mix(in srgb, var(--viz-bad) 55%, transparent);
+  }
+  .rpt__lhead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+  }
+  .rpt__rule {
+    font-size: var(--fs-xs);
+    color: var(--fg-muted);
+  }
+  .rpt__dl {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+  }
+  .rpt__dl div {
+    display: grid;
+    gap: 3px;
+  }
+  .rpt__dl dd {
+    margin: 0;
+  }
+  .rpt__dl dd[data-kind] {
+    font-weight: 600;
+    color: var(--fg-faint);
+  }
+  .rpt__dl dd[data-kind='strong'],
+  .rpt__dl dd[data-kind='weak'],
+  .rpt__dl dd[data-kind='value'] {
+    color: var(--viz-meta);
+  }
+  .rpt__held {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-height: 22px;
+  }
+  .rpt__note {
+    margin: 0;
+    min-height: 2.6em;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--fg-muted);
+  }
+  .rpt__note.is-built {
+    color: var(--viz-level);
+    font-weight: 600;
+  }
+  .rpt__lane.is-split .rpt__note {
+    color: var(--viz-bad);
+  }
+
+  .rpt__builds {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding-top: var(--sp-2);
+    border-top: 1px dashed var(--border);
+  }
+  .rpt__cells {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 3px;
+  }
+  .rpt__cells i {
+    height: 10px;
+    border-radius: 3px;
+    border: 1px solid var(--border-strong);
+    transition:
+      background 0.2s var(--ease),
+      opacity 0.2s var(--ease);
+  }
+  .rpt__cells i.is-on {
+    background: var(--viz-level);
+    border-color: var(--viz-level);
+  }
+  .rpt__cells i.is-now {
+    outline: 1.5px solid var(--fg-muted);
+    outline-offset: 1px;
+  }
+  .rpt__cells i.is-future {
+    opacity: 0.35;
+  }
+  .rpt__count {
+    font-size: 11px;
+    color: var(--viz-level);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .rpt__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rpt__tick,
+    .rpt__cells i,
+    .rpt__lane {
+      transition: none;
+    }
+  }
+</style>

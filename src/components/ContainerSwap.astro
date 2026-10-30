@@ -1,0 +1,577 @@
+---
+/**
+ * The test seam: one static ContainerHolder.container that every @Injected
+ * property reads on first access. Played twice: under XCTest, which runs one
+ * test at a time per process, and under Swift Testing's default in-process
+ * parallelism, where two tests share the one global.
+ *
+ * Steps follow the example app's helpers: createTestDependencies() installs a
+ * TestContainer, removeTestDependencies() sets the holder to nil, and the
+ * wrapper calls fatalError("Container is missing") when it finds nil.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Every @Injected property asks the same static holder on its first read. That is what makes the swap a one-liner, and it is also why two tests that run at the same time in one process can hand each other’s mocks to their subjects.',
+} = Astro.props;
+
+type Lane = 'host' | 't1' | 't2' | 'all';
+type CardState = 'none' | 'held' | 'gone';
+interface Step {
+  lane: Lane;
+  text: string;
+  holder: 'nil' | 'app' | 'A' | 'B';
+  cards: [CardState, CardState, CardState];
+  sut1: string;
+  sut2: string;
+  bad?: boolean;
+}
+
+const hostStep = (tail: string): Step => ({
+  lane: 'host',
+  text: `Xcode launches the host app. ProcessInfo.isTesting is true, so App.init registers the stub graph and puts it in the holder. ${tail}`,
+  holder: 'app',
+  cards: ['held', 'none', 'none'],
+  sut1: '',
+  sut2: '',
+});
+
+const variants: Record<'xctest' | 'parallel', Step[]> = {
+  xctest: [
+    hostStep('XCTest then runs the tests one after another.'),
+    {
+      lane: 't1',
+      text: 'setUp: createTestDependencies(mockUserService, mockLoggingService) points the holder at a new TestContainer.',
+      holder: 'A',
+      cards: ['gone', 'held', 'none'],
+      sut1: '',
+      sut2: '',
+    },
+    {
+      lane: 't1',
+      text: 'The subject reads its @Injected userService for the first time: holder, then TestContainer A, then the first element that is a UserServiceProtocol: mock A.',
+      holder: 'A',
+      cards: ['gone', 'held', 'none'],
+      sut1: 'mock A',
+      sut2: '',
+    },
+    {
+      lane: 't1',
+      text: 'tearDown: removeTestDependencies() sets the holder to nil.',
+      holder: 'nil',
+      cards: ['gone', 'gone', 'none'],
+      sut1: 'mock A',
+      sut2: '',
+    },
+    {
+      lane: 't2',
+      text: 'Only now does the next test start. setUp installs TestContainer B.',
+      holder: 'B',
+      cards: ['gone', 'gone', 'held'],
+      sut1: 'mock A',
+      sut2: '',
+    },
+    {
+      lane: 't2',
+      text: 'Its subject reads userService and gets mock B.',
+      holder: 'B',
+      cards: ['gone', 'gone', 'held'],
+      sut1: 'mock A',
+      sut2: 'mock B',
+    },
+    {
+      lane: 'all',
+      text: 'Inside one process XCTest runs one test at a time. With parallel testing on, Xcode starts more runner processes, and each process has its own ContainerHolder.',
+      holder: 'B',
+      cards: ['gone', 'gone', 'held'],
+      sut1: 'mock A',
+      sut2: 'mock B',
+    },
+  ],
+  parallel: [
+    hostStep(
+      'Swift Testing then starts both tests at once, as tasks in this same process.',
+    ),
+    {
+      lane: 't1',
+      text: 'Test 1 installs TestContainer A.',
+      holder: 'A',
+      cards: ['gone', 'held', 'none'],
+      sut1: '',
+      sut2: '',
+    },
+    {
+      lane: 't2',
+      text: 'Test 2, running at the same time, installs TestContainer B into the same global.',
+      holder: 'B',
+      cards: ['gone', 'gone', 'held'],
+      sut1: '',
+      sut2: '',
+    },
+    {
+      lane: 't1',
+      text: 'Test 1’s subject reads userService for the first time. The holder says B, so it gets mock B. Test 1 then asserts on mock A, which was never called, and fails.',
+      holder: 'B',
+      cards: ['gone', 'gone', 'held'],
+      sut1: 'mock B',
+      sut2: '',
+      bad: true,
+    },
+    {
+      lane: 't1',
+      text: 'Test 1 tears down and sets the holder to nil, under Test 2.',
+      holder: 'nil',
+      cards: ['gone', 'gone', 'gone'],
+      sut1: 'mock B',
+      sut2: '',
+    },
+    {
+      lane: 't2',
+      text: 'Test 2’s subject reads its property, finds no container and hits fatalError("Container is missing"). The crash ends the whole test run.',
+      holder: 'nil',
+      cards: ['gone', 'gone', 'gone'],
+      sut1: 'mock B',
+      sut2: 'crash',
+      bad: true,
+    },
+    {
+      lane: 'all',
+      text: 'Whether this happens depends on scheduling, so it fails only sometimes. The .serialized trait orders tests inside one suite, not across suites, so every test that touches the holder belongs under one serialized parent suite.',
+      holder: 'nil',
+      cards: ['gone', 'gone', 'gone'],
+      sut1: 'mock B',
+      sut2: 'crash',
+      bad: true,
+    },
+  ],
+};
+
+const CARDS = [
+  { id: 'app', name: 'Container', sub: 'stub graph from App.init' },
+  { id: 'A', name: 'TestContainer A', sub: '[mock user A, mock log A]' },
+  { id: 'B', name: 'TestContainer B', sub: '[mock user B, mock log B]' },
+];
+const LANE_LABEL: Record<Lane, string> = {
+  host: 'host app',
+  t1: 'Test 1',
+  t2: 'Test 2',
+  all: 'result',
+};
+const HOLDER_LABEL = {
+  nil: 'nil',
+  app: 'Container (stubs)',
+  A: 'TestContainer A',
+  B: 'TestContainer B',
+};
+---
+
+<VizFrame
+  fig="04"
+  title="One seam, one global: swapping the container in tests"
+  caption={caption}
+  class="csw"
+  data-csw
+>
+  <div slot="tools" class="csw__tools">
+    <button type="button" class="viz-btn" data-next aria-label="Next step"
+      >step</button
+    >
+    <AnimControls label="Tests" />
+  </div>
+
+  <div class="csw__bar">
+    <div class="viz-seg" role="group" aria-label="Test runner">
+      <button type="button" aria-pressed="true" data-variant="xctest"
+        >XCTest</button
+      >
+      <button type="button" aria-pressed="false" data-variant="parallel"
+        >Swift Testing, parallel</button
+      >
+    </div>
+  </div>
+
+  <div class="csw__seam viz-panel">
+    <div class="csw__holder">
+      <span class="csw__hname">ContainerHolder.container</span>
+      <span class="csw__arrow" aria-hidden="true">→</span>
+      <span class="viz-chip viz-chip--meta" data-holder>nil</span>
+    </div>
+    <ul class="csw__cards">
+      {
+        CARDS.map((c, i) => (
+          <li class="csw__card" data-card={i} data-state="none">
+            <span class="csw__cname">{c.name}</span>
+            <span class="csw__csub viz-mono">{c.sub}</span>
+            <span class="csw__ctag" data-tag>
+              not created
+            </span>
+          </li>
+        ))
+      }
+    </ul>
+    <div class="csw__suts">
+      <div>
+        <span class="viz-label">Test 1 subject got</span>
+        <span class="viz-chip" data-sut="1">not read yet</span>
+      </div>
+      <div>
+        <span class="viz-label">Test 2 subject got</span>
+        <span class="viz-chip" data-sut="2">not read yet</span>
+      </div>
+    </div>
+  </div>
+
+  <ol class="csw__log" data-log aria-live="polite"></ol>
+
+  <script
+    is:inline
+    type="application/json"
+    data-csw-data
+    set:html={JSON.stringify({
+      variants,
+      lanes: LANE_LABEL,
+      holder: HOLDER_LABEL,
+    })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = 2500;
+    const TAG = {
+      none: 'not created',
+      held: '← in the holder',
+      gone: 'released',
+    };
+
+    function initContainerSwap(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-csw-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const logEl = root.querySelector('[data-log]');
+      const holderEl = root.querySelector('[data-holder]');
+      const cards = [...root.querySelectorAll('[data-card]')];
+      const sut1 = root.querySelector('[data-sut="1"]');
+      const sut2 = root.querySelector('[data-sut="2"]');
+      const segBtns = [...root.querySelectorAll('[data-variant]')];
+
+      let variant = 'xctest';
+      let current = -1;
+      let playing = false;
+      let timer = 0;
+
+      const steps = () => data.variants[variant];
+      const last = () => steps().length - 1;
+
+      function setSut(el, value) {
+        el.textContent = value || 'not read yet';
+        const bad =
+          value === 'crash' ||
+          (value && !value.endsWith(el === sut1 ? 'A' : 'B'));
+        el.className = `viz-chip ${!value ? '' : bad ? 'viz-chip--bad' : 'viz-chip--sound'}`;
+      }
+
+      function logRow(step, i) {
+        const li = document.createElement('li');
+        li.className = `csw__row csw__row--${step.lane}`;
+        if (step.bad) li.classList.add('is-bad');
+        if (i === current) li.classList.add('is-current');
+        const lane = document.createElement('span');
+        lane.className = 'csw__lane';
+        lane.textContent = data.lanes[step.lane];
+        const text = document.createElement('span');
+        text.className = 'csw__text';
+        text.textContent = step.text;
+        li.append(lane, text);
+        return li;
+      }
+
+      function render() {
+        const shown = steps().slice(0, current + 1);
+        logEl.replaceChildren(...shown.map(logRow));
+        const s = current >= 0 ? steps()[current] : null;
+        const holder = s ? s.holder : 'nil';
+        holderEl.textContent = data.holder[holder];
+        holderEl.className = `viz-chip ${holder === 'nil' ? '' : 'viz-chip--meta'}`;
+        cards.forEach((card, i) => {
+          const state = s ? s.cards[i] : 'none';
+          card.dataset.state = state;
+          card.querySelector('[data-tag]').textContent = TAG[state];
+        });
+        setSut(sut1, s ? s.sut1 : '');
+        setSut(sut2, s ? s.sut2 : '');
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(
+          () => {
+            current += 1;
+            render();
+            if (current >= last()) {
+              playing = false;
+              root.dispatchEvent(new CustomEvent('anim:ended'));
+              return;
+            }
+            schedule();
+          },
+          current < 0 ? 450 : STEP_MS,
+        );
+      }
+
+      function play() {
+        if (playing) return;
+        if (current >= last()) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        schedule();
+      }
+
+      function reset() {
+        stop();
+        current = -1;
+        render();
+      }
+
+      root.querySelector('[data-next]').addEventListener('click', () => {
+        stop();
+        current = current >= last() ? 0 : current + 1;
+        render();
+        root.dispatchEvent(
+          new CustomEvent(current >= last() ? 'anim:ended' : 'anim:paused'),
+        );
+      });
+
+      segBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.variant === variant) return;
+          variant = btn.dataset.variant;
+          segBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          reset();
+          if (reduce) {
+            current = last();
+            render();
+            return;
+          }
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          play();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      // Reduced motion rests on the full run until the reader plays it.
+      current = reduce ? last() : -1;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-csw]').forEach(initContainerSwap);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .csw__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .csw__bar {
+    display: flex;
+    margin-bottom: var(--sp-3);
+  }
+  .csw__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+
+  .csw__seam {
+    margin-bottom: var(--sp-3);
+    display: grid;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+  }
+  @media (max-width: 480px) {
+    .csw__seam {
+      padding: var(--sp-3);
+    }
+  }
+  .csw__holder {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+  }
+  .csw__hname {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--viz-meta);
+  }
+  .csw__arrow {
+    color: var(--fg-faint);
+  }
+
+  .csw__cards {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-2);
+  }
+  @media (max-width: 620px) {
+    .csw__cards {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .csw__card {
+    display: grid;
+    gap: 3px;
+    padding: 8px 10px;
+    border: 1px dashed var(--border-strong);
+    border-radius: 8px;
+    background: var(--bg-subtle);
+    transition:
+      opacity 0.3s var(--ease),
+      border-color 0.3s var(--ease),
+      background 0.3s var(--ease);
+  }
+  .csw__card[data-state='none'] {
+    opacity: 0.4;
+  }
+  .csw__card[data-state='gone'] {
+    opacity: 0.55;
+  }
+  .csw__card[data-state='gone'] .csw__cname {
+    text-decoration: line-through;
+    text-decoration-color: var(--fg-faint);
+  }
+  .csw__card[data-state='held'] {
+    border-style: solid;
+    border-color: var(--viz-meta);
+    background: color-mix(in srgb, var(--viz-meta) 9%, var(--surface));
+  }
+  .csw__cname {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .csw__csub {
+    font-size: 11px;
+    color: var(--viz-sound-text);
+    overflow-wrap: anywhere;
+  }
+  .csw__ctag {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .csw__card[data-state='held'] .csw__ctag {
+    color: var(--viz-meta);
+    font-weight: 600;
+  }
+
+  .csw__suts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-2);
+    padding-top: var(--sp-3);
+    border-top: 1px dashed var(--border);
+  }
+  .csw__suts div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+  }
+
+  .csw__log {
+    display: grid;
+    gap: 6px;
+    min-height: 15rem;
+    align-content: start;
+  }
+  .csw__log :global(.csw__row) {
+    display: grid;
+    grid-template-columns: 4.6rem minmax(0, 1fr);
+    gap: var(--sp-2);
+    align-items: start;
+    padding: 7px 10px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    animation: csw-in 0.35s var(--ease) both;
+  }
+  .csw__log :global(.csw__lane) {
+    justify-self: start;
+    padding: 1px 7px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--viz-net);
+    border: 1px solid color-mix(in srgb, var(--viz-net) 40%, transparent);
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .csw__log :global(.csw__row--host .csw__lane),
+  .csw__log :global(.csw__row--all .csw__lane) {
+    color: var(--fg-muted);
+    border-color: var(--border-strong);
+  }
+  .csw__log :global(.is-current) {
+    color: var(--fg);
+    border-color: var(--border-strong);
+  }
+  .csw__log :global(.is-bad) {
+    color: var(--fg);
+    border-color: color-mix(in srgb, var(--viz-bad) 55%, transparent);
+    background: color-mix(in srgb, var(--viz-bad) 6%, var(--surface));
+  }
+  @keyframes csw-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+  @media (max-width: 480px) {
+    .csw__log :global(.csw__row) {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 4px;
+      font-size: 12px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .csw__log :global(.csw__row) {
+      animation: none;
+    }
+    .csw__card {
+      transition: none;
+    }
+  }
+</style>

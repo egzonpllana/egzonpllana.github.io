@@ -1,0 +1,659 @@
+---
+title: 'From 0 to over 1,000 Unit Tests: The DI Framework Behind It'
+description: 'How OrbitCore, a 300-line Swift dependency injection container, turns types into keys, resolves a graph under one recursive lock, decides what to keep alive, and swaps the whole graph for tests, plus what Swift 6.2 changed around it.'
+date: 2026-05-07
+updated: 2026-10-30
+tags:
+  [
+    'Swift',
+    'iOS',
+    'Dependency Injection',
+    'Unit Testing',
+    'Concurrency',
+    'Clean Architecture',
+  ]
+heroImage: '../../assets/covers/from-0-to-1000-unit-tests-di-framework.png'
+repoUrl: 'https://github.com/egzonpllana/orbitcore-ios'
+---
+
+import StatTiles from '../../components/StatTiles.astro';
+import ResolveWalk from '../../components/ResolveWalk.astro';
+import RetainPolicyTimeline from '../../components/RetainPolicyTimeline.astro';
+import LazyInjectRace from '../../components/LazyInjectRace.astro';
+import ContainerSwap from '../../components/ContainerSwap.astro';
+import PhaseRail from '../../components/PhaseRail.astro';
+
+Every object in an app needs other objects to do its job. A screen needs something that loads users. The loader needs a network client and a logger. Someone has to build all of them in the right order and hand each one what it needs.
+
+**Dependency injection** is handing those objects over, instead of letting each object build or look up its own. A **dependency injection container** is the machine that does the handing: a table that maps each type to a recipe for building it, plus a rule for how long the result should live.
+
+OrbitCore is that machine in about 300 lines of Swift. I built it while working on Engramr - Reminders & Alarms, an app split into domain, data and presentation layers, at the point where passing dependencies through initializers stopped scaling. The same pattern now sits under more than 1,000 unit tests across my apps and SDKs.
+
+This article opens it up: how a type becomes a key, why the lock has to be recursive, what each retain policy actually keeps, how the test seam works, and where it is less safe than it looks, including what Swift 6.2 changed. Swift is the worked example; the mechanics carry over to a container in any language.
+
+<StatTiles
+  tiles={[
+    {
+      label: 'source files',
+      value: 7,
+      sub: 'one Swift package, zero dependencies',
+    },
+    {
+      label: 'lines of Swift',
+      value: 299,
+      sub: 'all of Sources/, comments included',
+    },
+    { label: 'retain policies', value: 3, sub: '.default, .strong, .weak' },
+    {
+      label: 'unit tests',
+      value: 1000,
+      suffix: '+',
+      sub: 'on this pattern, across apps and SDKs',
+    },
+  ]}
+/>
+
+---
+
+## The problem: threading a graph by hand
+
+Init injection is the textbook answer, and for most types it is the right one: a type lists what it needs in its initializer, and whoever creates it supplies it.
+
+```swift
+let logger = LoggingService()
+let userService = UserService(loggingService: logger)
+let viewModel = UsersViewModel(userService: userService, loggingService: logger)
+```
+
+At the root of an app that is fine. The trouble starts with objects created later, deep in navigation. A settings screen four levels down needs the user service. The screen that pushes it never uses the user service, but it has to own one to pass along, and so does the screen before it. Every layer between the root and the leaf carries parameters it never touches, and adding one dependency to a leaf means editing every initializer on the path to it.
+
+The usual escape is a bag of statics:
+
+```swift
+@MainActor
+enum AppDependencies {
+    static let userService = UserService(loggingService: LoggingService())
+    static let imageCache = ImageCache() // lives until the process exits
+}
+```
+
+It removes the threading and adds three problems. Everything is a singleton, whether it should be or not. Nothing can be torn down at logout. And a test that wants a fake user service has to reach into a global that every other test sees too.
+
+What I wanted instead fits in five requirements:
+
+1. One place says how to build each type, and each recipe names only its direct dependencies.
+2. Each registration says how long its result lives.
+3. A type can obtain a dependency without its creator passing it in.
+4. A test can replace the whole graph in one move.
+5. All of it holds up when several threads ask at once.
+
+> **In plain words:** a container does not remove the wiring, it moves it. Instead of every creator passing every dependency down, each type is registered once with its recipe, and anything can ask for it.
+
+---
+
+## A dictionary of recipes
+
+Underneath, the container is three dictionaries. One holds recipes, called factories here. The other two hold results the container has decided to keep, one strongly and one weakly.
+
+```swift
+public class Container {
+    private struct Factory {
+        let policy: ContainerRetainPolicy
+        let build: (any ContainerProtocol) throws -> Any
+    }
+
+    private let lock = NSRecursiveLock()
+
+    private var factories: [String: Factory] = [:]
+    private var instances: [String: Any] = [:]
+    private var weakInstances = NSMapTable<NSString, AnyObject>(
+        keyOptions: [.copyIn],
+        valueOptions: [.weakMemory]
+    )
+}
+```
+
+Registering stores a recipe and builds nothing. This is the example app's composition root, trimmed:
+
+```swift
+func injectAllDependencies(into container: any ContainerProtocol) {
+    container.register(with: .strong) { _ -> LoggingServiceProtocol in
+        LoggingService()
+    }
+
+    container.register(with: .default) { container -> UserServiceProtocol in
+        let loggingService: LoggingServiceProtocol = try container.resolve()
+        return UserService(loggingService: loggingService)
+    }
+
+    container.register { container -> UsersViewModel in
+        let userService: UserServiceProtocol = try container.resolve()
+        let loggingService: LoggingServiceProtocol = try container.resolve()
+        return UsersViewModel(userService: userService, loggingService: loggingService)
+    }
+}
+```
+
+Each recipe names only its direct dependencies, and the types themselves still take everything through their initializers. They do not know a container exists, which keeps them trivial to construct in a test. Because recipes are closures that only run when something resolves, registration order does not matter: the user service could be registered before the logger it needs. What matters is that everything is registered before the first resolve that needs it.
+
+### The key is the type you ask for, spelled out
+
+The dictionary key is `String(reflecting: T.self)`, the fully qualified name of the type:
+
+```swift
+String(reflecting: String.self)                    // "Swift.String"
+String(reflecting: [String: Int].self)             // "Swift.Dictionary<Swift.String, Swift.Int>"
+String(reflecting: (any UserServiceProtocol).self) // "MyApp.UserServiceProtocol"
+String(reflecting: UserService?.self)              // "Swift.Optional<MyApp.UserService>"
+```
+
+It is module-qualified, spells out generic arguments, and is readable, which is why `reset()` can take keys as plain strings later on. The catch is which `T` it describes: the static type at the call site, the one the compiler picks, not the dynamic type of the object. Two mistakes follow from that, and both compile and then fail at runtime with `missingFactoryMethod`:
+
+- **Registering the concrete type.** `register { _ in UserService() }` infers `T` as `UserService` and stores the recipe under `MyApp.UserService`. Resolving `UserServiceProtocol` looks up `MyApp.UserServiceProtocol`, which nobody registered. The example app avoids this by writing the return type in every builder: `{ _ -> UserServiceProtocol in ... }`.
+- **Resolving into an optional.** `let service: UserService? = try container.resolve()` infers `T` as `Optional<UserService>`, a third key. Resolve into a non-optional, or say the type: `try container.resolve() as UserService`.
+
+The string also has a cost: every resolve creates a `String` and hashes it. `ObjectIdentifier(T.self)` would be cheaper, but it would not double as a readable key for `reset()`. For a container that resolves when screens are created, that trade is reasonable. Inside a hot loop it would not be.
+
+> **In plain words:** the container is a dictionary from type names to recipes. The name it uses is the type you asked for, exactly as the compiler sees it, so register under the protocol you will ask for.
+
+---
+
+## Resolving: one thread walks the graph under one lock
+
+Resolving the view model means building the user service, which means building or finding the logger. Resolution is a depth-first walk of the dependency graph, and each step of the walk starts from inside the builder of the step before. This is `resolve()`, nearly verbatim:
+
+```swift
+public func resolve<T>() throws -> T {
+    lock.lock(); defer { lock.unlock() }
+
+    let key = String(reflecting: T.self)
+    guard let factory = factories[key] else {
+        throw ContainerError.missingFactoryMethod(T.self)
+    }
+
+    switch factory.policy {
+    case .default:
+        guard let instance = try factory.build(self) as? T else {
+            throw ContainerError.typeMismatch(T.self)
+        }
+        return instance
+    case .strong:
+        if let instance = instances[key] as? T {
+            return instance
+        }
+        guard let instance = try factory.build(self) as? T else {
+            throw ContainerError.typeMismatch(T.self)
+        }
+        instances[key] = instance
+        return instance
+    case .weak:
+        let key = key as NSString
+        if let instance = weakInstances.object(forKey: key) as? T {
+            return instance
+        }
+        guard let instance = try factory.build(self) as? T else {
+            throw ContainerError.typeMismatch(T.self)
+        }
+        weakInstances.setObject(instance as AnyObject, forKey: key)
+        return instance
+    }
+}
+```
+
+The lock is taken on the first line and released by the `defer` on the way out, so it is held while `factory.build` runs. The builder calls `resolve()` again on the same thread, and that inner call takes the lock again before the outer one has let go. Step through it, then switch the lock:
+
+<ResolveWalk />
+
+A plain lock, whether `NSLock`, `os_unfair_lock` or Swift's `Mutex`, does not track its owner. The second `lock()` waits for the holder to unlock, the holder is the same thread, and the thread waits forever. [`NSRecursiveLock`](https://developer.apple.com/documentation/foundation/nsrecursivelock) records which thread owns it and how many times. The owner passes straight through and bumps the count; every other thread waits until the count is back to zero.
+
+The alternatives each fail one of three constraints: resolution has to be synchronous, re-entrant, and available on iOS 16.
+
+- **A serial dispatch queue** with `sync` deadlocks the same way when a builder dispatches onto the queue it is already running on.
+- **An actor** makes every call from outside it `async`. Resolution happens in initializers and property getters, which are synchronous.
+- **[`Mutex`](https://developer.apple.com/documentation/synchronization/mutex)** needs iOS 18, and neither it nor [`OSAllocatedUnfairLock`](https://developer.apple.com/documentation/os/osallocatedunfairlock) is recursive.
+
+Holding one lock across every builder has consequences beyond the deadlock it avoids:
+
+- **A `.strong` instance is built exactly once.** The cache check and the store happen under the same lock, so a stampede of first resolves from many threads still runs the builder once.
+- **The whole container is one critical section.** A builder that opens a database or reads a file blocks every resolve on every thread while it runs, the main thread included. Builders should construct objects, not do work.
+- **Recursion only helps on the same thread.** A builder that hands work to another thread and waits for it, with `DispatchQueue.main.sync` or a semaphore, deadlocks as soon as that thread resolves anything.
+- **Two methods skip the lock.** `register` and `reset` modify the same dictionaries without taking it. Registering everything at launch, before anything resolves, is safe. `reset` usually runs at logout, while background work may still be resolving, and that is a data race on a `Dictionary`, which can corrupt it or crash. Taking the lock in both is a two-line fix.
+
+> **In plain words:** resolution is one thread walking the graph depth-first while holding one lock the whole way down. A recursive lock lets that thread through its own door. Everyone else waits outside, which is what makes it safe and also what makes a slow builder expensive.
+
+---
+
+## Three retain policies: what the container keeps
+
+Some objects should be fresh for each user of them, like a view model. Some should exist once for the whole app, like a logger. And some should be shared while they are in use and thrown away when they are not, like an image cache for one flow. OrbitCore makes that a required decision at registration:
+
+```swift
+// A new instance on every resolve.
+container.register(with: .default) { container -> UserServiceProtocol in
+    let loggingService: LoggingServiceProtocol = try container.resolve()
+    return UserService(loggingService: loggingService)
+}
+
+// One instance for as long as the container lives.
+container.register(with: .strong) { _ -> LoggingServiceProtocol in
+    LoggingService()
+}
+
+// One shared instance while anything else holds it.
+container.register(with: .weak) { _ in
+    ImageCache()
+}
+```
+
+The `resolve()` code above is the whole mechanism:
+
+- **`.default`** stores nothing. Every resolve runs the builder.
+- **`.strong`** stores the result in `instances[key]`. The container's strong reference keeps it alive for as long as the container exists, until `reset()` clears it, or until the type is registered again: `register` drops any cached instance for its key, which is also how a test can override one registration on a real container.
+- **`.weak`** stores the result in an [`NSMapTable`](https://developer.apple.com/documentation/foundation/nsmaptable) whose values use `.weakMemory`. The table points at the instance without retaining it. While some screen holds it, ARC keeps it alive and every resolve returns it. When the last strong reference goes, ARC frees it and the table's reference reads as nil, so the next resolve builds a fresh one.
+
+That last one is the policy I like most, because nothing invalidates the cache by hand: no timers, no counters, no "release" calls. It is ARC's own weak-reference zeroing, provided by a Foundation collection instead of a dictionary of hand-written weak boxes. Play the same seven events against all three policies:
+
+<RetainPolicyTimeline />
+
+The struct toggle shows two limits that follow from the code:
+
+- **`.weak` only works for classes.** `setObject(instance as AnyObject, forKey:)` boxes a struct into a brand-new object that nothing else references. ARC frees the box immediately, so every resolve runs the builder again: `.default` with extra steps.
+- **`.strong` keeps a value, not an identity, for structs.** Each resolve returns a copy. Shared identity, the usual reason to want a singleton, only exists for classes.
+
+One more consequence: `resolveAll(conforming:)` reads only the two caches, so it returns `.strong` instances and live `.weak` ones. A registration that was never resolved, or is `.default`, does not appear in it.
+
+### reset(): what logout actually clears
+
+When a user logs out, the session, the user's data and anything cached for them should go, while logging, analytics and crash reporting stay:
+
+```swift
+container.reset(ignoreDependencies: [
+    String(reflecting: LoggingServiceProtocol.self),
+    String(reflecting: AnalyticsServiceProtocol.self),
+])
+```
+
+`reset` removes every cached `.strong` and `.weak` entry except the listed keys, which are spelled with the same `String(reflecting:)` as registration. The recipes stay, so the next resolve of a cleared type runs its builder again.
+
+What it cannot do is take instances back. A view model that resolved the session before logout still holds it, and so does every `@Injected` property that already resolved, because the wrapper keeps its value. The next resolve builds a new session, and for a while the app has two: the stale one on screen and the fresh one in the container. Those are the last two events in Fig 02. A reset only works as a logout when it is paired with rebuilding everything that might hold the old instances, usually by replacing the root of the UI.
+
+> **In plain words:** `.default` keeps nothing, `.strong` keeps everything, `.weak` keeps a pointer that disappears when nobody else needs the object. A reset makes the container forget; it does not make anyone else forget.
+
+---
+
+## @Injected: resolution at the first read
+
+Init injection covers most types. Where it reaches badly is the edges: objects created by a framework or far away from the composition root, such as the root view of a SwiftUI app. There, a property can fill itself in the first time it is read:
+
+```swift
+struct ContentView: View {
+    @Injected private var viewModel: UsersViewModel
+
+    var body: some View {
+        UsersView(viewModel: viewModel)
+    }
+}
+```
+
+This is the wrapper, complete:
+
+```swift
+@propertyWrapper public class Injected<T: Sendable> {
+    public init(lazy: Bool = true) {
+        if !lazy {
+            _ = _wrappedValue
+        }
+    }
+
+    private let lock = NSLock()
+    public var wrappedValue: T {
+        lock.lock(); defer { lock.unlock() }
+        return _wrappedValue
+    }
+
+    private lazy var _wrappedValue: T = {
+        do {
+            return try container.resolve()
+        } catch {
+            fatalError(error.localizedDescription)
+        }
+    }()
+
+    var container: any ContainerProtocol {
+        guard let container = ContainerHolder.container else {
+            fatalError("Container is missing")
+        }
+        return container
+    }
+}
+```
+
+Four behaviours fall out of those lines:
+
+1. **It resolves at the first read, not at init,** from whatever container `ContainerHolder.container` holds at that moment. That is what lets a test install its own container after creating an object but before using it. `@Injected(lazy: false)` resolves during init instead.
+2. **Lazy reads break cycles that builders cannot.** If A has `@Injected var b: B` and B has `@Injected var a: A`, both `.strong`, resolving A finishes before `b` is ever read; by the time someone reads `a.b`, A is already cached. Builders that resolve each other directly recurse until the stack overflows. The recursive lock prevents the deadlock, not the infinite recursion.
+3. **A failed resolve is a crash, by design.** The message is the container's error, such as `Missing factory method for instance: UserServiceProtocol`.
+4. **Each wrapper resolves once, per wrapper.** In a SwiftUI view, the wrapper lives in the view struct, and SwiftUI creates a new struct whenever the parent's body runs again. Each copy gets a new wrapper, and a `.default` registration builds a new view model for it. The example uses it at the root, which is rarely recreated, and lets `UsersView` keep its view model in `@State`; deeper in the tree, pass dependencies in.
+
+### Why the getter takes a lock
+
+Swift's `lazy var` is not thread-safe. It is stored as an optional plus a check: if two threads read it while it is still empty, both see "empty" and both run the initializer. Here the initializer is a resolve. With a `.default` registration, which is what `UserServiceProtocol` is in the example app, that means two instances and two unsynchronized writes to the same storage, which is a data race. The wrapper serializes every read with an `NSLock`:
+
+<LazyInjectRace />
+
+The lock is deliberately not recursive, because a property should never need itself to compute itself. That does not make such a mistake crash, though: an `NSLock` locked twice on the same thread blocks forever, so the symptom is a silent hang with nothing in the log. It takes a cycle through one specific instance to get there, so it is rare, but a frozen thread is what to look for.
+
+Swift 6.2 moved where this lock matters. Since Swift 6.2 ([SE-0466](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md)), a module can make main-actor isolation its default, and Xcode 26 turns that on for new app targets; the OrbitCore example app has it on. In such a target, a class with `@Injected` properties is implicitly `@MainActor`, every read happens on the main actor, and a `@concurrent` function cannot read the property without `await`. The actor serializes the reads before the lock is ever contended. The lock still earns its place in `nonisolated` types, which is where the next section's problem lives.
+
+> **In plain words:** an `@Injected` property asks the global container for its value the first time someone reads it, and keeps the answer. The lock makes sure two simultaneous first reads produce one answer.
+
+---
+
+## Swift 6: what "compliant" means here
+
+The package declares `swift-tools-version: 6.0`, so it compiles in Swift 6 language mode, with strict concurrency checking, and it does so without warnings. It is worth being precise about how:
+
+- `ContainerError` is `Sendable`, so errors can cross isolation boundaries.
+- `Injected<T: Sendable>` requires the resolved value to be `Sendable`. The wrapper itself is a class with a lock and mutable storage and is not `Sendable`, so a type with `@Injected` properties cannot be `Sendable` without `@unchecked`.
+- `Container` is not `Sendable` either. The compiler would stop anyone from sharing it across isolation domains, except that every `@Injected` property reaches it through this:
+
+```swift
+public struct ContainerHolder: ContainerHolderProtocol {
+    nonisolated(unsafe) public static var container: (any ContainerProtocol)?
+}
+```
+
+[`nonisolated(unsafe)`](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0412-strict-concurrency-for-global-variables.md) tells the compiler not to check this global because the author takes responsibility for it. That is what lets the package compile cleanly, and it is an opt-out, not a proof. "Swift 6 compliant" here means "compiles in Swift 6 mode", not "free of data races".
+
+Builder closures are what slip through that opt-out. A builder is an ordinary closure, so when it is written in main-actor code it may touch main-actor state. The container stores it and later runs it on whichever thread triggers the first resolve. In an app target in Swift 6 language mode with main-actor default isolation, this compiles without a single diagnostic:
+
+```swift
+final class AppSettings { var verboseLogging = false } // @MainActor by default
+let settings = AppSettings()
+
+func injectAllDependencies(into container: any ContainerProtocol) {
+    container.register(with: .strong) { _ -> LoggingServiceProtocol in
+        settings.verboseLogging = true // main-actor state
+        return LoggingService()
+    }
+}
+
+nonisolated final class SyncWorker {
+    @Injected var logger: LoggingServiceProtocol
+
+    @concurrent func run() async {
+        logger.log(event: "sync_started", parameters: [:]) // first read: the builder runs here
+    }
+}
+```
+
+With `LoggingServiceProtocol` and `LoggingService` declared `nonisolated`, so the worker is allowed to call them, the builder runs on a background thread and writes a main-actor property there, with no warning and no runtime trap. The compiler lost track of the closure the moment it went into a non-`Sendable` container reachable through an unchecked global. The rule that keeps this safe is the same one the lock asked for: builders construct `nonisolated` objects and touch nothing else.
+
+The test mocks carry the same kind of promise. `@unchecked Sendable` on a mock whose `calls` array has no lock holds while one task drives the mock at a time, which is how every test here uses them. A subject that calls a mock from a task group breaks it, and the order recorded in `calls` stops being deterministic anyway. One last detail: the package builds in Swift 6 mode, but the example app target is still set to Swift 5 language mode, with main-actor default isolation and approachable concurrency turned on, so it does not demonstrate strict checking.
+
+> **In plain words:** the package passes the Swift 6 checker by opting one global out of it. Everything that travels through that global, including the recipes, is outside the checker's view.
+
+---
+
+## Testing: swap the graph, not the code
+
+### Why the app needs to know it is under test
+
+When unit tests run with a host application, the default for an iOS app's unit-test target, Xcode launches the app first and loads the test bundle into it. The app's entry point runs, so `App.init` runs, and it would build the production graph: real network clients, real storage. OrbitCore answers with `ProcessInfo.isTesting`:
+
+```swift
+public extension ProcessInfo {
+    static var isTesting: Bool {
+        processInfo.environment["XCInjectBundleInto"] != nil
+            || processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || processInfo.environment["XCTestSessionIdentifier"] != nil
+    }
+}
+```
+
+and the app chooses its graph at launch:
+
+```swift
+init() {
+    let container = Container()
+
+    if ProcessInfo.isTesting {
+        injectTestDependencies(into: container)
+    } else {
+        injectAllDependencies(into: container)
+    }
+
+    ContainerHolder.container = container
+}
+```
+
+No `#if DEBUG`, no extra build configuration: the same binary picks its graph at runtime. Two caveats keep this honest. The variables are set by Xcode's test runner and are not a documented API: run the package's tests with `swift test` instead and none of the three is set, so the package's own `testIsTestingReturnsTrue` fails there. And the stub graph does ship. `injectTestDependencies` and the stub services live in the app target, where they double as SwiftUI preview data, so they are in the production binary and simply never called. That is a few stubs, not test code, but it is not nothing.
+
+### The seam: one static property
+
+Every `@Injected` property resolves from `ContainerHolder.container`. Replace that one reference and every property that has not resolved yet sees a different graph. For unit tests, the replacement is a container with no recipes at all, just a flat array of prepared instances:
+
+```swift
+final class TestContainer: ContainerProtocol {
+    var dependencies: [Any] = []
+
+    init() {}
+
+    init(dependencies: [Any]) {
+        self.dependencies = dependencies
+    }
+
+    func resolve<T>() throws -> T {
+        guard let instance = dependencies.first(where: { $0 is T }) as? T else {
+            throw ContainerError.missingFactoryMethod(T.self)
+        }
+        return instance
+    }
+
+    // resolveWithType, resolveAll and reset work over the same array;
+    // register is a deprecated no-op.
+}
+```
+
+Three helpers install, extend and remove it:
+
+```swift
+func createTestDependencies(_ dependencies: Any...) {
+    ContainerHolder.container = TestContainer(dependencies: dependencies)
+}
+
+func removeTestDependencies() {
+    ContainerHolder.container = nil
+}
+
+func insertTestDependencies(_ dependencies: Any...) {
+    let existingContainer = ContainerHolder.container as? TestContainer
+    let testContainer: TestContainer = existingContainer ?? .init()
+    testContainer.dependencies.append(contentsOf: dependencies)
+    ContainerHolder.container = testContainer
+}
+```
+
+`setUp` calls `createTestDependencies(mockA, mockB)`, `tearDown` calls `removeTestDependencies()`, and `insertTestDependencies` layers in one more mock partway through a test without rebuilding the graph.
+
+Note how the test container matches: by conformance (`$0 is T`), not by key. A mock that conforms to two protocols serves both, and of two mocks for the same protocol the first one wins. It also means unit tests never exercise the production keys. A builder registered as `UserService` instead of `UserServiceProtocol` passes every unit test and crashes at launch. One extra test catches that whole class of mistake: run `injectAllDependencies(into: Container())` and resolve every root type. If builders only construct, as they should, that test is cheap.
+
+The mocks record what happened to them as an enum, so one assertion checks which calls were made, in which order, with which arguments:
+
+```swift
+final class MockUserService: UserServiceProtocol, @unchecked Sendable {
+    private(set) var calls: [Call] = []
+
+    enum Call: Equatable {
+        case fetchUsers
+        case fetchUser(identifier: String)
+    }
+
+    var fetchUsersResult: Result<[UserDomainModel], Error> = .success([])
+    var fetchUserResult: Result<UserDomainModel, Error> = .failure(
+        UserServiceError.userNotFound(identifier: "unknown")
+    )
+
+    func fetchUsers() async throws -> [UserDomainModel] {
+        calls.append(.fetchUsers)
+        return try fetchUsersResult.get()
+    }
+
+    func fetchUser(byIdentifier identifier: String) async throws -> UserDomainModel {
+        calls.append(.fetchUser(identifier: identifier))
+        return try fetchUserResult.get()
+    }
+}
+```
+
+A typical view-model test from the example app, with two mocks, a state assertion and two call-sequence assertions:
+
+```swift
+final class UsersViewModelTests: XCTestCase {
+    private var mockUserService: MockUserService!
+    private var mockLoggingService: MockLoggingService!
+    private var sut: UsersViewModel!
+
+    override func setUp() {
+        super.setUp()
+        mockUserService = MockUserService()
+        mockLoggingService = MockLoggingService()
+        sut = UsersViewModel(userService: mockUserService, loggingService: mockLoggingService)
+    }
+
+    override func tearDown() {
+        removeTestDependencies()
+        sut = nil
+        mockLoggingService = nil
+        mockUserService = nil
+        super.tearDown()
+    }
+
+    func testFetchUsersSuccess() async {
+        let expectedUsers = [
+            UserDomainModel(identifier: "1", name: "Alice", email: "alice@test.com"),
+            UserDomainModel(identifier: "2", name: "Bob", email: "bob@test.com"),
+        ]
+        mockUserService.fetchUsersResult = .success(expectedUsers)
+
+        await sut.fetchUsers()
+
+        XCTAssertEqual(sut.viewState, .loaded(expectedUsers))
+        XCTAssertEqual(mockUserService.calls, [.fetchUsers])
+        XCTAssertEqual(mockLoggingService.calls, [
+            .log(event: "users_screen_load", parameters: [:]),
+        ])
+    }
+}
+```
+
+This subject takes its dependencies through its initializer, so the mocks go straight in and `removeTestDependencies()` is hygiene. When a subject uses `@Injected` properties instead, the only change is in `setUp`: pass both mocks to `createTestDependencies` before the first read. The wiring path changes; the test does not. Here is that seam over two tests:
+
+<ContainerSwap />
+
+### Parallel tests and the one global
+
+Tests built this way share exactly one piece of state, `ContainerHolder.container`, so whether they can run in parallel depends on the runner.
+
+**XCTest is safe.** Inside one process it runs one test at a time, and its parallel mode distributes test classes across separate runner processes, each with its own copy of the static. That is the setting this suite grew up in.
+
+**Swift Testing is not, by default.** Its tests [run in parallel, as tasks in the same process](https://developer.apple.com/documentation/testing/parallelization). Two tests that install containers at the same time hand each other's mocks to their subjects, and one test's teardown can leave the other with no container at all, which is a `fatalError` that ends the run. The `.serialized` trait only orders tests within the suite it is applied to and its nested suites, not relative to other suites, so every test that touches the holder belongs under one serialized parent suite. The cleaner fix is the one the view-model test above already uses: give the subject its dependencies through its initializer, and most tests never touch the holder at all.
+
+### Why it scales
+
+Across two years and several apps and SDKs built on this pattern, the test count has passed 1,000. The reason it kept scaling, instead of buckling under setup and teardown, is that adding test number 1,001 costs the same as adding test number 11. Three earlier choices do the heavy lifting:
+
+- **Protocol-first dependencies.** Every service is mockable by construction: no wrapping, no test-only subclasses.
+- **A flat-array test container.** No factories, no retain policies, no locking in tests. Matching by conformance is enough, because tests do not need lifecycles.
+- **One seam.** There is a single swap point per test instead of registrations scattered across the app delegate, view controllers and coordinators.
+
+> **In plain words:** tests replace the one global container with a list of mocks, and everything that resolves lazily picks them up. That is the whole trick, and it works as long as only one test uses the global at a time.
+
+---
+
+## Honest downsides
+
+<PhaseRail
+  phases={[
+    {
+      title: 'Missing registrations fail at runtime',
+      body: 'Forget a registration, or register under the concrete type, and you find out on the first resolve, not at compile time. The error is clear, but it is still a crash in front of a user if no test resolves that type.',
+      params: [
+        { name: 'error', value: 'missingFactoryMethod' },
+        { name: 'catch it with', value: 'a graph smoke test' },
+      ],
+    },
+    {
+      title: 'One global seam',
+      body: 'ContainerHolder is global mutable state behind nonisolated(unsafe). Set it once at launch, reassign it only in tests, and keep the tests that do so from running at the same time.',
+      params: [{ name: 'opt-out', value: 'nonisolated(unsafe)' }],
+    },
+    {
+      title: 'No cycle detection',
+      body: 'If A’s builder resolves B and B’s builder resolves A, resolution recurses until the stack overflows. The recursive lock prevents the deadlock, not the recursion. Lazy @Injected properties break such cycles; builders do not.',
+      params: [{ name: 'symptom', value: 'stack overflow' }],
+    },
+    {
+      title: 'One lock for everything',
+      body: 'Every resolve on every thread waits behind whichever builder is running. Fine while builders only construct objects; costly the day one of them does I/O.',
+      params: [{ name: 'blocked', value: 'every resolve, every thread' }],
+    },
+    {
+      title: 'reset() and register() are not locked',
+      body: 'Both modify the dictionaries that resolve() reads under the lock. A logout reset that overlaps a background resolve is a data race.',
+      params: [{ name: 'fix', value: 'take the lock, two lines' }],
+    },
+    {
+      title: 'No scopes',
+      body: 'There is one container, not a tree of child containers, so “one instance per flow” is approximated with .weak and screen lifetimes rather than declared.',
+    },
+  ]}
+/>
+
+---
+
+## What I would change next
+
+- **Lock `register` and `reset`.** Two lines, and logout stops being a race.
+- **Report cycles instead of overflowing.** Because only one thread can be inside the container at a time, a set of keys currently being built is enough: when `resolve()` meets a key that is already in the set, throw an error naming the cycle.
+- **Pick an isolation story and enforce it.** Either make the container and its holder `@MainActor`, which matches how most app code runs under main-actor default isolation and removes the `nonisolated(unsafe)`, at the price of an `await` for any resolve from background code; or keep it `nonisolated` and require builders to construct only `nonisolated` types.
+- **Give each Swift Testing test its own graph.** A [`@TaskLocal`](https://developer.apple.com/documentation/swift/tasklocal) holder installed with `withValue` around each test would isolate them. Task-locals reach child tasks and `Task {}`, but not detached tasks or GCD, which is a reason to resolve eagerly in tests that use it.
+- **Add the graph smoke test** that builds the real container and resolves every root type, so a wrong key fails in CI instead of at launch.
+
+---
+
+## Takeaways
+
+> **Declare lifecycle intent explicitly.** `.default`, `.strong` and `.weak` remove the everything-is-a-singleton trap, as long as you remember that `.weak` only means something for classes.
+
+> **A container that runs builders under its lock needs a recursive lock**, and builders that only construct, because every resolve on every thread waits behind them.
+
+> **The key is the static type.** Register with an explicit protocol return type, and never resolve into an optional.
+
+> **`reset()` forgets; it does not recall.** Pair it with rebuilding whatever still holds the old instances.
+
+> **Lazy properties need their own lock, unless an actor already serializes them.** Under main-actor default isolation, the actor gets there first.
+
+> **`nonisolated(unsafe)` is a promise, not a proof.** It is how the package compiles cleanly in Swift 6, and exactly where builder closures leave the checker's view.
+
+> **One global seam means one test at a time.** XCTest gives you that for free; Swift Testing needs a serialized parent suite, or subjects that take their dependencies through their initializers.
+
+> **Let the host app choose its graph at launch.** `ProcessInfo.isTesting` keeps the production graph from starting under unit tests without a build flag, as long as you remember it reads Xcode's test-runner variables, which `swift test` does not set.
+
+> **Track mock calls with enums.** `enum Call: Equatable` checks order and arguments in one assertion, which booleans and counters cannot.
+
+> **About 300 lines is enough.** A container needs to register, resolve, scope and get out of the way.
+
+The package is open source: [OrbitCore on GitHub](https://github.com/egzonpllana/orbitcore-ios), with an example iOS app showing the composition root, test helpers, mocks and view-model tests from this article. The full architecture ships in Engramr - Reminders & Alarms on the App Store.
+
+---
+
+## References
+
+**OrbitCore** — [Repository](https://github.com/egzonpllana/orbitcore-ios) · [`Container.swift`](https://github.com/egzonpllana/orbitcore-ios/blob/main/Sources/OrbitCore/Core/Container.swift) · [`InjectedPropertyWrapper.swift`](https://github.com/egzonpllana/orbitcore-ios/blob/main/Sources/OrbitCore/PropertyWrappers/InjectedPropertyWrapper.swift) · [Example app](https://github.com/egzonpllana/orbitcore-ios/tree/main/OrbitCoreExampleiOS)
+
+**Locks and caches** — [`NSRecursiveLock`](https://developer.apple.com/documentation/foundation/nsrecursivelock) · [`NSLock`](https://developer.apple.com/documentation/foundation/nslock) · [`Mutex`](https://developer.apple.com/documentation/synchronization/mutex) · [`OSAllocatedUnfairLock`](https://developer.apple.com/documentation/os/osallocatedunfairlock) · [`NSMapTable`](https://developer.apple.com/documentation/foundation/nsmaptable) · [`String(reflecting:)`](https://developer.apple.com/documentation/swift/string/init(reflecting:))
+
+**Swift concurrency** — [SE-0412: Strict concurrency for global variables](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0412-strict-concurrency-for-global-variables.md) · [SE-0461: Run nonisolated async functions on the caller's actor by default](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md) · [SE-0466: Control default actor isolation inference](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md) · [`TaskLocal`](https://developer.apple.com/documentation/swift/tasklocal)
+
+**Testing** — [Swift Testing: running tests serially or in parallel](https://developer.apple.com/documentation/testing/parallelization)

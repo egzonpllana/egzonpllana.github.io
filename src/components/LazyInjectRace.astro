@@ -1,0 +1,543 @@
+---
+/**
+ * Two readers hit the same uninitialized @Injected property at once. Three
+ * variants: a plain `lazy var` with no lock, the NSLock OrbitCore ships, and
+ * a main-actor-isolated owner (the default for new app targets since Swift
+ * 6.2), where the compiler serializes the reads before the lock is reached.
+ *
+ * The property resolves a .default registration, as UserServiceProtocol is in
+ * the example app, so a second resolve means a second instance.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'The property is backed by a lazy var whose initializer calls resolve(). Without a lock, both readers can see “empty” and both resolve. With the lock, the second reader waits and finds the value. On the main actor, the second reader cannot even start the read without an await.',
+} = Astro.props;
+
+interface Step {
+  lane: 0 | 1 | -1;
+  text: string;
+  storage: string;
+  lock: string;
+  lockKind: 'free' | 'held' | 'wait' | 'off';
+  builds: number;
+  bad?: boolean;
+}
+interface Variant {
+  lanes: [string, string];
+  steps: Step[];
+}
+
+const variants: Record<'lazy' | 'lock' | 'main', Variant> = {
+  lazy: {
+    lanes: ['Thread 1', 'Thread 2'],
+    steps: [
+      {
+        lane: 0,
+        text: 'reads userService. Storage is empty, so the lazy initializer calls resolve().',
+        storage: 'empty',
+        lock: 'no lock',
+        lockKind: 'off',
+        builds: 1,
+      },
+      {
+        lane: 1,
+        text: 'reads it a moment later. Storage is still empty, so it calls resolve() too.',
+        storage: 'empty',
+        lock: 'no lock',
+        lockKind: 'off',
+        builds: 2,
+      },
+      {
+        lane: 0,
+        text: 'resolve() returns UserService #1. Writes it to storage and uses #1.',
+        storage: '#1',
+        lock: 'no lock',
+        lockKind: 'off',
+        builds: 2,
+      },
+      {
+        lane: 1,
+        text: 'resolve() returns UserService #2. Overwrites storage and uses #2.',
+        storage: '#2',
+        lock: 'no lock',
+        lockKind: 'off',
+        builds: 2,
+        bad: true,
+      },
+      {
+        lane: -1,
+        text: 'Two builders ran for one property. Thread 1 keeps talking to #1 while the property now answers #2, and two unsynchronized writes to the same storage are a data race: undefined behaviour, not just a wasted object.',
+        storage: '#2',
+        lock: 'no lock',
+        lockKind: 'off',
+        builds: 2,
+        bad: true,
+      },
+    ],
+  },
+  lock: {
+    lanes: ['Thread 1', 'Thread 2'],
+    steps: [
+      {
+        lane: 0,
+        text: 'lock(), then reads storage: empty, so it calls resolve().',
+        storage: 'empty',
+        lock: 'held by thread 1',
+        lockKind: 'held',
+        builds: 1,
+      },
+      {
+        lane: 1,
+        text: 'lock() blocks: thread 1 holds it.',
+        storage: 'empty',
+        lock: 'thread 2 waiting',
+        lockKind: 'wait',
+        builds: 1,
+      },
+      {
+        lane: 0,
+        text: 'resolve() returns #1. Stores it, uses it, unlock().',
+        storage: '#1',
+        lock: 'handed to thread 2',
+        lockKind: 'held',
+        builds: 1,
+      },
+      {
+        lane: 1,
+        text: 'gets the lock. Storage already holds #1, so no resolve. unlock().',
+        storage: '#1',
+        lock: 'free',
+        lockKind: 'free',
+        builds: 1,
+      },
+      {
+        lane: -1,
+        text: 'One builder run, both threads see #1. Every later read still takes the lock; uncontended it is cheap, but it is never free.',
+        storage: '#1',
+        lock: 'free',
+        lockKind: 'free',
+        builds: 1,
+      },
+    ],
+  },
+  main: {
+    lanes: ['Main actor', '@concurrent task'],
+    steps: [
+      {
+        lane: 0,
+        text: 'reads userService on the main actor. Storage is empty: lock(), resolve(), #1 stored, unlock().',
+        storage: '#1',
+        lock: 'free',
+        lockKind: 'free',
+        builds: 1,
+      },
+      {
+        lane: 1,
+        text: 'wants the same property. It is main-actor isolated, so a plain read does not compile here: it has to be awaited.',
+        storage: '#1',
+        lock: 'free',
+        lockKind: 'free',
+        builds: 1,
+      },
+      {
+        lane: 1,
+        text: 'await hops to the main actor and waits for its turn.',
+        storage: '#1',
+        lock: 'free',
+        lockKind: 'free',
+        builds: 1,
+      },
+      {
+        lane: 0,
+        text: 'runs the read for the task: storage holds #1, no resolve.',
+        storage: '#1',
+        lock: 'never contended',
+        lockKind: 'free',
+        builds: 1,
+      },
+      {
+        lane: -1,
+        text: 'The actor serializes every read before the lock is reached. The NSLock only earns its keep in nonisolated types, the ones that can be read from several threads at once.',
+        storage: '#1',
+        lock: 'never contended',
+        lockKind: 'free',
+        builds: 1,
+      },
+    ],
+  },
+};
+---
+
+<VizFrame
+  fig="03"
+  title="Two readers, one uninitialized @Injected property"
+  caption={caption}
+  class="lir"
+  data-lir
+>
+  <div slot="tools" class="lir__tools">
+    <button type="button" class="viz-btn" data-next aria-label="Next step"
+      >step</button
+    >
+    <AnimControls label="Race" />
+  </div>
+
+  <div class="lir__bar">
+    <div class="viz-seg" role="group" aria-label="How the property is guarded">
+      <button type="button" aria-pressed="false" data-variant="lazy"
+        >plain lazy var</button
+      >
+      <button type="button" aria-pressed="true" data-variant="lock"
+        >NSLock</button
+      >
+      <button type="button" aria-pressed="false" data-variant="main"
+        >@MainActor owner</button
+      >
+    </div>
+  </div>
+
+  <div class="lir__state viz-panel">
+    <div>
+      <span class="viz-label">storage</span>
+      <span class="viz-chip viz-chip--sound" data-storage>empty</span>
+    </div>
+    <div>
+      <span class="viz-label">lock</span>
+      <span class="viz-chip viz-chip--net" data-lock>free</span>
+    </div>
+    <div>
+      <span class="viz-label">builders run</span>
+      <span class="viz-chip viz-chip--level" data-builds>0</span>
+    </div>
+  </div>
+
+  <div class="lir__board viz-panel">
+    <div class="lir__lanes" aria-hidden="true">
+      <span data-lane-name="0">Thread 1</span>
+      <span data-lane-name="1">Thread 2</span>
+    </div>
+    <ol class="lir__steps" data-steps aria-live="polite"></ol>
+  </div>
+
+  <p class="lir__code viz-mono">
+    wrappedValue {'{'} lock.lock(); defer {'{'} lock.unlock() {'}'}; return
+    _wrappedValue {'}'}
+  </p>
+
+  <script
+    is:inline
+    type="application/json"
+    data-lir-data
+    set:html={JSON.stringify(variants)}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = 2300;
+
+    function initLazyRace(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-lir-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const stepsEl = root.querySelector('[data-steps]');
+      const storageEl = root.querySelector('[data-storage]');
+      const lockEl = root.querySelector('[data-lock]');
+      const buildsEl = root.querySelector('[data-builds]');
+      const laneNames = [...root.querySelectorAll('[data-lane-name]')];
+      const segBtns = [...root.querySelectorAll('[data-variant]')];
+
+      let variant = 'lock';
+      let current = -1;
+      let playing = false;
+      let timer = 0;
+
+      const steps = () => data[variant].steps;
+      const last = () => steps().length - 1;
+
+      function row(step, i) {
+        const li = document.createElement('li');
+        li.className = 'lir__row';
+        if (step.bad) li.classList.add('is-bad');
+        if (i === current) li.classList.add('is-current');
+        const n = document.createElement('b');
+        n.textContent = String(i + 1).padStart(2, '0');
+        const text = document.createElement('span');
+        text.textContent = step.text;
+        const cell = document.createElement('div');
+        cell.className =
+          step.lane < 0 ? 'lir__cell lir__cell--all' : 'lir__cell';
+        if (step.lane >= 0) cell.style.gridColumn = String(step.lane + 1);
+        cell.append(n, text);
+        li.append(cell);
+        return li;
+      }
+
+      function render() {
+        laneNames.forEach((el, i) => (el.textContent = data[variant].lanes[i]));
+        const shown = steps().slice(0, current + 1);
+        stepsEl.replaceChildren(...shown.map(row));
+        const s = current >= 0 ? steps()[current] : null;
+        storageEl.textContent = s ? s.storage : 'empty';
+        storageEl.className = `viz-chip ${s && s.bad ? 'viz-chip--bad' : 'viz-chip--sound'}`;
+        lockEl.textContent = s
+          ? s.lock
+          : variant === 'lazy'
+            ? 'no lock'
+            : 'free';
+        lockEl.dataset.kind = s ? s.lockKind : 'free';
+        buildsEl.textContent = String(s ? s.builds : 0);
+        buildsEl.className = `viz-chip ${s && s.builds > 1 ? 'viz-chip--bad' : 'viz-chip--level'}`;
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(
+          () => {
+            current += 1;
+            render();
+            if (current >= last()) {
+              playing = false;
+              root.dispatchEvent(new CustomEvent('anim:ended'));
+              return;
+            }
+            schedule();
+          },
+          current < 0 ? 450 : STEP_MS,
+        );
+      }
+
+      function play() {
+        if (playing) return;
+        if (current >= last()) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        schedule();
+      }
+
+      function reset() {
+        stop();
+        current = -1;
+        render();
+      }
+
+      root.querySelector('[data-next]').addEventListener('click', () => {
+        stop();
+        current = current >= last() ? 0 : current + 1;
+        render();
+        root.dispatchEvent(
+          new CustomEvent(current >= last() ? 'anim:ended' : 'anim:paused'),
+        );
+      });
+
+      segBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.variant === variant) return;
+          variant = btn.dataset.variant;
+          segBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          reset();
+          if (reduce) {
+            current = last();
+            render();
+            return;
+          }
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          play();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      // Reduced motion rests on the whole race until the reader plays it.
+      current = reduce ? last() : -1;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-lir]').forEach(initLazyRace);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .lir__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .lir__bar {
+    display: flex;
+    margin-bottom: var(--sp-3);
+  }
+  .lir__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+  @media (max-width: 480px) {
+    .lir__bar .viz-seg button {
+      padding-inline: 8px;
+      font-size: 11px;
+    }
+  }
+
+  .lir__state {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+  }
+  .lir__state div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .lir__state .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+  }
+  [data-lock][data-kind='free'] {
+    --c: var(--fg-muted);
+  }
+  [data-lock][data-kind='off'] {
+    --c: var(--fg-faint);
+  }
+
+  .lir__board {
+    position: relative;
+    margin-top: var(--sp-3);
+    padding: 0 0 var(--sp-3);
+    overflow: hidden;
+  }
+  .lir__board::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    border-left: 1px dashed var(--border-strong);
+    pointer-events: none;
+  }
+  .lir__lanes {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: var(--sp-2) 0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .lir__lanes span {
+    justify-self: center;
+    padding: 3px 10px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--viz-net);
+    border: 1px solid color-mix(in srgb, var(--viz-net) 40%, transparent);
+    border-radius: 8px;
+    background: var(--bg-subtle);
+  }
+  .lir__steps {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    gap: 6px;
+    min-height: 14rem;
+    padding: var(--sp-2) var(--sp-2) 0;
+  }
+  .lir__steps :global(.lir__row) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    animation: lir-in 0.35s var(--ease) both;
+  }
+  .lir__steps :global(.lir__cell) {
+    display: flex;
+    gap: 6px;
+    margin: 0 4px;
+    padding: 6px 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .lir__steps :global(.lir__cell b) {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-faint);
+    padding-top: 1px;
+  }
+  .lir__steps :global(.lir__cell--all) {
+    grid-column: 1 / -1;
+    border-left: 3px solid var(--viz-sound);
+  }
+  .lir__steps :global(.is-current .lir__cell) {
+    color: var(--fg);
+    border-color: var(--viz-net);
+  }
+  .lir__steps :global(.is-bad .lir__cell) {
+    color: var(--fg);
+    border-color: color-mix(in srgb, var(--viz-bad) 60%, transparent);
+    background: color-mix(in srgb, var(--viz-bad) 7%, var(--surface));
+  }
+  .lir__steps :global(.is-bad .lir__cell--all) {
+    border-left-color: var(--viz-bad);
+  }
+  @keyframes lir-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+
+  .lir__code {
+    display: block;
+    margin: var(--sp-3) 0 0;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 480px) {
+    .lir__steps :global(.lir__cell) {
+      font-size: 11.5px;
+      padding: 5px 6px;
+      margin: 0 2px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .lir__steps :global(.lir__row) {
+      animation: none;
+    }
+  }
+</style>
