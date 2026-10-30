@@ -1,11 +1,11 @@
 ---
 /**
  * The WAV header as a real hex dump: offset column, 16 bytes per row, every
- * byte coloured by the field it belongs to. Pick a field to decode it. A
- * second layout shows a header padded with JUNK and FLLR chunks (as Apple's
- * file writer can produce), where the sound starts at offset 4,096. The
- * animation is the parser walking the chunks, hopping from one to the next;
- * picking a layout replays it over that layout.
+ * byte coloured by the field it belongs to. Pick a field to decode it. The
+ * layout shown first is the one AVAudioFile writes: JUNK and FLLR chunks push
+ * the sound to offset 4,096. The textbook 44-byte layout is the alternative.
+ * The animation is the parser walking the chunks, hopping from one to the
+ * next; picking a layout replays it over that layout.
  *
  * Both layouts are built at compile time from the field list below, so every
  * byte on screen is computed, not typed by hand.
@@ -17,7 +17,7 @@ interface Props {
   caption?: string;
 }
 const {
-  caption = 'Hover, tap or arrow through the fields. In the common case the header is 44 bytes and the sound starts right after it; a padded header pushes it to 4,096, which is why the parser hops chunk by chunk instead of cutting at a fixed offset.',
+  caption = 'Hover, tap or arrow through the fields. AVAudioFile pads the header with JUNK and FLLR chunks, so the sound starts at byte 4,096, not after the textbook 44 bytes. That is why the parser hops chunk by chunk instead of cutting at a fixed offset.',
 } = Astro.props;
 
 type Kind = 'tag' | 'size' | 'fmt' | 'pad' | 'sound';
@@ -212,7 +212,7 @@ const paddedFields: Field[] = [
     kind: 'pad',
     bytes: new Array(JUNK_SIZE).fill(0),
     value: `${JUNK_SIZE} zero bytes`,
-    text: 'Reserved space, all zeros. A fixed “drop 44 bytes” cut lands in the middle of it.',
+    text: 'Reserved space, all zeros, so the file can switch to 64-bit sizes if it ever passes 4 GB. A fixed “drop 44 bytes” cut lands in the middle of it.',
   },
   ...fmtChunk(),
   {
@@ -420,23 +420,23 @@ const paddedLookup = padded.fields;
 
 <VizFrame
   fig="07"
-  title="The 44-byte header, byte by byte"
+  title="The WAV header, byte by byte"
   caption={caption}
   class="wbm"
   data-wbm
 >
   <div slot="tools" class="wbm__tools">
-    <span class="viz-chip viz-chip--sound" data-chip>sound @ 44</span>
+    <span class="viz-chip viz-chip--sound" data-chip>sound @ 4,096</span>
     <AnimControls label="Chunk walk" />
   </div>
 
   <div class="wbm__bar">
     <div class="viz-seg" role="group" aria-label="Header layout">
-      <button type="button" aria-pressed="true" data-variant="plain"
-        >plain 44-byte</button
+      <button type="button" aria-pressed="false" data-variant="plain"
+        >textbook 44-byte</button
       >
-      <button type="button" aria-pressed="false" data-variant="padded"
-        >Apple JUNK/FLLR</button
+      <button type="button" aria-pressed="true" data-variant="padded"
+        >AVAudioFile 4,096</button
       >
     </div>
   </div>
@@ -450,7 +450,7 @@ const paddedLookup = padded.fields;
           <div
             class="wbm__dump viz-panel"
             data-dump={v}
-            hidden={v !== 'plain'}
+            hidden={v !== 'padded'}
             role="group"
             aria-label={
               v === 'plain'
@@ -527,7 +527,7 @@ const paddedLookup = padded.fields;
     >
     <span><i style="--c:var(--fg-faint)"></i>padding</span>
     <span><i style="--c:var(--viz-sound)"></i>sound (PCM)</span>
-    <span class="wbm__cutkey" data-cutkey hidden
+    <span class="wbm__cutkey" data-cutkey
       ><i style="--c:var(--viz-bad)"></i>a fixed 44-byte cut</span
     >
   </div>
@@ -605,7 +605,7 @@ const paddedLookup = padded.fields;
       const LEAD_MS = 400;
       const STEP_MS = 1500;
 
-      let variant = 'plain';
+      let variant = 'padded';
       let active = 0;
       // Parser walk: hops on screen, and the time left to the next one.
       let hop = 0;

@@ -26,14 +26,14 @@ const steps = [
   {
     tag: 'session',
     title: 'AVAudioSession',
-    body: 'Ask for play-and-record in measurement mode, which keeps the system’s own voice processing out of the way. Activate the session, and only then read the hardware sample rate; before activation it can be stale.',
-    code: 'setCategory(.playAndRecord, mode: .measurement) → setActive(true) → sampleRate',
+    body: 'Ask for play-and-record in spoken-audio mode with Bluetooth allowed, read the hardware sample rate, then activate the session. Measurement mode, and reading the rate after activation, would be better; see the text.',
+    code: 'setCategory(.playAndRecord, mode: .spokenAudio) → sampleRate → setActive(true)',
   },
   {
     tag: 'gate',
     title: 'Readiness gate',
     body: 'Early in a session, or right after a route change, the input node can report a sample rate or channel count of zero, and installing a tap or starting the engine in that state crashes. So check first; if the format is not valid, wait a second and look again, up to three attempts. Here the first read is empty and the second passes.',
-    code: 'inputNode.outputFormat(forBus: 0) · sampleRate > 0, channelCount > 0',
+    code: 'inputNode.inputFormat(forBus: 0) · sampleRate > 0, channelCount > 0',
   },
   {
     tag: 'engine',
@@ -85,7 +85,7 @@ const steps = [
         <div class="agf__shead">
           <span class="agf__name">AVAudioSession</span>
           <span class="viz-chip viz-chip--meta"
-            >.playAndRecord · .measurement</span
+            >.playAndRecord · .spokenAudio</span
           >
         </div>
 

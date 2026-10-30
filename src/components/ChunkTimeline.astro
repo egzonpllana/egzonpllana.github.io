@@ -2,7 +2,7 @@
 /**
  * A continuous recording sliced into 0.8 s chunks. A record head writes the
  * stream; each time the timer fires, the chunk is closed as its own WAV file,
- * its 44-byte header is stripped, and only the sound is sent.
+ * its 4,096-byte header is stripped, and only the sound is sent.
  */
 import VizFrame from './viz/VizFrame.astro';
 import AnimControls from './viz/AnimControls.astro';
@@ -11,7 +11,7 @@ interface Props {
   caption?: string;
 }
 const {
-  caption = 'The recorder never stops listening. A timer closes one small file and opens the next. Each file is written with a 44-byte header, which is stripped before sending, so only raw sound travels. Playback here is slowed to 1.2 s per chunk.',
+  caption = 'The recorder never stops listening. A timer closes one small file and opens the next. Each file is written with Apple’s 4 KB header, which is stripped before sending, so only raw sound travels. Playback here is slowed to 1.2 s per chunk.',
 } = Astro.props;
 
 const CHUNK_S = 0.8;
@@ -55,7 +55,7 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
   <div class="ctl__cardshead">
     <span class="viz-label">closed chunks, newest on the right</span>
     <div class="viz-legend" aria-hidden="true">
-      <span><i style="--c:var(--viz-meta)"></i>44 B WAV header</span>
+      <span><i style="--c:var(--viz-meta)"></i>4 KB WAV header</span>
       <span><i style="--c:var(--viz-sound)"></i>sound</span>
       <span><i style="--c:var(--viz-net)"></i>sent</span>
     </div>
@@ -69,7 +69,7 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
             <span class="ctl__t">{c.range}</span>
           </div>
           <div class="ctl__file" aria-hidden="true">
-            <span class="ctl__hdr">44 B</span>
+            <span class="ctl__hdr">4 KB</span>
             <span class="ctl__pcm">sound</span>
           </div>
           <span class="ctl__state">
@@ -258,7 +258,7 @@ const finished = Array.from({ length: 5 }, (_, i) => ({
         li.dataset.state = 'written';
         li.innerHTML =
           `<div class="ctl__cardhead"><span class="ctl__n">chunk ${pad(i + 1)}</span><span class="ctl__t">${range(i)}</span></div>` +
-          '<div class="ctl__file" aria-hidden="true"><span class="ctl__hdr">44 B</span><span class="ctl__pcm">sound</span></div>' +
+          '<div class="ctl__file" aria-hidden="true"><span class="ctl__hdr">4 KB</span><span class="ctl__pcm">sound</span></div>' +
           `<span class="ctl__state"><span class="viz-dot"></span><span data-state-text>chunk_${pad(i + 1)}.wav</span></span>`;
         return li;
       }

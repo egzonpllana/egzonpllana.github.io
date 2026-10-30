@@ -16,13 +16,13 @@ interface Props {
   caption?: string;
 }
 const {
-  caption = 'Sizes are for exactly 0.8 s of 48 kHz mono audio. A real chunk closes between whole tap buffers, so its length varies by about one 100 ms buffer, and 44 bytes is the common-case WAV header.',
+  caption = 'Sizes are for exactly 0.8 s of 48 kHz mono audio. A real chunk closes between whole tap buffers, so its length varies by about one 100 ms buffer, and 4,096 bytes is the header Apple’s file writer puts in front of the sound.',
 } = Astro.props;
 
 const SECONDS = 0.8;
 const HW_RATE = 48000;
 const OUT_RATE = 16000;
-const HEADER = 44;
+const HEADER = 4096; // AVAudioFile pads the header so the sound starts at byte 4,096
 
 const hwFrames = Math.round(SECONDS * HW_RATE); // 38,400
 const outFrames = Math.round(SECONDS * OUT_RATE); // 12,800
@@ -51,11 +51,22 @@ const le32 = (v: number) => [
 ];
 const ascii = (s: string) => [...s].map((c) => c.charCodeAt(0));
 
-function wavHeader(rate: number, dataBytes: number): number[] {
+// A run of zero bytes too long to show one by one.
+type HexCell = number | { skip: number };
+
+const JUNK_SIZE = 28;
+const FLLR_SIZE = HEADER - (12 + 8 + JUNK_SIZE + 24 + 8 + 8); // 4,008
+
+// The header AVAudioFile writes: RIFF, a JUNK chunk reserved for 64-bit
+// sizes, fmt, then FLLR filler so the sound starts at byte 4,096.
+function wavHeader(rate: number, dataBytes: number): HexCell[] {
   return [
     ...ascii('RIFF'),
-    ...le32(36 + dataBytes),
+    ...le32(HEADER - 8 + dataBytes),
     ...ascii('WAVE'),
+    ...ascii('JUNK'),
+    ...le32(JUNK_SIZE),
+    { skip: JUNK_SIZE },
     ...ascii('fmt '),
     ...le32(16),
     ...le16(1),
@@ -64,6 +75,9 @@ function wavHeader(rate: number, dataBytes: number): number[] {
     ...le32(rate * 2),
     ...le16(2),
     ...le16(16),
+    ...ascii('FLLR'),
+    ...le32(FLLR_SIZE),
+    { skip: FLLR_SIZE },
     ...ascii('data'),
     ...le32(dataBytes),
   ];
@@ -137,7 +151,7 @@ const stages: Stage[] = [
     kind: 'meta',
     bytes: pcm48 + HEADER,
     unit: 'bytes',
-    math: `${fmt(hwFrames)} × 2 B + ${HEADER} B header`,
+    math: `${fmt(hwFrames)} × 2 B + ${fmt(HEADER)} B header`,
     delta: '÷ 2, + header',
     what: 'Each buffer is written into a temporary WAV file as 16-bit integers, at the hardware rate; a timer closes the file at 0.8 s.',
   },
@@ -148,7 +162,7 @@ const stages: Stage[] = [
     kind: 'sound',
     bytes: pcm16 + HEADER,
     unit: 'bytes',
-    math: `${fmt(outFrames)} × 2 B + ${HEADER} B header`,
+    math: `${fmt(outFrames)} × 2 B + ${fmt(HEADER)} B header`,
     delta: '÷ 3 samples',
     what: 'AVAudioConverter brings the chunk down to the 16 kHz the speech service expects: one sample kept for every three.',
   },
@@ -160,7 +174,7 @@ const stages: Stage[] = [
     bytes: pcm16,
     unit: 'bytes',
     math: `${fmt(outFrames)} × 2 B`,
-    delta: `− ${HEADER} B`,
+    delta: `− ${fmt(HEADER)} B`,
     what: 'WAVProcessingService walks to the data chunk and keeps only the sound. The handshake already declared 16,000 Hz, 2 bytes, 1 channel.',
   },
   {
@@ -313,12 +327,20 @@ const first = stages[0];
 
     <div class="pjr__view" data-view="2">
       <div class="pjr__hex">
-        {header48.map((b) => <span class="is-head">{hex(b)}</span>)}
+        {
+          header48.map((b) =>
+            typeof b === 'number' ? (
+              <span class="is-head">{hex(b)}</span>
+            ) : (
+              <span class="is-head pjr__skip">+{fmt(b.skip)} × 00</span>
+            ),
+          )
+        }
         {bytes48.map((b) => <span class="is-snd">{hex(b)}</span>)}
         <span class="pjr__more">…</span>
       </div>
       <div class="pjr__key viz-legend">
-        <span><i style="--c: var(--viz-meta)"></i>44 B header · 48,000 Hz</span>
+        <span><i style="--c: var(--viz-meta)"></i>4 KB header · 48,000 Hz</span>
         <span
           ><i style="--c: var(--viz-sound)"></i>samples · Int16 little-endian</span
         >
@@ -327,7 +349,15 @@ const first = stages[0];
 
     <div class="pjr__view" data-view="3">
       <div class="pjr__hex">
-        {header16.map((b) => <span class="is-head">{hex(b)}</span>)}
+        {
+          header16.map((b) =>
+            typeof b === 'number' ? (
+              <span class="is-head">{hex(b)}</span>
+            ) : (
+              <span class="is-head pjr__skip">+{fmt(b.skip)} × 00</span>
+            ),
+          )
+        }
         {bytes16.map((b) => <span class="is-snd">{hex(b)}</span>)}
         <span class="pjr__more">…</span>
       </div>
@@ -343,7 +373,15 @@ const first = stages[0];
 
     <div class="pjr__view" data-view="4">
       <div class="pjr__hex">
-        {header16.map((b) => <span class="is-gone">{hex(b)}</span>)}
+        {
+          header16.map((b) =>
+            typeof b === 'number' ? (
+              <span class="is-gone">{hex(b)}</span>
+            ) : (
+              <span class="is-gone pjr__skip">+{fmt(b.skip)} × 00</span>
+            ),
+          )
+        }
         {bytes16.map((b) => <span class="is-snd">{hex(b)}</span>)}
         <span class="pjr__more">…</span>
       </div>
@@ -814,6 +852,12 @@ const first = stages[0];
     color: var(--fg-faint);
     text-decoration: line-through;
     opacity: 0.45;
+  }
+  /* A run of zero padding, summarised in one wide cell. */
+  .pjr__hex span.pjr__skip {
+    grid-column: span 4;
+    font-size: 10.5px;
+    white-space: nowrap;
   }
   .pjr__key {
     font-size: 10.5px;

@@ -6,9 +6,10 @@
  *     48 kHz every output instant lands on an input sample (3:1, a whole
  *     number); at 44.1 kHz it falls between samples (2.75625:1), so the
  *     value has to be interpolated with proper filtering.
- * (b) The converter's input block. Hand the buffer over once, then report
- *     .endOfStream; answer .haveData every time and the start of the chunk
- *     is fed in again and duplicated at the end of the output.
+ * (b) The converter's input block, with room to spare in the output buffer.
+ *     Hand the buffer over once, then report .endOfStream; answer .haveData
+ *     every time and the start of the chunk is fed in again and duplicated
+ *     at the end of the output.
  *
  * Graphics are drawn at the panel's real pixel width; all text is HTML.
  *
@@ -23,7 +24,7 @@ interface Props {
   caption?: string;
 }
 const {
-  caption = 'Top: the same millisecond of voice at the microphone’s rate and at 16 kHz, with the counts for one nominal 0.8 s chunk. Bottom: what the converter’s input block answers decides whether a chunk ends cleanly or repeats its own beginning.',
+  caption = 'Top: the same millisecond of voice at the microphone’s rate and at 16 kHz, with the counts for one nominal 0.8 s chunk. Bottom: with room to spare in the output buffer, what the converter’s input block answers decides whether a chunk ends cleanly or repeats its own beginning. The SDK sizes the buffer exactly, which caps the damage.',
 } = Astro.props;
 
 const CHUNK_SECONDS = 0.8;

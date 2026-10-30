@@ -1,8 +1,8 @@
 ---
 /**
- * Oscilloscope for sampling: pick a pitch, a loudness and a sample rate, and
+ * Oscilloscope for sampling: pick a frequency, a loudness and a sample rate, and
  * see which instants the microphone keeps. Past half the sample rate the kept
- * samples describe a lower, false pitch, drawn as a dashed ghost.
+ * samples describe a lower, false frequency, drawn as a dashed ghost.
  */
 import VizFrame from './viz/VizFrame.astro';
 import AnimControls from './viz/AnimControls.astro';
@@ -11,7 +11,7 @@ interface Props {
   caption?: string;
 }
 const {
-  caption = 'The faint line is the real sound; the dots are what a recorder keeps. Push the pitch past half the sample rate and the dots start to describe a different, lower pitch.',
+  caption = 'The faint line is the real sound; the dots are what a recorder keeps. Push the frequency past half the sample rate and the dots start to describe a different, lower one.',
 } = Astro.props;
 ---
 
@@ -46,13 +46,13 @@ const {
     <span><i style="--c:var(--fg-faint)"></i>real sound</span>
     <span><i style="--c:var(--viz-sound)"></i>samples kept</span>
     <span class="swl__ghost-key"
-      ><i style="--c:var(--viz-bad)"></i>pitch the samples describe</span
+      ><i style="--c:var(--viz-bad)"></i>frequency the samples describe</span
     >
   </div>
 
   <div class="swl__readouts" aria-live="polite">
     <span class="viz-chip viz-chip--sound"
-      >pitch <b data-out-freq>440 Hz</b></span
+      >frequency <b data-out-freq>440 Hz</b></span
     >
     <span class="viz-chip viz-chip--meta"
       >keeps up to <b data-out-nyq>8,000 Hz</b></span
@@ -67,7 +67,7 @@ const {
 
   <div class="swl__meter" aria-hidden="true">
     <div class="swl__meterhead">
-      <span class="viz-label">pitch vs Nyquist limit (rate ÷ 2)</span>
+      <span class="viz-label">frequency vs Nyquist limit (rate ÷ 2)</span>
       <span class="viz-mono swl__ratio" data-out-ratio>6%</span>
     </div>
     <div class="swl__track" data-track>
@@ -81,7 +81,7 @@ const {
   <div class="swl__controls">
     <label class="swl__ctl">
       <span class="swl__lab"
-        ><span class="viz-label">Pitch</span><span
+        ><span class="viz-label">Frequency</span><span
           class="viz-mono"
           data-out-freq-in>440 Hz</span
         ></span
@@ -93,7 +93,7 @@ const {
         step="10"
         value="440"
         data-in-freq
-        aria-label="Pitch in hertz"
+        aria-label="Frequency in hertz"
       />
     </label>
     <label class="swl__ctl">
@@ -192,7 +192,7 @@ const {
       const state = () => {
         const freq = +inFreq.value;
         const aliased = freq >= rate / 2;
-        // The samples of a pitch f at rate fs are identical to those of f - round(f / fs) * fs.
+        // The samples of a frequency f at rate fs are identical to those of f - round(f / fs) * fs.
         const ghost = freq - Math.round(freq / rate) * rate;
         return { freq, amp: +inAmp.value / 100, aliased, ghost };
       };
