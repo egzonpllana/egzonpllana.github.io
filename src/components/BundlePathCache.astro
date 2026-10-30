@@ -1,0 +1,324 @@
+---
+/**
+ * Why DiskTranslationCache writes every download to a new directory.
+ * Bundle(path:) hands back the existing Bundle object for a path it has seen,
+ * and that object keeps the strings table it already loaded. Overwriting the
+ * file in place therefore changes the disk and not the answer. Both lanes
+ * reproduce a run against Foundation on macOS 26.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Same download, two ways to store it. Writing version 2 over version 1 updates the file, but Bundle(path:) returns the object it created for that path the first time, with version 1’s table still loaded. A fresh directory per version is a path Foundation has never seen, so it gets a fresh Bundle.',
+} = Astro.props;
+
+type Tone = 'neutral' | 'meta' | 'net' | 'ok' | 'bad';
+interface Cell {
+  code: string;
+  note: string;
+  tone: Tone;
+}
+interface Lane {
+  id: string;
+  title: string;
+  cells: Cell[];
+}
+
+const lanes: Lane[] = [
+  {
+    id: 'same',
+    title: 'Overwrite in place',
+    cells: [
+      {
+        code: '…/de.lproj/Localizable.strings ← v1',
+        note: 'first download',
+        tone: 'net',
+      },
+      {
+        code: 'Bundle(path: …/de.lproj) → bundle A',
+        note: 'lookup: "Hallo v1"',
+        tone: 'ok',
+      },
+      {
+        code: '…/de.lproj/Localizable.strings ← v2',
+        note: 'same path, new bytes',
+        tone: 'net',
+      },
+      {
+        code: 'Bundle(path: …/de.lproj) → bundle A again',
+        note: 'existing object for this path',
+        tone: 'meta',
+      },
+      {
+        code: 'NSLocalizedString("hello", bundle: A)',
+        note: '"Hallo v1", the cached table',
+        tone: 'bad',
+      },
+    ],
+  },
+  {
+    id: 'versioned',
+    title: 'New directory per version',
+    cells: [
+      {
+        code: '…/9C1E…/de.lproj/Localizable.strings ← v1',
+        note: 'first download',
+        tone: 'net',
+      },
+      {
+        code: 'Bundle(path: …/9C1E…/de.lproj) → bundle A',
+        note: 'lookup: "Hallo v1"',
+        tone: 'ok',
+      },
+      {
+        code: '…/4F7B…/de.lproj/Localizable.strings ← v2',
+        note: 'new UUID directory, 9C1E… removed',
+        tone: 'net',
+      },
+      {
+        code: 'Bundle(path: …/4F7B…/de.lproj) → bundle B',
+        note: 'a path Foundation has not seen',
+        tone: 'meta',
+      },
+      {
+        code: 'NSLocalizedString("hello", bundle: B)',
+        note: '"Hallo v2"',
+        tone: 'ok',
+      },
+    ],
+  },
+];
+const STEPS = lanes[0].cells.length;
+---
+
+<VizFrame
+  fig="04"
+  title="Bundle(path:) remembers the path, not the file"
+  caption={caption}
+  class="bpc"
+  data-bpc
+>
+  <div slot="tools">
+    <AnimControls label="Update" />
+  </div>
+
+  <div class="bpc__lanes">
+    {
+      lanes.map((lane) => (
+        <section class="bpc__lane" aria-label={lane.title}>
+          <span class="viz-label">{lane.title}</span>
+          <ol class="bpc__cells viz-panel">
+            {lane.cells.map((cell, i) => (
+              <li class="bpc__cell" data-cell={i} data-tone={cell.tone}>
+                <span class="bpc__code">{cell.code}</span>
+                <span class="bpc__note">{cell.note}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ))
+    }
+  </div>
+
+  <p class="bpc__status viz-mono" data-status aria-live="polite"></p>
+
+  <div class="viz-legend bpc__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-net)"></i>downloaded file written</span>
+    <span><i style="--c:var(--viz-meta)"></i>Bundle object</span>
+    <span><i style="--c:var(--viz-sound)"></i>current text</span>
+    <span><i style="--c:var(--viz-bad)"></i>stale text</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-bpc-data
+    set:html={JSON.stringify({ steps: STEPS })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = 1300;
+    const STATUS = [
+      'Nothing downloaded yet.',
+      'Version 1 arrives and is written to disk.',
+      'The manager builds a Bundle for that directory and reads version 1.',
+      'Version 2 arrives.',
+      'reloadBundle() asks for a Bundle again.',
+      'Same download, two different answers.',
+    ];
+
+    function initBundlePathCache(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const { steps } = JSON.parse(
+        root.querySelector('[data-bpc-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const cells = [...root.querySelectorAll('[data-cell]')];
+      const statusEl = root.querySelector('[data-status]');
+
+      let frame = 0;
+      let playing = false;
+      let timer = 0;
+
+      function render() {
+        cells.forEach((cell) =>
+          cell.classList.toggle('is-on', Number(cell.dataset.cell) < frame),
+        );
+        statusEl.textContent = STATUS[frame];
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function tick() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(() => {
+          frame += 1;
+          render();
+          if (frame >= steps) {
+            playing = false;
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          tick();
+        }, STEP_MS);
+      }
+
+      function play() {
+        if (playing) return;
+        if (frame >= steps) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        tick();
+      }
+
+      function reset() {
+        stop();
+        frame = 0;
+        render();
+      }
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      frame = reduce ? steps : 0;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-bpc]').forEach(initBundlePathCache);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .bpc__lanes {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--sp-3);
+  }
+  @media (max-width: 640px) {
+    .bpc__lanes {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .bpc__lane {
+    display: grid;
+    align-content: start;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  .bpc__cells {
+    display: grid;
+    gap: 6px;
+    padding: var(--sp-2);
+  }
+  .bpc__cell {
+    --c: var(--fg-faint);
+    display: grid;
+    gap: 2px;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--border-strong);
+    border-radius: 8px;
+    opacity: 0.35;
+    transition:
+      opacity 0.3s var(--ease),
+      border-color 0.3s var(--ease),
+      background 0.3s var(--ease);
+  }
+  .bpc__cell[data-tone='net'] {
+    --c: var(--viz-net);
+  }
+  .bpc__cell[data-tone='meta'] {
+    --c: var(--viz-meta);
+  }
+  .bpc__cell[data-tone='ok'] {
+    --c: var(--viz-sound);
+  }
+  .bpc__cell[data-tone='bad'] {
+    --c: var(--viz-bad);
+  }
+  .bpc__cell.is-on {
+    opacity: 1;
+    border-color: color-mix(in srgb, var(--c) 40%, transparent);
+    border-left-color: var(--c);
+    background: color-mix(in srgb, var(--c) 6%, var(--surface));
+  }
+  .bpc__code {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .bpc__note {
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--fg-muted);
+  }
+  .bpc__cell.is-on[data-tone='bad'] .bpc__note,
+  .bpc__cell.is-on[data-tone='ok']:last-child .bpc__note {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--c);
+  }
+  .bpc__cell.is-on[data-tone='ok']:last-child .bpc__note {
+    color: var(--viz-sound-text);
+  }
+
+  .bpc__status {
+    margin: var(--sp-3) 0 0;
+    min-height: 1.4em;
+    color: var(--fg-muted);
+  }
+  .bpc__legend {
+    margin-top: var(--sp-2);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bpc__cell {
+      transition: none;
+    }
+  }
+</style>

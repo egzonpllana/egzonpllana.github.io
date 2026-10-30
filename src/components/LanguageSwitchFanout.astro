@@ -1,0 +1,408 @@
+---
+/**
+ * What one call to LocalizationManager.setLanguage(_:) reaches. The chain is
+ * the method body in order; the tiles are the places an app shows text and
+ * whether that change reaches them on its own, only through code you write,
+ * or not at all.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'setLanguage(.explicit("de")) does four things and then stops. Everything below it is either an observer that SwiftUI or NotificationCenter wakes, code you have to write, or text owned by the system or another process that never hears about the switch.',
+} = Astro.props;
+
+type Reach = 'auto' | 'wire' | 'stays';
+interface Link {
+  code: string;
+  detail: string;
+}
+interface Surface {
+  name: string;
+  how: string;
+  reach: Reach;
+  result: string;
+}
+
+const chain: Link[] = [
+  { code: 'storage.saveSelection("de")', detail: 'UserDefaults by default' },
+  { code: 'selection = .explicit("de")', detail: '@Published' },
+  {
+    code: 'bundle = provider.bundle(for: "de")',
+    detail: '@Published, a new .lproj Bundle',
+  },
+  {
+    code: 'post(languageDidChangeNotification)',
+    detail: 'for UIKit observers',
+  },
+];
+
+const surfaces: Surface[] = [
+  {
+    name: 'SwiftUI view that observes the manager',
+    how: '@EnvironmentObject or @ObservedObject',
+    reach: 'auto',
+    result: 'body runs again, .localized reads the new bundle',
+  },
+  {
+    name: 'SwiftUI view that only reads .shared',
+    how: 'no dependency on the manager',
+    reach: 'stays',
+    result: 'SwiftUI skips a body whose inputs did not change',
+  },
+  {
+    name: 'UIKit screen',
+    how: 'LocalizationObserver closure',
+    reach: 'wire',
+    result: 'updates only the labels your closure sets',
+  },
+  {
+    name: 'Strings cached in a view model',
+    how: 'subscribe to $bundle',
+    reach: 'wire',
+    result: 'rebuilt when your subscription fires',
+  },
+  {
+    name: 'Dates, numbers, DatePicker',
+    how: 'formatters and .environment(\\.locale)',
+    reach: 'wire',
+    result: 'follow activeLocale once you pass it',
+  },
+  {
+    name: 'Notifications already scheduled',
+    how: 'text resolved when scheduled',
+    reach: 'stays',
+    result: 'arrive in the old language',
+  },
+  {
+    name: 'Permission prompts',
+    how: 'InfoPlist.strings, read by the system',
+    reach: 'stays',
+    result: 'follow the system’s language for the app',
+  },
+  {
+    name: 'Widgets and App Intents',
+    how: 'another process, its own bundle',
+    reach: 'stays',
+    result: 'unaware unless you share the choice via an App Group',
+  },
+];
+
+const REACH_LABEL: Record<Reach, string> = {
+  auto: 'updates',
+  wire: 'your code',
+  stays: 'stays English',
+};
+---
+
+<VizFrame
+  fig="02"
+  title="One setLanguage call, and what it reaches"
+  caption={caption}
+  class="lsf"
+  data-lsf
+>
+  <div slot="tools">
+    <AnimControls label="Switch" />
+  </div>
+
+  <div class="lsf__call viz-mono">
+    <span class="viz-label">call</span>
+    <span class="lsf__callcode"
+      >LocalizationManager.shared.setLanguage(.explicit("de"))</span
+    >
+  </div>
+
+  <ol class="lsf__chain" aria-label="What setLanguage does, in order">
+    {
+      chain.map((link, i) => (
+        <li class="lsf__link viz-panel" data-link={i}>
+          <span class="lsf__n">{i + 1}</span>
+          <span class="lsf__code">{link.code}</span>
+          <span class="lsf__detail">{link.detail}</span>
+        </li>
+      ))
+    }
+  </ol>
+
+  <ul class="lsf__grid" aria-label="Where text is shown">
+    {
+      surfaces.map((s, i) => (
+        <li class="lsf__tile viz-panel" data-tile={i} data-reach={s.reach}>
+          <span class="lsf__name">{s.name}</span>
+          <span class="lsf__how viz-mono">{s.how}</span>
+          <span class="lsf__after">
+            <span class="lsf__chip viz-chip" data-chip>
+              {REACH_LABEL[s.reach]}
+            </span>
+            <span class="lsf__result">{s.result}</span>
+          </span>
+        </li>
+      ))
+    }
+  </ul>
+
+  <p class="lsf__status viz-mono" data-status aria-live="polite"></p>
+
+  <div class="viz-legend lsf__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>updates on its own</span>
+    <span><i style="--c:var(--viz-level)"></i>updates if you wire it</span>
+    <span><i style="--c:var(--viz-bad)"></i>keeps the old language</span>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const LINK_MS = 650;
+    const TILE_MS = 520;
+
+    function initLanguageSwitchFanout(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const links = [...root.querySelectorAll('[data-link]')];
+      const tiles = [...root.querySelectorAll('[data-tile]')];
+      const statusEl = root.querySelector('[data-status]');
+      const total = links.length + tiles.length;
+
+      let frame = 0;
+      let playing = false;
+      let timer = 0;
+
+      function render() {
+        links.forEach((el, i) => el.classList.toggle('is-on', i < frame));
+        tiles.forEach((el, i) =>
+          el.classList.toggle('is-done', i < frame - links.length),
+        );
+        if (frame === 0) {
+          statusEl.textContent = 'Before: the app is in English.';
+        } else if (frame <= links.length) {
+          statusEl.textContent = `setLanguage, step ${frame} of ${links.length}`;
+        } else if (frame < total) {
+          statusEl.textContent = 'The change spreads to whatever is listening.';
+        } else {
+          const counts = { auto: 0, wire: 0, stays: 0 };
+          tiles.forEach((t) => (counts[t.dataset.reach] += 1));
+          statusEl.textContent = `${counts.auto} on their own · ${counts.wire} need your code · ${counts.stays} keep the old language`;
+        }
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function tick() {
+        clearTimeout(timer);
+        if (!playing) return;
+        const delay = frame < links.length ? LINK_MS : TILE_MS;
+        timer = setTimeout(() => {
+          frame += 1;
+          render();
+          if (frame >= total) {
+            playing = false;
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          tick();
+        }, delay);
+      }
+
+      function play() {
+        if (playing) return;
+        if (frame >= total) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        tick();
+      }
+
+      function reset() {
+        stop();
+        frame = 0;
+        render();
+      }
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      // Reduced motion rests on the outcome until the reader plays it.
+      frame = reduce ? total : 0;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-lsf]').forEach(initLanguageSwitchFanout);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .lsf__call {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .lsf__callcode {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+
+  .lsf__chain {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--sp-2);
+    counter-reset: none;
+  }
+  @media (max-width: 760px) {
+    .lsf__chain {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+  }
+  @media (max-width: 420px) {
+    .lsf__chain {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .lsf__link {
+    display: grid;
+    grid-template-columns: 1.1rem minmax(0, 1fr);
+    gap: 2px 6px;
+    padding: 8px 10px;
+    border-left: 3px solid var(--border-strong);
+    opacity: 0.5;
+    transition:
+      opacity 0.25s var(--ease),
+      border-color 0.25s var(--ease),
+      background 0.25s var(--ease);
+  }
+  .lsf__link.is-on {
+    opacity: 1;
+    border-left-color: var(--viz-meta);
+    background: color-mix(in srgb, var(--viz-meta) 7%, var(--viz-panel));
+  }
+  .lsf__n {
+    grid-row: span 2;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .lsf__code {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .lsf__link.is-on .lsf__code {
+    color: var(--viz-meta);
+  }
+  .lsf__detail {
+    font-size: 11.5px;
+    line-height: 1.35;
+    color: var(--fg-muted);
+  }
+
+  .lsf__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+  }
+  .lsf__tile {
+    --c: var(--fg-faint);
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    padding: 10px 12px;
+    border-top: 3px solid var(--border-strong);
+    transition:
+      border-color 0.3s var(--ease),
+      background 0.3s var(--ease);
+  }
+  .lsf__tile.is-done {
+    border-top-color: var(--c);
+    background: color-mix(in srgb, var(--c) 6%, var(--viz-panel));
+  }
+  .lsf__tile[data-reach='auto'] {
+    --c: var(--viz-sound);
+  }
+  .lsf__tile[data-reach='wire'] {
+    --c: var(--viz-level);
+  }
+  .lsf__tile[data-reach='stays'] {
+    --c: var(--viz-bad);
+  }
+  .lsf__name {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--fg);
+  }
+  .lsf__how {
+    font-size: 11px;
+    color: var(--fg-faint);
+    overflow-wrap: anywhere;
+  }
+  .lsf__after {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    margin-top: 4px;
+    opacity: 0;
+    transform: translateY(3px);
+    transition:
+      opacity 0.3s var(--ease),
+      transform 0.3s var(--ease);
+  }
+  .lsf__tile.is-done .lsf__after {
+    opacity: 1;
+    transform: none;
+  }
+  .lsf__chip {
+    color: var(--c);
+    background: color-mix(in srgb, var(--c) 12%, transparent);
+    border-color: color-mix(in srgb, var(--c) 40%, transparent);
+  }
+  .lsf__tile[data-reach='auto'] .lsf__chip {
+    color: var(--viz-sound-text);
+  }
+  .lsf__result {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--fg-muted);
+  }
+
+  .lsf__status {
+    margin: var(--sp-3) 0 0;
+    min-height: 1.4em;
+    color: var(--fg-muted);
+  }
+  .lsf__legend {
+    margin-top: var(--sp-2);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .lsf__link,
+    .lsf__tile,
+    .lsf__after {
+      transition: none;
+    }
+  }
+</style>

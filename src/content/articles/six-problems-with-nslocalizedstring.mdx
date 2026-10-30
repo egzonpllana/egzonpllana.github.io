@@ -1,0 +1,429 @@
+---
+title: '6 Problems With NSLocalizedString That Made Me Build LocalizationEngine SDK'
+description: 'How an Apple app turns a key into text, which of the six problems String Catalogs and Xcode 26 have since solved, and the two that still need code: switching language without a relaunch and fixing translations without a release. Plus two bugs that re-checking the SDK turned up.'
+date: 2026-03-08
+updated: 2026-10-30
+tags: ['iOS', 'Swift', 'Localization', 'SwiftUI', 'Mobile App Development']
+heroImage: '../../assets/covers/six-problems-with-nslocalizedstring.png'
+repoUrl: 'https://github.com/egzonpllana/localization-engine-ios'
+---
+
+import StatTiles from '../../components/StatTiles.astro';
+import KeyLookupWalk from '../../components/KeyLookupWalk.astro';
+import LanguageSwitchFanout from '../../components/LanguageSwitchFanout.astro';
+import PluralCategoryScrubber from '../../components/PluralCategoryScrubber.astro';
+import BundlePathCache from '../../components/BundlePathCache.astro';
+
+An app that ships in more than one language asks one question thousands of times: given a key like `home.title`, which words go on screen? On Apple platforms the answer is a lookup. The system picks one language the app supports, opens that language's string table and reads the entry. If the entry is missing, it returns the key itself and carries on. `NSLocalizedString` is the oldest door into that lookup, and it works until the app asks for something the lookup was not built for.
+
+I build Engramr, a reminders and alarms app that ships in 14 languages. It needed two things the lookup does not do: a language picker inside the app that takes effect without a relaunch, and a way to fix a wrong word in Japanese without waiting for App Review. So I wrote LocalizationEngine, a Swift package with type-safe keys, runtime language switching and over-the-air (OTA) translation updates.
+
+The first version of this article compared the package with plain `NSLocalizedString`. That was the wrong baseline. String Catalogs arrived in Xcode 15, and Xcode 26 generates type-safe Swift symbols from them. Three of my six problems are mostly solved by Apple's own tools now, and this update says which. The other three still need code. I also re-checked every claim against the package's source and ran it against real bundles. That turned up two bugs, in plural selection and in OTA fallback, which are written up below with their fixes.
+
+<StatTiles
+  tiles={[
+    { label: 'Languages in Engramr', value: 14, sub: 'switchable in the app' },
+    { label: 'Package modules', value: 5, sub: 'Core, SwiftUI, UIKit, OTA, umbrella' },
+    { label: 'Dependencies', value: 0, sub: 'Apple frameworks only' },
+    { label: 'Tests', value: 37, sub: '6 of them end-to-end OTA runs' },
+  ]}
+/>
+
+---
+
+## How Apple turns a key into text
+
+Every localized string on an Apple platform comes out of the same three steps.
+
+**1. Pick one localization.** A bundle knows which languages it contains: the `.lproj` folders inside it (`en.lproj`, `de.lproj`). The user's preferred languages are an ordered list (`de-DE`, `en`). Foundation matches the two lists once and takes the best match. If nothing matches, it uses the bundle's development language. `Bundle.preferredLocalizations` exposes the matching: against an app with `en`, `de`, `ru` and `ar`, a preference of `["fr", "de"]` gives `de`, and `["pt-BR"]` gives `en`.
+
+**2. Read that localization's tables.** A table is a pair of files in the chosen `.lproj`: `Localizable.strings` for plain entries and `Localizable.stringsdict` for entries with plural or device variations. A String Catalog (`.xcstrings`) does not change this. It is one JSON file for editing, and at build time Xcode compiles it back into those two files per language. Running `xcstringstool compile` from Xcode 27 on a catalog with a plural entry gives exactly that:
+
+```text
+en.lproj/Localizable.strings      "hello" = "Hello"
+en.lproj/Localizable.stringsdict  "items %lld" → one: "%lld item", other: "%lld items"
+ru.lproj/Localizable.strings      "hello" = "Privet"
+ru.lproj/Localizable.stringsdict  "items %lld" → one / few / many / other
+```
+
+A catalog entry with no Russian translation is simply absent from the compiled Russian table.
+
+**3. If the key is not there, give something back anyway.** The lookup returns the `value` or `defaultValue` you passed, and otherwise the key. It does not retry the key in English. It does not throw, and it does not log.
+
+```swift
+let title = String(localized: "home.title", defaultValue: "Reminders", comment: "Home screen title")
+// NSLocalizedString("home.title", comment: "") is the older spelling of the same lookup
+```
+
+Step 3 is where most localization bugs live. A typo in a key, a key nobody translated yet, a table name that does not match: all three come back as the key, on screen, with no signal. Apps that use English text as the key (`Text("Settings")`) hide this better, because the fallback is readable. They do not avoid it.
+
+> **In plain words:** the system chooses one language, reads one table, and if the key is not in it you get the key back. Nothing is checked at compile time and nothing complains at runtime.
+
+---
+
+## The six problems, re-checked in 2026
+
+Here is where each one stands:
+
+1. **Keys are strings, so a typo compiles.** Xcode 26 generates symbols from the catalog. Mostly solved.
+2. **No way to discover which keys exist.** The same symbols, with autocomplete. Mostly solved.
+3. **Changing language means a relaunch.** Per-app language in Settings still relaunches; `LocalizedStringResource` can resolve any shipped language. An in-app picker still needs code.
+4. **A wrong word waits for a release.** Apple ships nothing here. Still needs code.
+5. **Localization leaks into the domain.** `LocalizedStringResource` is a value the domain can carry. A design choice more than a missing feature.
+6. **No test that translations are complete.** The catalog shows progress, but the build never fails. Still needs a small test.
+
+### 1 and 2: raw strings and discoverability
+
+My original point was that `NSLocalizedString("home_remindrs_tab", comment: "")` compiles, ships and shows `home_remindrs_tab`, and that a new teammate has no list of keys to browse. Both were true of `NSLocalizedString`, and both are largely fixed by Xcode 26.
+
+For strings you add to a catalog by hand (rather than ones Xcode extracts from code), Xcode 26 generates Swift symbols. The build setting is **Generate String Catalog Symbols**, on by default in new projects. Here is what `xcstringstool generate-symbols` produces for two hand-added keys, trimmed:
+
+```swift
+@available(macOS 13, iOS 16, tvOS 16, watchOS 9, *)
+nonisolated extension LocalizedStringResource {
+    /// Localized string for key "reminders.category_work" in table "Localizable.xcstrings".
+    static var remindersCategoryWork: LocalizedStringResource {
+        LocalizedStringResource("reminders.category_work", table: "Localizable", bundle: resourceBundleDescription)
+    }
+
+    /// Localized string for key "reminders.count" in table "Localizable.xcstrings".
+    static func remindersCount(_ arg1: Int) -> LocalizedStringResource {
+        LocalizedStringResource("reminders.count", defaultValue: "\(arg1, specifier: "%lld")", table: "Localizable", bundle: resourceBundleDescription)
+    }
+}
+```
+
+Call sites read `Text(.remindersCategoryWork)` and `String(localized: .remindersCount(3))`. A misspelled symbol does not compile, autocomplete lists every key, and keys in other tables are namespaced by table. The symbols are generated from the catalog, so they cannot drift from it. That is a stronger guarantee than the enums in my package, whose raw values are typed by hand and can drift. More on that under problem 6.
+
+What generated symbols do not cover is anything outside the catalog itself: they resolve through the system lookup, in the system's language.
+
+### 3: changing language at runtime
+
+The original claim, "the system resolves bundles at process launch", holds for the main bundle: step 1 above runs once, from the user's language settings. Since iOS 13 users can set a language per app in Settings, and when they change it, as Apple put it at WWDC19, "your app will be relaunched in the target language". Apple's advice in that session is to send users to Settings rather than switch languages in code.
+
+What I did not know when I wrote the package: you can resolve a string in any language the app ships, at runtime, with no bundle tricks. A `LocalizedStringResource` carries a `locale`, and `String(localized:)` honours it when it picks the localization:
+
+```swift
+var resource = LocalizedStringResource.remindersCount(3)
+resource.locale = Locale(identifier: "ru")
+let text = String(localized: resource) // the Russian "few" form, formatted with Russian rules
+```
+
+Two related APIs do not do this. The `locale:` parameter of `String(localized:)` affects formatting, not language: asked for German, it returned the English string. The `Bundle.localizedString` overload with a `localizations:` parameter does choose the language, but needs iOS 18.4.
+
+So resolving a string in another language is solved. What is still missing is the rest of the feature: a current-language setting the whole app reads, persisted, and a change signal that makes every screen re-render. That is what the package's `LocalizationManager` is.
+
+### 4: fixing a typo means a release
+
+Still true. Apple has no mechanism to update string tables outside a build. My original wording, "shipping it takes days", overstated review: Apple says it typically reviews 50% of submissions within 24 hours and 90% within 48. The longer wait is adoption. Users still see the old string until they update, and some never do. A translation fix that arrives over the network on the next launch reaches everyone with a connection.
+
+### 5: localization leaking into the domain
+
+The example was a stored category, `"Work"`, that has to display as `"Puna"` in Albanian. I wrote that this made the domain layer import "UIKit concepts". That was wrong: `NSLocalizedString` is Foundation. The real issue is resolving too early. A model that stores a resolved string has frozen one language into data. The fix is to store a stable identifier and resolve at the edge. `LocalizedStringResource` is a good type for that edge: it is `Sendable`, it holds a key and a table but no resolved text, and the view decides when and in which locale to turn it into text.
+
+```swift
+enum CategoryKind: String, Codable, Sendable {
+    case work, personal
+
+    var title: LocalizedStringResource {
+        switch self {
+        case .work: LocalizedStringResource("reminders.category_work")
+        case .personal: LocalizedStringResource("reminders.category_personal")
+        }
+    }
+}
+```
+
+The package's version of this is a `LocalizationResolving` protocol that domain-side localizers take as a dependency, so tests can inject a stub. Both work. The point is the boundary, not the type.
+
+### 6: testing that every string is translated
+
+The String Catalog editor shows a completion percentage per language and marks entries as new, stale or needing review. A missing translation still does not fail a build, and step 3 means it does not fail at runtime either. The catalog is JSON, though, so a test can read it:
+
+```swift
+import Foundation
+import Testing
+
+/// The subset of the .xcstrings JSON a completeness check needs.
+struct StringCatalog: Decodable {
+    struct Entry: Decodable {
+        let shouldTranslate: Bool?
+        let localizations: [String: Localization]?
+    }
+    struct Localization: Decodable {
+        let stringUnit: StringUnit?
+        let variations: Variations?
+
+        var isTranslated: Bool {
+            if let stringUnit { return stringUnit.state == "translated" }
+            guard let forms = variations?.plural, !forms.isEmpty else { return false }
+            return forms.values.allSatisfy(\.isTranslated)
+        }
+    }
+    struct Variations: Decodable {
+        let plural: [String: Localization]?
+    }
+    struct StringUnit: Decodable {
+        let state: String
+    }
+
+    let sourceLanguage: String
+    let strings: [String: Entry]
+
+    static func load(_ url: URL) throws -> StringCatalog {
+        try JSONDecoder().decode(StringCatalog.self, from: Data(contentsOf: url))
+    }
+}
+
+let catalogURL = URL(filePath: #filePath)
+    .deletingLastPathComponent()
+    .appending(path: "../App/Resources/Localizable.xcstrings")
+
+@Test(arguments: ["de", "fr", "sq"])
+func everyKeyIsTranslated(into language: String) throws {
+    let catalog = try StringCatalog.load(catalogURL)
+    let missing = catalog.strings
+        .filter { $0.value.shouldTranslate != false }
+        .filter { $0.value.localizations?[language]?.isTranslated != true }
+        .map(\.key)
+        .sorted()
+    #expect(missing.isEmpty, "\(language) is missing \(missing)")
+}
+
+@Test func everyEnumKeyExistsInTheCatalog() throws {
+    let catalog = try StringCatalog.load(catalogURL)
+    let unknown = CommonKey.allCases.map(\.rawValue).filter { catalog.strings[$0] == nil }
+    #expect(unknown.isEmpty, "Not in the catalog: \(unknown)")
+}
+```
+
+The second test is the one that closes the gap enums leave open: `CommonKey.cancel` with a raw value of `"common.cancle"` compiles, and only a check against the catalog catches it. With generated symbols it is unnecessary, which is the best argument for them.
+
+> **In plain words:** keys as code and key discovery are now built into Xcode. What Apple still does not ship is an in-app language setting that the whole app follows without a relaunch, and a way to change strings without a new build. Those two are why the package still exists.
+
+---
+
+## The package: keys as types, one resolver
+
+Each feature area declares its keys as an enum that conforms to `LocalizedKeyProtocol`, whose only requirement is a `rawKey`:
+
+```swift
+enum CommonKey: String, CaseIterable, LocalizedKeyProtocol {
+    case cancel = "common.cancel"
+    case save = "common.save"
+    case done = "common.done"
+
+    var rawKey: String { rawValue }
+}
+
+Text(CommonKey.save.localized)          // SwiftUI
+saveButton.setTitle(CommonKey.save.localized, for: .normal) // UIKit
+```
+
+`.localized` returns a plain `String`, so it works wherever a `String` does. The package itself knows no keys and no languages: the app supplies both, and the package resolves them. A developer working on reminders sees `RemindersKey`, not the whole app's vocabulary.
+
+Everything goes through `LocalizationManager`, an `ObservableObject` that holds the active `.lproj` bundle and a fallback bundle. Resolution is two tiers deep:
+
+```swift
+private func resolve(_ key: String) -> String {
+    let result = NSLocalizedString(key, bundle: bundle, comment: "")
+    if result != key {
+        return result
+    }
+    return NSLocalizedString(key, bundle: fallbackBundle, comment: "")
+}
+```
+
+`bundle` is `Bundle(path:)` pointed straight at one `.lproj` folder, for example `de.lproj`. A bundle created that way contains exactly one language, so step 1 of Apple's lookup has nothing to choose, and the app, not the device, decides the language. If German has no entry, the key is retried in the fallback language, English by default. Pick a path and a key:
+
+<KeyLookupWalk />
+
+The second tier is the package's main improvement on the system path: an untranslated key shows English instead of the key. My original article said this meant "users never see raw keys". It does not. A key that exists in no table still comes back as itself, and the third path in the figure shows how OTA makes that case far more common. I return to that below.
+
+> **In plain words:** the package points `NSLocalizedString` at one `.lproj` folder the app chose, and retries in English when that folder has no entry. That turns "untranslated" into "English", but a key that exists nowhere is still the key.
+
+---
+
+## Switching language without a relaunch
+
+`setLanguage(_:)` is short. It saves the choice (to `UserDefaults` by default), updates the `@Published selection`, builds a new `Bundle` for the chosen `.lproj` and assigns it to the `@Published bundle`, then posts `languageDidChangeNotification` for UIKit. In SwiftUI, any view that observes the manager runs its body again, and every `.localized` inside it reads the new bundle.
+
+My original description stopped there and said SwiftUI "re-renders every view that reads a localized string". It re-renders every view that *observes the manager*. A view that only calls `CommonKey.save.localized`, which reads `LocalizationManager.shared`, has no dependency SwiftUI can see. When its parent re-renders with unchanged inputs, SwiftUI can skip its body, and its text stays in the old language. The README's guidance follows from this: inject the manager with `.localizationManager(_:)` and read it as an `@EnvironmentObject` in the views that show text.
+
+The rest of the app is not covered by that signal at all:
+
+<LanguageSwitchFanout />
+
+UIKit screens get a closure through `LocalizationObserver`, and they update only the labels the closure sets. View models that cache strings have to subscribe to `$bundle`. The README suggests a 300 ms debounce, because a language switch followed by an OTA reload publishes twice. Formatters and `DatePicker` need `activeLocale` passed in explicitly. Some text is out of reach. Permission prompts come from `InfoPlist.strings` and are shown by the system. Notifications scheduled earlier carry text resolved at scheduling time. Widgets run in another process with their own bundle.
+
+> **In plain words:** switching language is a published value change. Whatever observes it updates. Everything else, from cached strings to date formatters to system prompts, either needs wiring or stays in the old language.
+
+---
+
+## Plurals: where the category comes from
+
+English has two plural forms, so it is easy to think of plurals as "1" and "everything else". [CLDR](https://cldr.unicode.org/index/cldr-spec/plural-rules), the Unicode data set Apple's plural support is built on, names six categories: `zero`, `one`, `two`, `few`, `many` and `other`. Each language uses a subset, chosen by arithmetic on the number. Russian uses `one` for 1, 21 and 101, `few` for 2–4 and 22–24, `many` for 0, 5–20 and 25–30, and keeps `other` for fractions. That is three forms for whole numbers and four in all. Arabic uses all six. Japanese uses only `other`. French puts 0 in `one`.
+
+A `.stringsdict` entry, or a plural row in a catalog, holds one string per category. When the format is applied to a number, Foundation computes the category with the rules of a locale and picks that string. Which locale it uses is the whole question:
+
+<PluralCategoryScrubber />
+
+The package's plural helper is:
+
+```swift
+public func localized(_ key: String, count: Int) -> String {
+    let template = resolve(key)
+    return String(format: template, count)
+}
+```
+
+`String(format:)` without a locale does not use the language of the table the template came from. It does not use the device language either. I ran the same Russian `.stringsdict` through it with the process language set to English and then to Russian. Both times it picked `one` for exactly 1 (and `zero` for 0 when the table had a `zero` entry), and `other` for everything else. 2, 5 and 21 all printed the `other` form. `String(format:locale:)` with a Russian locale gave `few`, `many` and `one`, matching CLDR. So the package shows the right plural form in English and German, which have the same one/other split, and the wrong one for most numbers in Russian, Polish or Arabic. It also gets French zero wrong. The fix is one argument, in both `LocalizationManager` and the `LocalizedKeyProtocol` extension:
+
+```swift
+public func localized(_ key: String, count: Int) -> String {
+    String(format: resolve(key), locale: activeLocale, count)
+}
+```
+
+The package's three plural tests did not catch this. They call `localized("%d items", count: 5)` with a key that is not in any table, so they check that the number is formatted, not which form is chosen. A test that loads a Russian `.stringsdict` and checks 2, 5 and 21 would have failed.
+
+> **In plain words:** the plural form is chosen by a locale's rules, not by the table. Format without a locale and you get English's one/other split in every language.
+
+---
+
+## OTA: translations without a release
+
+The idea: host one `.strings` file per language anywhere (S3, a CDN, your API), download it at launch, and put it on disk where `NSLocalizedString` can read it. The package does not include a network layer. You implement one method and return `nil` for HTTP 304:
+
+```swift
+public protocol TranslationFetchProviding: Sendable {
+    func fetchTranslations(
+        for languageCode: String,
+        etag: String?
+    ) async throws -> TranslationFetchResult?
+}
+```
+
+`OTATranslationManager` does the bookkeeping around that call. It skips a language fetched less than `minimumFetchInterval` ago (an hour by default) and passes the stored ETag for a conditional request. It also prefetches every configured language in parallel in a task group, where a failure is logged and does not cancel the rest. `DiskTranslationCache` writes the file atomically, under an `NSLock`, into a `{uuid}/{code}.lproj` folder, with a small JSON metadata file beside it. `OTABundleProvider` puts the cache in front of the bundled `.lproj` folders. After a prefetch, `reloadBundle()` makes the manager pick the downloaded bundle up without a relaunch. The package's six OTA integration tests run this against real disk I/O and real `NSLocalizedString`, including a version 1 to version 2 update.
+
+### The Bundle cache
+
+The UUID in that path is there for a reason. `Bundle(path:)` is documented to return the existing object when one already exists for that path, and that object keeps the strings table it already loaded. I checked this outside the package: writing a new `Localizable.strings` over the old one and asking for the bundle again gave back the identical object and the old string.
+
+<BundlePathCache />
+
+Each download goes to a new directory and the previous one is deleted, so every update is a path Foundation has not seen.
+
+### What a downloaded bundle hides
+
+`OTABundleProvider` returns the downloaded bundle *instead of* the bundled one, not in front of it for each key. So once a German file has been downloaded, the bundled `de.lproj` is never asked again. Fig 01's third path shows what follows. I reproduced each case by running the package's own manager, provider and cache against real bundles:
+
+- **Plurals stop resolving.** A `.strings` file cannot hold plural forms, and the downloaded folder contains nothing else, so every plural key misses in German. On the launch the download happens, the fallback is still the bundled English and the user reads "3 items" in a German screen. `fallbackBundle` is chosen when the manager is created, so from the next launch it is the downloaded English file, which has no plurals either, and the user reads `reminders.count`.
+- **New keys fall through.** A key added in a release, but missing from the files on the server, is skipped in the downloaded German file and then in the downloaded English file, and comes back raw, even though the app bundle has a translation.
+- **The fallback goes stale.** `reloadBundle()` refreshes the active bundle only, so an OTA fix to English reaches users of other languages one launch late.
+
+The fix is to make the fallback chain per key rather than per bundle. Ask the downloaded German table, then the bundled German table, then the downloaded and the bundled English tables, and only then give up. Use a sentinel `value:` so that a translation identical to its key is not mistaken for a miss:
+
+```swift
+private static let notFound = "\u{0}missing"
+
+private func resolve(_ key: String) -> String {
+    for bundle in lookupChain { // OTA de, bundled de, OTA en, bundled en
+        let value = bundle.localizedString(forKey: key, value: Self.notFound, table: nil)
+        if value != Self.notFound { return value }
+    }
+    return key
+}
+```
+
+Rebuild `lookupChain` in `setLanguage` and in `reloadBundle`, and plurals and new keys always reach the bundled tables.
+
+Corrected, the failure table from the original article reads:
+
+| Scenario | What the user sees |
+| --- | --- |
+| Server down | The last downloaded file, from disk |
+| Nothing downloaded yet | The bundled translations |
+| Key missing in the active language | The fallback language, if the fallback bundle has it |
+| Key not in the downloaded files | The fallback language, or the raw key once the fallback is also a download (until the chain fix) |
+| Plural key, OTA active | English, then the raw key (until the chain fix) |
+| Key missing everywhere | The raw key |
+
+> **In plain words:** downloaded strings are a `.strings` file in a fresh folder, swapped in for the bundled one. Fresh folders defeat Foundation's bundle cache. Swapping whole bundles, rather than falling back per key, loses everything a `.strings` file cannot hold.
+
+---
+
+## Named substitutions
+
+For strings with several values, the package offers named tokens:
+
+```swift
+// "greeting" = "Hello, %{name}! You have %{count} new messages.";
+Text(L10n.greeting.localized(substitutions: ["name": "Alice", "count": "5"]))
+```
+
+The implementation is a `replacingOccurrences` per token. Translators can reorder tokens, and a name says more than `%2$@`. The original article implied that order-independence needs named tokens. It does not: positional specifiers (`%1$@`, `%2$lld`) let translators reorder too, and a catalog writes them for you. Named tokens are also plain text replacement, so `%{count}` cannot choose a plural form. "You have 1 new messages" is exactly the bug the previous section is about. For anything with a number in it, use a catalog plural with positional arguments.
+
+---
+
+## Architecture
+
+The package has five library targets and no external dependencies:
+
+- **LocalizationCore**: `LocalizationManager`, the key and language protocols, `BundleProviding`, `LanguageStorageProviding`, `LocalizationResolving`. Foundation and Combine only.
+- **LocalizationSwiftUI**: the `.localizationManager(_:)` modifier and a `LocalizedText` view.
+- **LocalizationUIKit**: `LocalizationObserver`, a `NotificationCenter` wrapper that calls a closure on the main queue.
+- **LocalizationOTA**: `OTATranslationManager`, `DiskTranslationCache`, `OTABundleProvider`.
+- **LocalizationEngine**: an umbrella that re-exports the other four.
+
+Every seam is a protocol: where bundles come from, where the choice is stored, how translations are fetched and cached. The tests use those seams, with a mock bundle provider and storage for the core and a mock fetcher for OTA. The package is iOS 16 and macOS 13, built with tools version 5.9, so it compiles in the Swift 5 language mode. Its shared state is declared `nonisolated(unsafe)` and `@unchecked Sendable`, and its comments ask for `setLanguage` and `reloadBundle` to be called on the main thread rather than enforcing it.
+
+---
+
+## Honest downsides
+
+- **Two sources of truth for keys.** The enums are written by hand next to the catalog. Without a sync test they drift. Xcode 26's generated symbols do not have this problem.
+- **Language choice lives in `UserDefaults`.** The storage is a protocol, so this is replaceable, but extensions do not see it unless it is moved to an App Group.
+- **OTA needs hosting and a fetcher.** The package handles caching and resolution. You handle the server, the networking and keeping the files in step with releases.
+- **More setup than a string literal.** Keys, languages and configuration are declared up front.
+
+---
+
+## What I would change next
+
+- **Format plurals with the active locale.** `String(format:locale:)` in both plural helpers, and a test with Russian 2, 5 and 21.
+- **Fall back per key, not per bundle.** An ordered chain of downloaded and bundled tables, rebuilt on `setLanguage` and `reloadBundle`, with a sentinel default value.
+- **Download catalogs, not `.strings`.** `xcstringstool compile` turns an `.xcstrings` file into `.strings` and `.stringsdict` per language. Running it in the translation pipeline and shipping both files makes plurals updatable over the air.
+- **Say when a key is missing.** In debug builds, log every key that reached the last tier. A raw key on screen should never be the first signal.
+- **Build on `LocalizedStringResource`.** Resolve generated symbols with `resource.locale = activeLocale`, so the catalog, not a hand-written enum, is the source of keys. The manager's job then shrinks to what Apple still does not do: hold the in-app language, publish changes and serve OTA tables.
+- **Move to Swift 6 mode.** Make the manager `@MainActor` instead of documenting the main-thread requirement.
+
+---
+
+## Takeaways
+
+> **Know what the lookup does when it fails.** Apple's lookup picks one language and returns the key when the entry is missing. Every guarantee you want beyond that has to be built and tested.
+
+> **Check your baseline before building.** String Catalogs and generated symbols took away half of my reasons for the package. The half that remains, in-app switching and OTA, is the half worth maintaining.
+
+> **Locale decides plurals.** The table holds the forms; the locale passed to the formatter picks one. No locale means English rules.
+
+> **Publishing a value only updates observers.** A runtime language switch reaches what listens to it. List what does not listen before calling the feature done.
+
+> **Fall back per key.** Replacing a whole bundle with a partial one turns every gap in the partial one into a raw key.
+
+> **Foundation caches bundles by path.** New content needs a new path.
+
+> **Test the behaviour the user sees.** Interpolating a number is not plural selection. Load a real table in a language with more than two forms and assert the form.
+
+---
+
+## References
+
+**LocalizationEngine** — [Repository](https://github.com/egzonpllana/localization-engine-ios) · [`LocalizationManager.swift`](https://github.com/egzonpllana/localization-engine-ios/blob/main/Sources/LocalizationCore/Manager/LocalizationManager.swift) · [`LocalizedKeyProtocol.swift`](https://github.com/egzonpllana/localization-engine-ios/blob/main/Sources/LocalizationCore/Protocols/LocalizedKeyProtocol.swift) · [`OTABundleProvider.swift`](https://github.com/egzonpllana/localization-engine-ios/blob/main/Sources/LocalizationOTA/Provider/OTABundleProvider.swift) · [`DiskTranslationCache.swift`](https://github.com/egzonpllana/localization-engine-ios/blob/main/Sources/LocalizationOTA/Cache/DiskTranslationCache.swift)
+
+**Apple** — [Localizing and varying text with a String Catalog](https://developer.apple.com/documentation/xcode/localizing-and-varying-text-with-a-string-catalog) · [`LocalizedStringResource`](https://developer.apple.com/documentation/foundation/localizedstringresource) · [`Bundle.init(path:)`](https://developer.apple.com/documentation/foundation/bundle/init(path:)) · [`Bundle.preferredLocalizations`](https://developer.apple.com/documentation/foundation/bundle/preferredlocalizations(from:forpreferences:)) · [App Review](https://developer.apple.com/distribute/app-review/) (review times)
+
+**WWDC** — [Discover String Catalogs](https://developer.apple.com/videos/play/wwdc2023/10155/) (WWDC23) · [Code-along: Explore localization with Xcode](https://developer.apple.com/videos/play/wwdc2025/225/) (WWDC25, generated symbols) · [Creating Great Localized Experiences with Xcode 11](https://developer.apple.com/videos/play/wwdc2019/403/) (WWDC19, per-app language)
+
+**Plural rules** — [CLDR plural rules](https://cldr.unicode.org/index/cldr-spec/plural-rules) · [CLDR language plural rules chart](https://www.unicode.org/cldr/charts/latest/supplemental/language_plural_rules.html)

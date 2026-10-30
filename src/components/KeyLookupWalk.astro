@@ -1,0 +1,658 @@
+---
+/**
+ * One key, three lookup paths. Apple's lookup picks a single localization and
+ * reads its tables; LocalizationEngine asks the in-app language's .lproj and
+ * then the fallback .lproj; with OTA turned on, both of those bundles come
+ * from the download cache, which only ever holds a Localizable.strings file.
+ *
+ * The OTA outcomes mirror a run of the package's own LocalizationManager,
+ * OTABundleProvider and DiskTranslationCache against a German and an English
+ * download (the README's "prefetch every language" setup), on the launch
+ * after the files were cached.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'The reader’s language is German. A raw key on screen is never an error: every path ends in “return the key” when the tables run out, and nothing is logged. The SDK adds an English retry, and the OTA path swaps both bundles for downloaded ones that only hold a .strings file.',
+} = Astro.props;
+
+type StepState = 'hit' | 'miss' | 'used' | 'skip';
+type Outcome = 'ok' | 'ota' | 'fallback' | 'raw';
+interface Step {
+  title: string;
+  detail: string;
+  state: StepState;
+}
+interface Walk {
+  steps: Step[];
+  text: string;
+  outcome: Outcome;
+  note: string;
+}
+type Mode = 'apple' | 'sdk' | 'ota';
+type Key = 'home' | 'settings' | 'paywall' | 'count' | 'typo';
+
+const keys: { id: Key; label: string }[] = [
+  { id: 'home', label: 'home.title' },
+  { id: 'settings', label: 'settings.title' },
+  { id: 'paywall', label: 'paywall.cta' },
+  { id: 'count', label: 'reminders.count' },
+  { id: 'typo', label: 'home.titel' },
+];
+const keyHints: Record<Key, string> = {
+  home: 'translated everywhere',
+  settings: 'no German translation yet',
+  paywall: 'added in this release',
+  count: 'plural, n = 3',
+  typo: 'typo in the raw value',
+};
+
+const modes: { id: Mode; label: string; context: string }[] = [
+  {
+    id: 'apple',
+    label: 'Apple lookup',
+    context: 'String(localized:) on Bundle.main · device language German',
+  },
+  {
+    id: 'sdk',
+    label: 'SDK',
+    context: 'German picked in the app · fallbackLanguageCode "en"',
+  },
+  {
+    id: 'ota',
+    label: 'SDK + OTA',
+    context: 'de and en downloaded on an earlier launch · OTABundleProvider',
+  },
+];
+
+const pick: Step = {
+  title: 'Pick one localization',
+  detail: 'Preferred [de-DE, en] against the app’s [en, de]: de.lproj',
+  state: 'hit',
+};
+const appleTable = (state: StepState, detail: string): Step => ({
+  title: 'Read the de.lproj tables',
+  detail,
+  state,
+});
+const appleEnd = (state: StepState): Step => ({
+  title: 'Not in the table',
+  detail: 'Return defaultValue if one was passed, otherwise the key itself',
+  state,
+});
+
+const sdkActive: Step = {
+  title: 'Active bundle',
+  detail: 'Bundle(path: …/de.lproj), chosen by setLanguage',
+  state: 'hit',
+};
+const otaActive: Step = {
+  title: 'Active bundle',
+  detail:
+    'Caches/LocalizationOTA/<uuid>/de.lproj. The bundled de.lproj is no longer asked.',
+  state: 'hit',
+};
+const tier = (title: string, state: StepState, detail: string): Step => ({
+  title,
+  detail,
+  state,
+});
+const lastResort = (state: StepState): Step => ({
+  title: 'Still missing',
+  detail: 'resolve() hands back the key it was given',
+  state,
+});
+
+const walks: Record<Mode, Record<Key, Walk>> = {
+  apple: {
+    home: {
+      steps: [
+        pick,
+        appleTable('hit', 'Localizable.strings: "Erinnerungen"'),
+        appleEnd('skip'),
+      ],
+      text: 'Erinnerungen',
+      outcome: 'ok',
+      note: 'The common case: one localization, one table, one entry.',
+    },
+    settings: {
+      steps: [
+        pick,
+        appleTable(
+          'miss',
+          'An untranslated catalog entry is left out of the compiled de table',
+        ),
+        appleEnd('used'),
+      ],
+      text: 'settings.title',
+      outcome: 'raw',
+      note: 'There is no per-key retry in English. With English text as the key, or a defaultValue, the user sees English instead, which hides the gap rather than closing it.',
+    },
+    paywall: {
+      steps: [
+        pick,
+        appleTable('hit', 'Localizable.strings: "Jetzt testen"'),
+        appleEnd('skip'),
+      ],
+      text: 'Jetzt testen',
+      outcome: 'ok',
+      note: 'Shipped and translated in this build, so the bundled table has it.',
+    },
+    count: {
+      steps: [
+        pick,
+        appleTable('hit', 'Localizable.stringsdict: one / other, German rules'),
+        appleEnd('skip'),
+      ],
+      text: '3 Erinnerungen',
+      outcome: 'ok',
+      note: 'String(localized:) formats the count with Locale.current, German on this device, so the plural category comes from German rules.',
+    },
+    typo: {
+      steps: [
+        pick,
+        appleTable('miss', 'No entry named home.titel'),
+        appleEnd('used'),
+      ],
+      text: 'home.titel',
+      outcome: 'raw',
+      note: 'A typo and a missing translation are indistinguishable at runtime: no error, no log, the key on screen.',
+    },
+  },
+  sdk: {
+    home: {
+      steps: [
+        sdkActive,
+        tier('NSLocalizedString in de.lproj', 'hit', '"Erinnerungen"'),
+        tier('Fallback: en.lproj', 'skip', 'Not needed'),
+        lastResort('skip'),
+      ],
+      text: 'Erinnerungen',
+      outcome: 'ok',
+      note: 'Same answer as Apple’s path, but the language came from the in-app picker, not the device.',
+    },
+    settings: {
+      steps: [
+        sdkActive,
+        tier(
+          'NSLocalizedString in de.lproj',
+          'miss',
+          'Result equals the key: treated as missing',
+        ),
+        tier('Fallback: en.lproj', 'hit', '"Settings"'),
+        lastResort('skip'),
+      ],
+      text: 'Settings',
+      outcome: 'fallback',
+      note: 'English inside a German screen, but not the raw key. This is the second tier the package adds.',
+    },
+    paywall: {
+      steps: [
+        sdkActive,
+        tier('NSLocalizedString in de.lproj', 'hit', '"Jetzt testen"'),
+        tier('Fallback: en.lproj', 'skip', 'Not needed'),
+        lastResort('skip'),
+      ],
+      text: 'Jetzt testen',
+      outcome: 'ok',
+      note: 'Bundled with the release and found in the first tier.',
+    },
+    count: {
+      steps: [
+        sdkActive,
+        tier(
+          'NSLocalizedString in de.lproj',
+          'hit',
+          'Format from Localizable.stringsdict',
+        ),
+        tier('Fallback: en.lproj', 'skip', 'Not needed'),
+        lastResort('skip'),
+      ],
+      text: '3 Erinnerungen',
+      outcome: 'ok',
+      note: 'Correct here only because German splits one / other like English. String(format:) is called without a locale; Fig 03 shows the languages where that picks the wrong form.',
+    },
+    typo: {
+      steps: [
+        sdkActive,
+        tier('NSLocalizedString in de.lproj', 'miss', 'No entry'),
+        tier('Fallback: en.lproj', 'miss', 'No entry'),
+        lastResort('used'),
+      ],
+      text: 'home.titel',
+      outcome: 'raw',
+      note: 'Two tiers shrink the raw-key case to keys that exist nowhere. An enum stops typos at the call site, not in its own raw values; only a test against the catalog does that.',
+    },
+  },
+  ota: {
+    home: {
+      steps: [
+        otaActive,
+        tier(
+          'Downloaded de.lproj',
+          'hit',
+          '"Meine Erinnerungen", the fixed wording',
+        ),
+        tier('Fallback: downloaded en.lproj', 'skip', 'Not needed'),
+        lastResort('skip'),
+      ],
+      text: 'Meine Erinnerungen',
+      outcome: 'ota',
+      note: 'The reason OTA exists: a corrected string, live without a release.',
+    },
+    settings: {
+      steps: [
+        otaActive,
+        tier('Downloaded de.lproj', 'miss', 'Not in the German file'),
+        tier('Fallback: downloaded en.lproj', 'hit', '"Settings"'),
+        lastResort('skip'),
+      ],
+      text: 'Settings',
+      outcome: 'fallback',
+      note: 'Same as without OTA, as long as the English file on the server is complete.',
+    },
+    paywall: {
+      steps: [
+        otaActive,
+        tier(
+          'Downloaded de.lproj',
+          'miss',
+          'The server file predates this key',
+        ),
+        tier(
+          'Fallback: downloaded en.lproj',
+          'miss',
+          'So does the English one',
+        ),
+        lastResort('used'),
+      ],
+      text: 'paywall.cta',
+      outcome: 'raw',
+      note: 'The bundled de.lproj has “Jetzt testen”, but once a download exists nothing asks the bundle. Any key newer than the server files falls through.',
+    },
+    count: {
+      steps: [
+        otaActive,
+        tier(
+          'Downloaded de.lproj',
+          'miss',
+          'Only Localizable.strings, which cannot hold plural forms',
+        ),
+        tier(
+          'Fallback: downloaded en.lproj',
+          'miss',
+          'Same file type, same gap',
+        ),
+        lastResort('used'),
+      ],
+      text: 'reminders.count',
+      outcome: 'raw',
+      note: 'Every plural key leaves both downloaded bundles empty-handed. On the first launch after a download, the fallback is still the bundled en.lproj and this reads “3 items”; from the next launch on, it is the raw key.',
+    },
+    typo: {
+      steps: [
+        otaActive,
+        tier('Downloaded de.lproj', 'miss', 'No entry'),
+        tier('Fallback: downloaded en.lproj', 'miss', 'No entry'),
+        lastResort('used'),
+      ],
+      text: 'home.titel',
+      outcome: 'raw',
+      note: 'Unchanged by OTA: a key that exists nowhere is still the key.',
+    },
+  },
+};
+
+const OUTCOME_LABEL: Record<Outcome, string> = {
+  ok: 'translated',
+  ota: 'downloaded',
+  fallback: 'English fallback',
+  raw: 'raw key',
+};
+const STATE_LABEL: Record<StepState, string> = {
+  hit: 'found',
+  miss: 'missing',
+  used: 'taken',
+  skip: 'not reached',
+};
+const MAX_STEPS = 4;
+---
+
+<VizFrame
+  fig="01"
+  title="Where a key goes, and where it comes back as itself"
+  caption={caption}
+  class="klw"
+  data-klw
+>
+  <div class="klw__controls">
+    <div class="klw__group">
+      <span class="viz-label">path</span>
+      <div class="viz-seg" role="group" aria-label="Lookup path">
+        {
+          modes.map((m, i) => (
+            <button
+              type="button"
+              aria-pressed={i === 0 ? 'true' : 'false'}
+              data-mode={m.id}
+            >
+              {m.label}
+            </button>
+          ))
+        }
+      </div>
+    </div>
+    <div class="klw__group">
+      <span class="viz-label">key</span>
+      <div class="viz-seg klw__keys" role="group" aria-label="Key to look up">
+        {
+          keys.map((k, i) => (
+            <button
+              type="button"
+              aria-pressed={i === 0 ? 'true' : 'false'}
+              data-key={k.id}
+            >
+              {k.label}
+            </button>
+          ))
+        }
+      </div>
+    </div>
+  </div>
+
+  <p class="klw__context viz-mono">
+    <span data-context>{modes[0].context}</span>
+    <span class="klw__hint" data-hint>{keyHints.home}</span>
+  </p>
+
+  <div class="klw__grid">
+    <ol class="klw__steps viz-panel" aria-label="Lookup steps">
+      {
+        Array.from({ length: MAX_STEPS }, (_, i) => (
+          <li class="klw__step" data-step={i} data-state="skip">
+            <span class="klw__idx">{i + 1}</span>
+            <span class="klw__title" data-title />
+            <span class="klw__state" data-state-label />
+            <span class="klw__detail" data-detail />
+          </li>
+        ))
+      }
+    </ol>
+
+    <div class="klw__out viz-panel" data-outcome="ok">
+      <span class="viz-label">on screen</span>
+      <span class="klw__text" data-text aria-live="polite"></span>
+      <span class="viz-chip klw__chip" data-chip></span>
+    </div>
+  </div>
+
+  <p class="klw__note" data-note></p>
+
+  <div class="viz-legend klw__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>translated</span>
+    <span><i style="--c:var(--viz-net)"></i>downloaded</span>
+    <span><i style="--c:var(--viz-level)"></i>English fallback</span>
+    <span><i style="--c:var(--viz-bad)"></i>raw key</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-klw-data
+    set:html={JSON.stringify({
+      walks,
+      modes,
+      hints: keyHints,
+      outcomes: OUTCOME_LABEL,
+      states: STATE_LABEL,
+    })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initKeyLookupWalk(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-klw-data]').textContent,
+      );
+      const modeBtns = [...root.querySelectorAll('[data-mode]')];
+      const keyBtns = [...root.querySelectorAll('[data-key]')];
+      const rows = [...root.querySelectorAll('[data-step]')];
+      const contextEl = root.querySelector('[data-context]');
+      const hintEl = root.querySelector('[data-hint]');
+      const out = root.querySelector('.klw__out');
+      const textEl = root.querySelector('[data-text]');
+      const chipEl = root.querySelector('[data-chip]');
+      const noteEl = root.querySelector('[data-note]');
+
+      let mode = 'apple';
+      let key = 'home';
+
+      function render() {
+        const walk = data.walks[mode][key];
+        rows.forEach((row, i) => {
+          const step = walk.steps[i];
+          row.hidden = !step;
+          if (!step) return;
+          row.dataset.state = step.state;
+          row.querySelector('[data-title]').textContent = step.title;
+          row.querySelector('[data-detail]').textContent = step.detail;
+          row.querySelector('[data-state-label]').textContent =
+            data.states[step.state];
+        });
+        out.dataset.outcome = walk.outcome;
+        textEl.textContent = walk.text;
+        chipEl.textContent = data.outcomes[walk.outcome];
+        noteEl.textContent = walk.note;
+        noteEl.dataset.outcome = walk.outcome;
+        contextEl.textContent = data.modes.find((m) => m.id === mode).context;
+        hintEl.textContent = data.hints[key];
+      }
+
+      function bindSeg(buttons, attr, apply) {
+        buttons.forEach((btn) =>
+          btn.addEventListener('click', () => {
+            buttons.forEach((b) =>
+              b.setAttribute('aria-pressed', String(b === btn)),
+            );
+            apply(btn.dataset[attr]);
+            render();
+          }),
+        );
+      }
+      bindSeg(modeBtns, 'mode', (value) => (mode = value));
+      bindSeg(keyBtns, 'key', (value) => (key = value));
+
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-klw]').forEach(initKeyLookupWalk);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .klw__controls {
+    display: grid;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .klw__group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px var(--sp-2);
+  }
+  .klw__group .viz-label {
+    width: 2.6rem;
+  }
+  .klw__keys {
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+
+  .klw__context {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px var(--sp-3);
+    margin: 0 0 var(--sp-3);
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+  }
+  .klw__hint {
+    color: var(--viz-meta);
+  }
+
+  .klw__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+    gap: var(--sp-3);
+  }
+  @media (max-width: 640px) {
+    .klw__grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .klw__steps {
+    display: grid;
+    gap: 6px;
+    padding: var(--sp-2);
+    align-content: start;
+  }
+  .klw__step {
+    --c: var(--fg-faint);
+    display: grid;
+    grid-template-columns: 1.1rem minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 2px 8px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--c) 40%, transparent);
+    border-left: 3px solid var(--c);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--c) 6%, var(--surface));
+    transition:
+      border-color 0.2s var(--ease),
+      background 0.2s var(--ease),
+      opacity 0.2s var(--ease);
+  }
+  .klw__step[data-state='hit'] {
+    --c: var(--viz-sound);
+  }
+  .klw__step[data-state='miss'] {
+    --c: var(--viz-level);
+  }
+  .klw__step[data-state='used'] {
+    --c: var(--viz-bad);
+  }
+  .klw__step[data-state='skip'] {
+    opacity: 0.55;
+  }
+  .klw__idx {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .klw__title {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .klw__state {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--c);
+  }
+  .klw__step[data-state='skip'] .klw__state {
+    color: var(--fg-faint);
+  }
+  .klw__detail {
+    grid-column: 2 / -1;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+  }
+
+  .klw__out {
+    --c: var(--viz-sound);
+    display: grid;
+    align-content: center;
+    justify-items: start;
+    gap: var(--sp-2);
+    padding: var(--sp-4);
+    border-top: 3px solid var(--c);
+    transition: border-color 0.2s var(--ease);
+  }
+  .klw__out[data-outcome='ota'] {
+    --c: var(--viz-net);
+  }
+  .klw__out[data-outcome='fallback'] {
+    --c: var(--viz-level);
+  }
+  .klw__out[data-outcome='raw'] {
+    --c: var(--viz-bad);
+  }
+  .klw__text {
+    font-size: 1.35rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .klw__out[data-outcome='raw'] .klw__text {
+    font-family: var(--font-mono);
+    font-size: 1.1rem;
+    color: var(--viz-bad);
+  }
+  .klw__chip {
+    color: var(--c);
+    background: color-mix(in srgb, var(--c) 12%, transparent);
+    border-color: color-mix(in srgb, var(--c) 40%, transparent);
+  }
+
+  .klw__note {
+    margin: var(--sp-3) 0 0;
+    padding: var(--sp-3) var(--sp-4);
+    min-height: 4.6rem;
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--viz-sound);
+    border-radius: var(--radius-sm);
+  }
+  .klw__note[data-outcome='ota'] {
+    border-left-color: var(--viz-net);
+  }
+  .klw__note[data-outcome='fallback'] {
+    border-left-color: var(--viz-level);
+  }
+  .klw__note[data-outcome='raw'] {
+    border-left-color: var(--viz-bad);
+  }
+  .klw__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .klw__step,
+    .klw__out {
+      transition: none;
+    }
+  }
+</style>

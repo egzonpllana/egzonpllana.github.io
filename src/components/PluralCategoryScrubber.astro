@@ -1,0 +1,398 @@
+---
+/**
+ * CLDR cardinal plural categories for one integer, across six languages,
+ * next to the category Foundation picks when a .stringsdict format is passed
+ * to String(format:) without a locale. That second column is measured, not
+ * assumed: with no locale, Foundation chose "zero" for 0 when the table had a
+ * zero entry, "one" for exactly 1, and "other" for everything else, whatever
+ * the language of the table and whatever the device language was.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Integer rules from the CLDR plural tables. “With locale” is String(format:locale:) given that language’s Locale; “no locale” is String(format:) with the same .stringsdict template, which is what the package’s localized(count:) calls. Fractions, which Russian and Polish send to “other”, are left out.',
+} = Astro.props;
+
+type Cat = 'zero' | 'one' | 'two' | 'few' | 'many' | 'other';
+interface Lang {
+  id: string;
+  name: string;
+  cats: Cat[];
+  forms?: Partial<Record<Cat, string>>;
+}
+
+const langs: Lang[] = [
+  {
+    id: 'en',
+    name: 'English',
+    cats: ['one', 'other'],
+    forms: { one: '# reminder', other: '# reminders' },
+  },
+  {
+    id: 'fr',
+    name: 'French',
+    cats: ['one', 'many', 'other'],
+    forms: { one: '# rappel', many: '# de rappels', other: '# rappels' },
+  },
+  {
+    id: 'ru',
+    name: 'Russian',
+    cats: ['one', 'few', 'many', 'other'],
+    forms: {
+      one: '# напоминание',
+      few: '# напоминания',
+      many: '# напоминаний',
+      other: '# напоминания',
+    },
+  },
+  {
+    id: 'pl',
+    name: 'Polish',
+    cats: ['one', 'few', 'many', 'other'],
+    forms: {
+      one: '# przypomnienie',
+      few: '# przypomnienia',
+      many: '# przypomnień',
+      other: '# przypomnienia',
+    },
+  },
+  {
+    id: 'ar',
+    name: 'Arabic',
+    cats: ['zero', 'one', 'two', 'few', 'many', 'other'],
+  },
+  { id: 'ja', name: 'Japanese', cats: ['other'] },
+];
+
+const presets = [0, 1, 2, 5, 11, 21, 22, 101, 111];
+const START = 5;
+const MAX = 200;
+---
+
+<VizFrame
+  fig="03"
+  title="Which plural form a number picks, per language"
+  caption={caption}
+  class="pcs"
+  data-pcs
+>
+  <div class="pcs__controls">
+    <label class="pcs__slider">
+      <span class="viz-label">count</span>
+      <output class="pcs__n viz-mono" data-n>{START}</output>
+      <input
+        type="range"
+        min="0"
+        max={MAX}
+        step="1"
+        value={START}
+        data-range
+        aria-label="Count"
+      />
+    </label>
+    <div class="pcs__presets" role="group" aria-label="Interesting counts">
+      {
+        presets.map((n) => (
+          <button type="button" class="viz-btn pcs__preset" data-preset={n}>
+            {n}
+          </button>
+        ))
+      }
+    </div>
+  </div>
+
+  <ul class="pcs__rows">
+    {
+      langs.map((lang) => (
+        <li class="pcs__row viz-panel" data-lang={lang.id}>
+          <span class="pcs__name">
+            {lang.name}
+            <span class="pcs__code viz-mono">{lang.id}</span>
+          </span>
+          <span class="pcs__cats" aria-label={`${lang.name} categories`}>
+            {lang.cats.map((cat) => (
+              <span class="pcs__cat" data-cat={cat}>
+                {cat}
+              </span>
+            ))}
+          </span>
+          <span class="pcs__pair">
+            <span class="pcs__res" data-with>
+              <span class="viz-label">with locale</span>
+              <span class="pcs__val" data-with-val />
+            </span>
+            <span class="pcs__res" data-without>
+              <span class="viz-label">no locale</span>
+              <span class="pcs__val" data-without-val />
+            </span>
+          </span>
+        </li>
+      ))
+    }
+  </ul>
+
+  <p class="pcs__summary viz-mono" data-summary aria-live="polite"></p>
+
+  <div class="viz-legend pcs__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>CLDR category</span>
+    <span><i style="--c:var(--viz-bad)"></i>wrong form without a locale</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-pcs-data
+    set:html={JSON.stringify({ langs })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    // CLDR cardinal rules, integer operands only (v = 0).
+    const RULES = {
+      en: (n) => (n === 1 ? 'one' : 'other'),
+      fr: (n) =>
+        n === 0 || n === 1
+          ? 'one'
+          : n !== 0 && n % 1000000 === 0
+            ? 'many'
+            : 'other',
+      ru: (n) => {
+        const d = n % 10;
+        const h = n % 100;
+        if (d === 1 && h !== 11) return 'one';
+        if (d >= 2 && d <= 4 && !(h >= 12 && h <= 14)) return 'few';
+        return 'many';
+      },
+      pl: (n) => {
+        const d = n % 10;
+        const h = n % 100;
+        if (n === 1) return 'one';
+        if (d >= 2 && d <= 4 && !(h >= 12 && h <= 14)) return 'few';
+        return 'many';
+      },
+      ar: (n) => {
+        const h = n % 100;
+        if (n === 0) return 'zero';
+        if (n === 1) return 'one';
+        if (n === 2) return 'two';
+        if (h >= 3 && h <= 10) return 'few';
+        if (h >= 11 && h <= 99) return 'many';
+        return 'other';
+      },
+      ja: () => 'other',
+    };
+
+    // Measured behaviour of String(format:) with a .stringsdict template and
+    // no locale: zero for 0 if the table has it, one for 1, otherwise other.
+    function withoutLocale(n, cats) {
+      if (n === 0 && cats.includes('zero')) return 'zero';
+      if (n === 1 && cats.includes('one')) return 'one';
+      return 'other';
+    }
+
+    function initPluralCategoryScrubber(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const { langs } = JSON.parse(
+        root.querySelector('[data-pcs-data]').textContent,
+      );
+      const range = root.querySelector('[data-range]');
+      const nEl = root.querySelector('[data-n]');
+      const summary = root.querySelector('[data-summary]');
+      const presets = [...root.querySelectorAll('[data-preset]')];
+
+      const show = (lang, cat, n) => {
+        const form = lang.forms && lang.forms[cat];
+        return form ? form.replace('#', String(n)) : cat;
+      };
+
+      function render(n) {
+        nEl.textContent = String(n);
+        range.value = String(n);
+        presets.forEach((b) =>
+          b.setAttribute(
+            'aria-pressed',
+            String(Number(b.dataset.preset) === n),
+          ),
+        );
+        const wrong = [];
+        langs.forEach((lang) => {
+          const row = root.querySelector(`[data-lang="${lang.id}"]`);
+          const right = RULES[lang.id](n);
+          const naive = withoutLocale(n, lang.cats);
+          row
+            .querySelectorAll('[data-cat]')
+            .forEach((el) =>
+              el.classList.toggle('is-on', el.dataset.cat === right),
+            );
+          const sameText = show(lang, right, n) === show(lang, naive, n);
+          row.querySelector('[data-with-val]').textContent = show(
+            lang,
+            right,
+            n,
+          );
+          row.querySelector('[data-without-val]').textContent = show(
+            lang,
+            naive,
+            n,
+          );
+          row.querySelector('[data-without]').dataset.wrong = String(!sameText);
+          row.dataset.wrong = String(!sameText);
+          if (!sameText) wrong.push(lang.name);
+        });
+        summary.textContent = wrong.length
+          ? `n = ${n}: wrong without a locale in ${wrong.join(', ')}`
+          : `n = ${n}: every language happens to agree`;
+      }
+
+      range.addEventListener('input', () => render(Number(range.value)));
+      presets.forEach((b) =>
+        b.addEventListener('click', () => render(Number(b.dataset.preset))),
+      );
+      render(Number(range.value));
+    }
+
+    const boot = () =>
+      document
+        .querySelectorAll('[data-pcs]')
+        .forEach(initPluralCategoryScrubber);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .pcs__controls {
+    display: grid;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .pcs__slider {
+    display: grid;
+    grid-template-columns: auto 3ch minmax(0, 1fr);
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .pcs__n {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--fg);
+    text-align: right;
+  }
+  .pcs__presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .pcs__preset {
+    min-width: 2.6rem;
+  }
+  .pcs__preset[aria-pressed='true'] {
+    color: var(--accent-fg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .pcs__rows {
+    display: grid;
+    gap: 6px;
+  }
+  .pcs__row {
+    display: grid;
+    grid-template-columns: 7.5rem minmax(0, 1fr) minmax(0, 1.3fr);
+    align-items: center;
+    gap: 6px var(--sp-3);
+    padding: 8px 12px;
+    border-left: 3px solid var(--viz-sound);
+    transition: border-color 0.2s var(--ease);
+  }
+  .pcs__row[data-wrong='true'] {
+    border-left-color: var(--viz-bad);
+  }
+  @media (max-width: 680px) {
+    .pcs__row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .pcs__name {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .pcs__code {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--fg-faint);
+  }
+
+  .pcs__cats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .pcs__cat {
+    padding: 1px 7px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-faint);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    transition:
+      color 0.15s var(--ease),
+      background 0.15s var(--ease),
+      border-color 0.15s var(--ease);
+  }
+  .pcs__cat.is-on {
+    font-weight: 700;
+    color: var(--viz-sound-text);
+    background: color-mix(in srgb, var(--viz-sound) 12%, transparent);
+    border-color: color-mix(in srgb, var(--viz-sound) 45%, transparent);
+  }
+
+  .pcs__pair {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--sp-2);
+  }
+  .pcs__res {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+  }
+  .pcs__val {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .pcs__res[data-wrong='true'] .pcs__val {
+    color: var(--viz-bad);
+    text-decoration: line-through;
+    text-decoration-thickness: 1px;
+  }
+
+  .pcs__summary {
+    margin: var(--sp-3) 0 0;
+    min-height: 1.4em;
+    color: var(--fg-muted);
+  }
+  .pcs__legend {
+    margin-top: var(--sp-2);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pcs__row,
+    .pcs__cat {
+      transition: none;
+    }
+  }
+</style>
