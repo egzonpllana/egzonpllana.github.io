@@ -1,10 +1,8 @@
 ---
 /**
  * Metric tiles. Numeric values count up once, the first time the row scrolls
- * into view; the controls under the row pause or replay the count.
+ * into view, and rest on their final values.
  */
-import AnimControls from './viz/AnimControls.astro';
-
 interface Tile {
   label: string;
   value: number;
@@ -26,21 +24,25 @@ const { tiles } = Astro.props;
       tiles.map((tile, i) => (
         <div class="tiles__item" data-reveal style={`--d:${(i % 4) * 60}ms`}>
           <span class="tiles__label">{tile.label}</span>
-          <span
-            class="tiles__value"
-            data-count={tile.value}
-            data-suffix={tile.suffix ?? ''}
-            data-decimals={tile.decimals ?? 0}
-          >
-            0{tile.suffix ?? ''}
+          <span class="tiles__value">
+            <span data-count={tile.value} data-decimals={tile.decimals ?? 0}>
+              0
+            </span>
+            {tile.suffix && (
+              <span
+                class:list={[
+                  'tiles__unit',
+                  { 'tiles__unit--spaced': tile.suffix.startsWith(' ') },
+                ]}
+              >
+                {tile.suffix.trim()}
+              </span>
+            )}
           </span>
           <span class="tiles__sub">{tile.sub}</span>
         </div>
       ))
     }
-  </div>
-  <div class="tiles__foot">
-    <AnimControls />
   </div>
 </div>
 
@@ -52,10 +54,10 @@ const { tiles } = Astro.props;
       ).matches;
       const DURATION = 1200;
 
-      const format = (value, decimals, suffix) =>
-        (decimals
+      const format = (value, decimals) =>
+        decimals
           ? value.toFixed(decimals)
-          : Math.round(value).toLocaleString('en-US')) + suffix;
+          : Math.round(value).toLocaleString('en-US');
 
       // The component can appear more than once per page: one engine per row.
       document.querySelectorAll('[data-stat-tiles]').forEach((root) => {
@@ -66,7 +68,6 @@ const { tiles } = Astro.props;
           el,
           target: parseFloat(el.dataset.count),
           decimals: parseInt(el.dataset.decimals || '0', 10),
-          suffix: el.dataset.suffix || '',
         }));
 
         // Reduced motion rests on the final values until the reader plays it.
@@ -77,7 +78,7 @@ const { tiles } = Astro.props;
         const paint = () => {
           const eased = 1 - Math.pow(1 - elapsed / DURATION, 3);
           values.forEach((v) => {
-            v.el.textContent = format(v.target * eased, v.decimals, v.suffix);
+            v.el.textContent = format(v.target * eased, v.decimals);
           });
         };
 
@@ -144,11 +145,6 @@ const { tiles } = Astro.props;
       grid-template-columns: repeat(2, 1fr);
     }
   }
-  .tiles__foot {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: var(--sp-2);
-  }
   .tiles__item {
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -163,13 +159,25 @@ const { tiles } = Astro.props;
     text-transform: uppercase;
     color: var(--fg-faint);
   }
+  /* Flex drops the template whitespace between number and unit; the gap is set below. */
   .tiles__value {
-    display: block;
+    display: flex;
+    align-items: baseline;
     font-size: var(--fs-xl);
     font-weight: 680;
     letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums;
     margin-top: 0.35rem;
+  }
+  /* A smaller unit keeps values like "16,000 Hz" on one line in a narrow tile. */
+  .tiles__unit {
+    font-size: 0.6em;
+    font-weight: 560;
+    letter-spacing: 0;
+    color: var(--fg-muted);
+  }
+  .tiles__unit--spaced {
+    margin-left: 0.3em;
   }
   .tiles__sub {
     display: block;
