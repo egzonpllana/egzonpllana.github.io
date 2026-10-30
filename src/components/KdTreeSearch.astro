@@ -1,0 +1,671 @@
+---
+/**
+ * Nearest-city search over a toy map of 127 towns: a brute-force scan, a k-d
+ * tree search, and the same tree search with the pruning test comparing
+ * degrees against kilometres, the way the geocoding engine's tree does.
+ *
+ * The towns and the tree are built here at build time (median splits,
+ * alternating x and y), so the partition on screen is the real one the
+ * search walks. The search itself mirrors KDTree.nearest(to:) from the
+ * Bersaelor KDTree package and runs in the browser, because the reader can
+ * drop the photo anywhere on the map.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'A toy map about 100 km wide with 127 towns. The tree splits the map at the median town, alternating vertical and horizontal cuts, seven levels deep. Searching it skips every region that cannot hold anything closer than the best town so far. With the pruning test comparing degrees against kilometres, the bound is about 111 times too wide, and inside an area this size almost nothing is ever skipped.',
+} = Astro.props;
+
+const W = 100;
+const H = 60;
+/** Kilometres per degree of latitude: the factor the mixed-unit test is off by. */
+const KM_PER_DEGREE = 111;
+
+// Deterministic towns: four dense clusters and a scatter, like a real region.
+function mulberry32(seed: number) {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(20260410);
+const hubs = [
+  { x: 24, y: 18, r: 9, n: 30 },
+  { x: 70, y: 40, r: 8, n: 28 },
+  { x: 78, y: 13, r: 6, n: 18 },
+  { x: 32, y: 46, r: 6, n: 16 },
+];
+type Pt = { x: number; y: number };
+const pts: Pt[] = [];
+hubs.forEach((h) => {
+  for (let i = 0; i < h.n; i++) {
+    const a = rand() * Math.PI * 2;
+    const d = Math.sqrt(rand()) * h.r;
+    pts.push({ x: h.x + Math.cos(a) * d, y: h.y + Math.sin(a) * d * 0.9 });
+  }
+});
+while (pts.length < 127) {
+  pts.push({ x: 3 + rand() * (W - 6), y: 3 + rand() * (H - 6) });
+}
+pts.forEach((p) => {
+  p.x = Math.round(Math.min(W - 1.5, Math.max(1.5, p.x)) * 10) / 10;
+  p.y = Math.round(Math.min(H - 1.5, Math.max(1.5, p.y)) * 10) / 10;
+});
+
+interface Node {
+  x: number;
+  y: number;
+  dim: 0 | 1;
+  l: number;
+  r: number;
+  depth: number;
+  /** Split segment, clipped to the node's region. */
+  seg: [number, number, number, number];
+}
+const nodes: Node[] = [];
+function build(
+  list: Pt[],
+  depth: number,
+  box: [number, number, number, number],
+): number {
+  if (list.length === 0) return -1;
+  const dim: 0 | 1 = depth % 2 === 0 ? 0 : 1;
+  const key = dim === 0 ? 'x' : 'y';
+  const sorted = list.slice().sort((a, b) => a[key] - b[key]);
+  const mid = Math.floor(sorted.length / 2);
+  const p = sorted[mid];
+  const [x0, y0, x1, y1] = box;
+  const seg: Node['seg'] = dim === 0 ? [p.x, y0, p.x, y1] : [x0, p.y, x1, p.y];
+  const id = nodes.length;
+  nodes.push({ x: p.x, y: p.y, dim, l: -1, r: -1, depth, seg });
+  const leftBox: Node['seg'] =
+    dim === 0 ? [x0, y0, p.x, y1] : [x0, y0, x1, p.y];
+  const rightBox: Node['seg'] =
+    dim === 0 ? [p.x, y0, x1, y1] : [x0, p.y, x1, y1];
+  nodes[id].l = build(sorted.slice(0, mid), depth + 1, leftBox);
+  nodes[id].r = build(sorted.slice(mid + 1), depth + 1, rightBox);
+  return id;
+}
+build(pts, 0, [0, 0, W, H]);
+const depth = Math.max(...nodes.map((n) => n.depth)) + 1;
+
+const queries: Pt[] = [
+  { x: 27, y: 21 },
+  { x: 52, y: 30 },
+  { x: 74, y: 37 },
+  { x: 9, y: 52 },
+];
+---
+
+<VizFrame
+  fig="01"
+  title="Finding the nearest town: scan, tree, and a tree with mixed units"
+  caption={caption}
+  class="kds"
+  data-kds
+>
+  <div slot="tools" class="kds__tools">
+    <button type="button" class="viz-btn" data-next aria-label="Next step"
+      >step</button
+    >
+    <AnimControls label="Search" />
+  </div>
+
+  <div class="kds__bar">
+    <div class="viz-seg" role="group" aria-label="Search strategy">
+      <button type="button" aria-pressed="false" data-mode="scan">scan</button>
+      <button type="button" aria-pressed="true" data-mode="tree">tree</button>
+      <button type="button" aria-pressed="false" data-mode="mixed"
+        >mixed units</button
+      >
+    </div>
+    <button type="button" class="viz-btn" data-move>move the photo</button>
+  </div>
+
+  <div class="kds__stats" aria-live="off">
+    <span class="viz-chip viz-chip--level" data-evals
+      >distance checks: 0 / {pts.length}</span
+    >
+    <span class="viz-chip viz-chip--meta" data-visits>nodes visited: 0</span>
+    <span class="viz-chip" data-best>best: none yet</span>
+  </div>
+
+  <div class="kds__map viz-panel" data-map>
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="xMidYMid meet"
+      role="img"
+      aria-label="Map of 127 towns split by a k-d tree, with the photo being geocoded"
+      data-svg
+    >
+      <g class="kds__splits">
+        {
+          nodes.map((n, i) => (
+            <line
+              x1={n.seg[0]}
+              y1={n.seg[1]}
+              x2={n.seg[2]}
+              y2={n.seg[3]}
+              data-split={i}
+              style={`--w:${Math.max(0.5, 1.6 - n.depth * 0.18).toFixed(2)}`}
+            />
+          ))
+        }
+      </g>
+      <circle class="kds__bound" data-bound cx="0" cy="0" r="0"></circle>
+      <circle class="kds__best-ring" data-ring cx="0" cy="0" r="0"></circle>
+      <g class="kds__towns">
+        {nodes.map((n, i) => <circle cx={n.x} cy={n.y} r="0.95" data-n={i} />)}
+      </g>
+      <line class="kds__link" data-link x1="0" y1="0" x2="0" y2="0"></line>
+      <g class="kds__photo" data-photo>
+        <circle r="2.1" class="kds__photo-halo"></circle>
+        <circle r="1.1" class="kds__photo-dot"></circle>
+      </g>
+    </svg>
+    <span class="kds__hint viz-label">tap the map to move the photo</span>
+  </div>
+
+  <p class="kds__note" data-note aria-live="polite"></p>
+
+  <div class="viz-legend kds__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>photo being geocoded</span>
+    <span><i style="--c:var(--viz-meta)"></i>tree split</span>
+    <span><i style="--c:var(--viz-level)"></i>distance checked · best</span>
+    <span><i style="--c:var(--viz-bad)"></i>pruning bound, mixed units</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-kds-data
+    set:html={JSON.stringify({
+      nodes: nodes.map((n) => [n.x, n.y, n.dim, n.l, n.r]),
+      queries,
+      depth,
+      factor: KM_PER_DEGREE,
+    })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = { scan: 70, tree: 520, mixed: 70 };
+
+    function initKdTreeSearch(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-kds-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const N = data.nodes.length;
+      const nodes = data.nodes.map((n) => ({
+        x: n[0],
+        y: n[1],
+        dim: n[2],
+        l: n[3],
+        r: n[4],
+      }));
+      const svg = root.querySelector('[data-svg]');
+      const townEls = [...root.querySelectorAll('[data-n]')];
+      const splitEls = [...root.querySelectorAll('[data-split]')];
+      const boundEl = root.querySelector('[data-bound]');
+      const ringEl = root.querySelector('[data-ring]');
+      const linkEl = root.querySelector('[data-link]');
+      const photoEl = root.querySelector('[data-photo]');
+      const evalsEl = root.querySelector('[data-evals]');
+      const visitsEl = root.querySelector('[data-visits]');
+      const bestEl = root.querySelector('[data-best]');
+      const noteEl = root.querySelector('[data-note]');
+      const segBtns = [...root.querySelectorAll('[data-mode]')];
+
+      let mode = 'tree';
+      let queryIndex = 0;
+      let q = { ...data.queries[0] };
+      let trace = [];
+      let current = 0;
+      let playing = false;
+      let timer = 0;
+
+      const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+      const key = (p, dim) => (dim === 0 ? p.x : p.y);
+
+      // Each step is one node the search touches, with what it learned there.
+      function scanTrace() {
+        const out = [];
+        let best = -1;
+        let bestD = Infinity;
+        for (let i = 0; i < N; i++) {
+          const d = dist(nodes[i], q);
+          if (d < bestD) {
+            bestD = d;
+            best = i;
+          }
+          out.push({ node: i, checked: true, best, bestD, pruned: [] });
+        }
+        return out;
+      }
+
+      function subtree(i, acc) {
+        if (i < 0) return acc;
+        acc.push(i);
+        subtree(nodes[i].l, acc);
+        subtree(nodes[i].r, acc);
+        return acc;
+      }
+
+      // KDTree.nearest(to:): go down the side the photo is on first, then
+      // cross a split only if the best circle reaches over it. `scale` is 1
+      // for consistent units and 111 when the split difference is in degrees
+      // but the best distance is in kilometres.
+      function treeTrace(scale) {
+        const out = [];
+        let best = -1;
+        let bestD = Infinity;
+        function visit(i) {
+          if (i < 0) return;
+          const n = nodes[i];
+          if (n.l < 0 && n.r < 0) {
+            const d = dist(n, q);
+            if (d < bestD) {
+              bestD = d;
+              best = i;
+            }
+            out.push({ node: i, checked: true, best, bestD, pruned: [] });
+            return;
+          }
+          const diff = key(n, n.dim) - key(q, n.dim);
+          const closer = diff > 0 ? n.l : n.r;
+          const other = diff > 0 ? n.r : n.l;
+          out.push({ node: i, checked: false, best, bestD, pruned: [] });
+          visit(closer);
+          if (Math.abs(diff) < bestD * scale) {
+            const d = dist(n, q);
+            if (d < bestD) {
+              bestD = d;
+              best = i;
+            }
+            out.push({ node: i, checked: true, best, bestD, pruned: [] });
+            visit(other);
+          } else {
+            out.push({
+              node: i,
+              checked: false,
+              best,
+              bestD,
+              pruned: [i].concat(subtree(other, [])),
+              skip: true,
+            });
+          }
+        }
+        visit(0);
+        return out;
+      }
+
+      function compute() {
+        if (mode === 'scan') trace = scanTrace();
+        else trace = treeTrace(mode === 'mixed' ? data.factor : 1);
+      }
+
+      function render() {
+        const upto = trace.slice(0, current + 1);
+        const visited = new Set();
+        const checked = new Set();
+        const pruned = new Set();
+        upto.forEach((s) => {
+          visited.add(s.node);
+          if (s.checked) checked.add(s.node);
+          s.pruned.forEach((p) => pruned.add(p));
+        });
+        // The node whose own split was crossed or skipped is not itself pruned.
+        upto.forEach((s) => {
+          if (s.skip) pruned.delete(s.node);
+        });
+        const step = trace[current];
+        const done = current >= trace.length - 1;
+
+        townEls.forEach((el, i) => {
+          el.classList.toggle('is-checked', checked.has(i));
+          el.classList.toggle('is-visited', visited.has(i) && !checked.has(i));
+          el.classList.toggle('is-pruned', pruned.has(i));
+          el.classList.toggle('is-best', step && i === step.best);
+          el.classList.toggle('is-now', step && i === step.node && !done);
+        });
+        splitEls.forEach((el, i) => {
+          el.classList.toggle('is-on', mode !== 'scan' && visited.has(i));
+          el.classList.toggle('is-skip', mode !== 'scan' && pruned.has(i));
+        });
+        svg.classList.toggle('is-scan', mode === 'scan');
+
+        photoEl.setAttribute('transform', `translate(${q.x} ${q.y})`);
+        if (step && step.best >= 0) {
+          const b = nodes[step.best];
+          ringEl.setAttribute('cx', q.x);
+          ringEl.setAttribute('cy', q.y);
+          ringEl.setAttribute('r', step.bestD.toFixed(2));
+          linkEl.setAttribute('x1', q.x);
+          linkEl.setAttribute('y1', q.y);
+          linkEl.setAttribute('x2', b.x);
+          linkEl.setAttribute('y2', b.y);
+          ringEl.style.opacity = '1';
+          linkEl.style.opacity = '1';
+          bestEl.textContent = `best: ${step.bestD.toFixed(1)} km`;
+          bestEl.className = 'viz-chip viz-chip--level';
+        } else {
+          ringEl.style.opacity = '0';
+          linkEl.style.opacity = '0';
+          bestEl.textContent = 'best: none yet';
+          bestEl.className = 'viz-chip';
+        }
+        const showBound = mode === 'mixed' && step && step.best >= 0;
+        boundEl.style.opacity = showBound ? '1' : '0';
+        if (showBound) {
+          boundEl.setAttribute('cx', q.x);
+          boundEl.setAttribute('cy', q.y);
+          boundEl.setAttribute('r', String(step.bestD * data.factor));
+        }
+
+        evalsEl.textContent = `distance checks: ${checked.size} / ${N}`;
+        visitsEl.textContent = `nodes visited: ${visited.size}`;
+        noteEl.dataset.end = done ? mode : '';
+        noteEl.textContent = describe(step, done, checked.size, visited.size);
+      }
+
+      function describe(step, done, checks, visits) {
+        if (!step) return '';
+        const pct = Math.round((checks / N) * 100);
+        if (done) {
+          if (mode === 'scan')
+            return `Done: ${N} distance checks for one photo, every town measured. With 167,473 towns and 8,000 photos that is 1.3 billion haversine evaluations.`;
+          if (mode === 'tree')
+            return `Done: ${checks} distance checks (${pct}% of the towns) and ${visits} of ${N} nodes visited. Whole regions were ruled out by one subtraction each, because the split line was farther away than the best town.`;
+          return `Done: ${checks} distance checks (${pct}% of the towns). Same answer, same tree, but the bound was ${data.factor} times too wide, so almost no split line was far enough away to skip.`;
+        }
+        if (mode === 'scan')
+          return `Measuring town ${step.node + 1} of ${N}. A scan has no way to rule anything out, so it measures every one.`;
+        if (step.skip)
+          return `Split ${step.node + 1}: the line is farther away than the best town, so everything behind it is skipped without being measured.`;
+        if (step.checked)
+          return `The best circle reaches across this split, so the town on it is measured and the far side has to be searched too.`;
+        const dir = nodes[step.node].dim === 0 ? 'vertical' : 'horizontal';
+        return `Node ${step.node + 1} splits on a ${dir} line. Descend first into the side the photo is on, where the nearest town most likely is.`;
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(() => {
+          current += 1;
+          render();
+          if (current >= trace.length - 1) {
+            playing = false;
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          schedule();
+        }, STEP_MS[mode]);
+      }
+      function play() {
+        if (playing) return;
+        if (current >= trace.length - 1) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        schedule();
+      }
+      function reset() {
+        stop();
+        compute();
+        current = 0;
+        render();
+      }
+      /** A new mode or a new photo: replay, or land on the result. */
+      function restartRun() {
+        reset();
+        if (reduce) {
+          current = trace.length - 1;
+          render();
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        root.dispatchEvent(new CustomEvent('anim:started'));
+        play();
+      }
+
+      root.querySelector('[data-next]').addEventListener('click', () => {
+        stop();
+        current = current >= trace.length - 1 ? 0 : current + 1;
+        render();
+        root.dispatchEvent(
+          new CustomEvent(
+            current >= trace.length - 1 ? 'anim:ended' : 'anim:paused',
+          ),
+        );
+      });
+
+      segBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.mode === mode) return;
+          mode = btn.dataset.mode;
+          segBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          restartRun();
+        }),
+      );
+
+      root.querySelector('[data-move]').addEventListener('click', () => {
+        queryIndex = (queryIndex + 1) % data.queries.length;
+        q = { ...data.queries[queryIndex] };
+        restartRun();
+      });
+
+      svg.addEventListener('click', (e) => {
+        const ctm = svg.getScreenCTM();
+        if (!ctm) return;
+        const pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(
+          ctm.inverse(),
+        );
+        q = {
+          x: Math.min(99, Math.max(1, Math.round(pt.x * 10) / 10)),
+          y: Math.min(59, Math.max(1, Math.round(pt.y * 10) / 10)),
+        };
+        restartRun();
+      });
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      compute();
+      // Reduced motion rests on the finished search until the reader plays it.
+      current = reduce ? trace.length - 1 : 0;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-kds]').forEach(initKdTreeSearch);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .kds__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .kds__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+  }
+  .kds__stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-block: var(--sp-3);
+  }
+
+  .kds__map {
+    position: relative;
+    padding: 6px;
+    overflow: hidden;
+  }
+  .kds__map svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    cursor: crosshair;
+    overflow: hidden;
+  }
+  .kds__hint {
+    position: absolute;
+    right: 10px;
+    bottom: 6px;
+    pointer-events: none;
+  }
+
+  .kds__splits line {
+    stroke: var(--viz-meta);
+    stroke-width: var(--w);
+    vector-effect: non-scaling-stroke;
+    opacity: 0.22;
+    transition:
+      opacity 0.25s var(--ease),
+      stroke 0.25s var(--ease);
+  }
+  .kds__splits line.is-on {
+    opacity: 0.9;
+  }
+  .kds__splits line.is-skip {
+    opacity: 0.08;
+  }
+  svg.is-scan .kds__splits line {
+    opacity: 0.06;
+  }
+
+  .kds__towns circle {
+    fill: var(--fg-faint);
+    opacity: 0.75;
+    transition:
+      fill 0.2s var(--ease),
+      opacity 0.2s var(--ease),
+      r 0.2s var(--ease);
+  }
+  .kds__towns circle.is-visited {
+    fill: var(--viz-meta);
+    opacity: 1;
+  }
+  .kds__towns circle.is-checked {
+    fill: var(--viz-level);
+    opacity: 1;
+  }
+  .kds__towns circle.is-pruned {
+    opacity: 0.18;
+  }
+  .kds__towns circle.is-best {
+    r: 1.6;
+    fill: var(--viz-level);
+    stroke: var(--surface);
+    stroke-width: 0.5;
+  }
+  .kds__towns circle.is-now {
+    r: 1.5;
+  }
+
+  .kds__best-ring {
+    fill: color-mix(in srgb, var(--viz-level) 8%, transparent);
+    stroke: var(--viz-level);
+    stroke-width: 1.2;
+    vector-effect: non-scaling-stroke;
+    transition:
+      r 0.3s var(--ease),
+      opacity 0.2s var(--ease);
+  }
+  .kds__bound {
+    fill: color-mix(in srgb, var(--viz-bad) 7%, transparent);
+    stroke: var(--viz-bad);
+    stroke-width: 1.4;
+    stroke-dasharray: 5 4;
+    vector-effect: non-scaling-stroke;
+    transition: opacity 0.2s var(--ease);
+  }
+  .kds__link {
+    stroke: var(--viz-level);
+    stroke-width: 1.2;
+    vector-effect: non-scaling-stroke;
+    transition: opacity 0.2s var(--ease);
+  }
+  .kds__photo-halo {
+    fill: color-mix(in srgb, var(--viz-sound) 22%, transparent);
+  }
+  .kds__photo-dot {
+    fill: var(--viz-sound);
+    stroke: var(--surface);
+    stroke-width: 0.4;
+  }
+
+  .kds__note {
+    margin: var(--sp-3) 0 0;
+    padding: var(--sp-3) var(--sp-4);
+    min-height: 4.6rem;
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--viz-meta);
+    border-radius: var(--radius-sm);
+  }
+  .kds__note[data-end='tree'] {
+    border-left-color: var(--viz-level);
+  }
+  .kds__note[data-end='mixed'] {
+    border-left-color: var(--viz-bad);
+  }
+  .kds__note[data-end='scan'] {
+    border-left-color: var(--fg-faint);
+  }
+  .kds__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 480px) {
+    .kds__hint {
+      display: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .kds__splits line,
+    .kds__towns circle,
+    .kds__best-ring,
+    .kds__bound,
+    .kds__link {
+      transition: none;
+    }
+  }
+</style>

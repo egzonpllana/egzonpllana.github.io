@@ -1,163 +1,351 @@
 ---
 title: 'How I Built an Offline Photo Geocoding Engine That Clusters 8,000 Photos in Under 5 Seconds'
-description: 'Replacing Apple CLGeocoder with embedded GeoNames data, a K-D Tree, and a chain expansion algorithm to geocode and cluster thousands of photos offline in seconds.'
+description: 'Naming and grouping a photo library without a network: 167,473 GeoNames towns in the bundle, a k-d tree to find the nearest one, a suburb rule to turn districts into cities, and a two-pass chain that rebuilds whole trips. Plus what instrumenting the tree revealed about mixed units.'
 date: 2026-04-10
-updated: 2026-07-25
+updated: 2026-10-30
 tags: ['Swift', 'iOS', 'Geocoding', 'K-D Tree', 'Spatial Search']
 heroImage: '../../assets/covers/offline-photo-geocoding-engine.png'
 repoUrl: 'https://github.com/egzonpllana/geo-clustering-ios'
 ---
 
+import StatTiles from '../../components/StatTiles.astro';
+import KdTreeSearch from '../../components/KdTreeSearch.astro';
+import CityResolveLadder from '../../components/CityResolveLadder.astro';
 import ClusterDemo from '../../components/ClusterDemo.astro';
+import SuburbReachMap from '../../components/SuburbReachMap.astro';
 import ChainDemo from '../../components/ChainDemo.astro';
 import PhaseRail from '../../components/PhaseRail.astro';
-import StatTiles from '../../components/StatTiles.astro';
 
-Apple's `CLGeocoder` takes 1.3 seconds per request and is rate-limited to 50 requests per minute. For a library of thousands of photos that has to be geocoded and grouped into trips by city, that means waiting nearly 3 hours. So I replaced it with an embedded geographic database, a K-D Tree, and a chain expansion algorithm - all running offline in seconds.
+A photo carries two facts that matter here: when it was taken and where. Point a phone at a library of 8,000 of them and you can turn those facts into something a person recognises: "Hamburg, May 9–12", "Pristina, June 3–5". That takes two jobs. **Reverse geocoding** turns a latitude and longitude into a place name. **Clustering** groups photos that belong to the same trip.
 
-This article covers every engineering decision: why brute force doesn't work, how a spatial tree turns O(N) into O(log N), why "nearest city" isn't enough, and how a chain algorithm captures an entire 5-day trip from a single seed photo.
+Apple's answer to the first job is a network service, and it is rate-limited. So I moved the whole thing onto the device: a list of 167,473 towns shipped inside the app, a spatial tree to find the nearest one, a set of rules for when the nearest town is not the right name, and a chain algorithm that rebuilds a five-day trip from the photos inside it. The engine is a Swift package, GeoClusteringSDK, and everything below is checked against its source.
+
+This article goes through it in the order a photo does: why not ask Apple, how the nearest town is found, why "nearest" is not the answer, how photos become events, and what the code does on its worst day. Swift is the worked example; the geometry and the algorithms carry over to any stack.
 
 <StatTiles
   tiles={[
     {
-      label: 'Cities embedded',
-      value: 167000,
-      suffix: '+',
-      sub: 'GeoNames cities1000, ~6 MB in the bundle',
+      label: 'Towns in the bundle',
+      value: 167473,
+      sub: 'GeoNames cities1000, trimmed to five columns',
     },
     {
-      label: 'Geocode lookup',
-      value: 0.01,
-      suffix: 'ms',
-      decimals: 2,
-      sub: 'O(log N) K-D Tree query',
+      label: 'Bundled data',
+      value: 6.2,
+      suffix: ' MB',
+      decimals: 1,
+      sub: 'one TSV file, loaded once',
     },
     {
       label: 'Full pipeline',
       value: 5,
       suffix: 's',
-      sub: '8,000 photos to ~500 events',
+      sub: '8,000 photos to ~500 events, on my library',
     },
     {
       label: 'Network calls',
       value: 0,
-      sub: 'Everything resolves on device',
+      sub: 'everything resolves on device',
     },
   ]}
 />
 
-## The Problem With CLGeocoder
+---
 
-Apple provides `CLGeocoder` for reverse geocoding - converting GPS coordinates to city names. It works, but:
+## Why not ask Apple
 
-- **Rate limited:** 50 requests per 60 seconds, with a mandatory 1.3-second delay between calls
-- **Max ~45 calls per session:** After that, requests silently fail
-- **Network dependent:** Every call is a round-trip to Apple's servers
+[`CLGeocoder`](https://developer.apple.com/documentation/corelocation/clgeocoder) turns a coordinate into a placemark with a city name in it. It is also a round trip to Apple's servers for every coordinate, and Apple documents the catch directly: geocoding requests are rate-limited per app, and when an app goes over the limit, requests fail with a `CLError.network` error. The documented rule of thumb is one request per user action.
 
-For a library with 8,000 photos producing 500+ event clusters, this meant 45+ seconds of geocoding with a two-phase approach: show placeholder names first, then progressively resolve the real ones. Nearly a minute of "Loading…" on screen. Unusable.
+Apple does not publish the actual limit. In my testing it settled at about 50 requests a minute, roughly 1.3 seconds apart, and after about 45 requests in a session the rest came back as errors. At that pace:
 
-## The Solution: Embedded GeoNames + K-D Tree
+- **Every photo:** 8,000 × 1.3 s is about 2.9 hours.
+- **Only the event anchors:** 500 events at 50 a minute is 10 minutes, and most of them never resolve once the session budget runs out.
 
-### The Dataset
+The `CLGeocoder` version did the second thing in two phases: placeholder names first, then the real ones as they trickled in. Nearly a minute of "Loading…" on screen, for the handful that did resolve.
 
-GeoNames is an open geographic database. I use `cities1000.txt` - 167,000 cities worldwide with population > 1,000. After trimming to only needed columns (name, latitude, longitude, country code, population), it compresses to a ~6MB TSV file embedded in the bundle.
+Since iOS 26, `CLGeocoder` is deprecated with the message "Use MapKit"; its replacement, [`MKReverseGeocodingRequest`](https://developer.apple.com/documentation/mapkit/mkreversegeocodingrequest), is still a network service. Neither changes the shape of the problem: the job does not need a street address, it needs **which town**, for thousands of coordinates, right now. That is a much smaller question, and it fits on the device.
 
-Why `cities1000` and not `cities15000` (33K cities, pop > 15K)? The smaller dataset missed real cities. Bujanovac, Serbia (~18K residents) wasn't in it. Neither was Obiliq, Kosovo (12K). Photos in these cities resolved to the nearest larger city - often wrong. The 5x increase in dataset size (1.2MB → 6MB) is worth correct results worldwide.
+> **In plain words:** an online geocoder answers one coordinate at a time, slowly and with a budget. Naming a photo library needs thousands of answers at once, and only the town.
 
-### The K-D Tree: O(log N) Instead of O(N)
+---
 
-A brute-force scan of 167K cities for the nearest one is O(N) per photo. With 8,000 photos, that's 167K × 8K = 1.3 billion distance calculations. Even at nanosecond speeds, this takes seconds.
+## The dataset: 167,473 towns in 6 MB
 
-A K-D Tree (K-Dimensional Tree) partitions the 2D coordinate space into a binary tree. Finding the nearest neighbor takes O(log N) - about 17 comparisons instead of 167,000. Geocoding all 8,000 photos takes a few seconds total.
+[GeoNames](https://www.geonames.org/) publishes free gazetteer dumps under Creative Commons Attribution 4.0. Its `cities1000` file holds, in its own words, "all cities with a population > 1000 or seats of adm div down to PPLA3". The package keeps five of its columns: name, latitude, longitude, country code and population.
 
-I use Bersaelor's KDTree Swift library, embedded directly in the package (no external dependency). Each city conforms to `KDTreePoint` with latitude/longitude as dimensions and Haversine distance for `squaredDistance`:
+```bash
+curl -O https://download.geonames.org/export/dump/cities1000.zip
+unzip cities1000.zip
+awk -F'\t' '{printf "%s\t%s\t%s\t%s\t%s\n", $2, $5, $6, $9, $15}' \
+    cities1000.txt > geonames_cities.tsv
+```
+
+The bundled file has 167,473 rows and weighs 6.2 MB:
+
+```text
+Hamburg      53.55073   9.99302  DE  1845229
+Lurup        53.59266   9.87697  DE    36521
+Pristina     42.67272  21.16688  XK   550000
+Bujanovac    42.45917  21.76667  RS        0
+```
+
+Why not `cities15000`, the "population > 15000 or capitals" file, at about a fifth of the size? Because it drops real places. Bujanovac in southern Serbia has around 18,000 residents, but GeoNames records its population as 0. It is in `cities1000` only because it is a municipal seat, and it is missing from `cities15000` entirely, so its photos came back as Vranje, 15 km away. Obiliq in Kosovo (11,612) is missing too, though as the suburb section shows, it ends up labelled Pristina either way.
+
+Those rows also preview the next two problems. Population can be 0 or stale. And a city is often several entries: Hamburg is listed next to Hamburg-Nord, Eimsbüttel and Altona, and Budapest next to Pest, each with its own centre and population.
+
+> **In plain words:** the app ships a 6 MB list of every town with more than a thousand people, plus administrative seats. Finding a photo's town means finding the closest entry in that list, and then deciding whether that entry is the name a person would use.
+
+---
+
+## Finding the nearest town
+
+### Brute force first
+
+The obvious way is to measure the distance from the photo to every town and keep the smallest. For points on a sphere that distance is the [haversine](https://en.wikipedia.org/wiki/Haversine_formula) great-circle distance, which costs a handful of trigonometric calls:
+
+```swift
+public static func distanceInKm(lat1: Double, lng1: Double, lat2: Double, lng2: Double) -> Double {
+    let earthRadiusKm: Double = 6371
+    let dLat = (lat2 - lat1) * .pi / 180
+    let dLng = (lng2 - lng1) * .pi / 180
+    let a = sin(dLat / 2) * sin(dLat / 2) +
+            cos(lat1 * .pi / 180) * cos(lat2 * .pi / 180) *
+            sin(dLng / 2) * sin(dLng / 2)
+    let c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    return earthRadiusKm * c
+}
+```
+
+One scan is 167,473 of those. For 8,000 photos it is 1.34 billion. A release build on an Apple-silicon Mac does one scan in about 4.5 ms, so the library takes about 36 seconds there and longer on a phone.
+
+### A k-d tree: rule out whole regions at once
+
+A [k-d tree](https://en.wikipedia.org/wiki/K-d_tree) is a binary tree over points. The root holds the median point by the first coordinate and splits the map into two halves along it. Each half splits on the median by the second coordinate, and so on, alternating. With 167,473 points the tree is 18 levels deep, because 2¹⁸ is the first power of two above that count.
+
+Searching it has two phases. First, walk down to the region the photo is in and take the town there as the best guess. Then walk back up, and at each split ask one question: **is the split line closer to the photo than the best town so far?** If not, nothing on the far side can be closer, and the whole subtree is skipped with one subtraction. If it is, that side has to be searched too. [Friedman, Bentley and Finkel](https://dl.acm.org/doi/10.1145/355744.355745) showed that for well-spread points this takes logarithmic expected time. In practice, a search visits the 18 nodes on the way down plus a few more on the way back.
+
+Drop the photo anywhere on the map below and compare the three strategies:
+
+<KdTreeSearch />
+
+The package uses [Bersaelor's KDTree](https://github.com/Bersaelor/KDTree), vendored as an internal target. A point type tells the tree what its coordinates are and how to measure distance:
 
 ```swift
 struct GeoCityPoint: KDTreePoint {
+    let name: String
+    let countryCode: String
+    let latitude: Double
+    let longitude: Double
+    let population: Int
+
     static let dimensions = 2
 
     func kdDimension(_ dimension: Int) -> Double {
         dimension == 0 ? latitude : longitude
     }
 
-    func squaredDistance(to other: GeoCityPoint) -> Double {
+    func squaredDistance(to otherPoint: GeoCityPoint) -> Double {
         let dist = GeoUtils.distanceInKm(
             lat1: latitude, lng1: longitude,
-            lat2: other.latitude, lng2: other.longitude
+            lat2: otherPoint.latitude, lng2: otherPoint.longitude
         )
         return dist * dist
+    }
+
+    static func == (lhs: GeoCityPoint, rhs: GeoCityPoint) -> Bool {
+        lhs.latitude == rhs.latitude && lhs.longitude == rhs.longitude
     }
 }
 ```
 
-The tree is built once at initialization (~100ms for 167K cities) and is immutable - no synchronization needed for concurrent reads.
+The tree is built once when the service is created and never modified, so concurrent reads need no lock. The tree build itself takes on the order of 100 ms. Reading and splitting the 6 MB string costs more than that, about 0.4 s for parse and build together on the Mac, and it happens synchronously inside `GeoClusteringService.init`, so that initializer belongs off the main thread.
 
-## Why "Nearest City" Isn't Enough: The Suburb Problem
+### Two units in one comparison
 
-Pure nearest-neighbor geocoding produces results like "Lurup, Germany" instead of "Hamburg, Germany." Lurup is a Hamburg district - its city center is closer to the photo's coordinates than Hamburg's center, so the K-D Tree returns it. But no one wants to see "Lurup" when they were in Hamburg.
+That point type looks right and returns correct answers. It also defeats the tree, and the reason is a single line in the library's search, the pruning test:
 
-The opposite problem exists too: Ferizaj (60K pop, standalone city) is 33km from Pristina (550K). A naive "pick the biggest city nearby" approach would incorrectly label Ferizaj photos as Pristina.
+```swift
+// KDTree+NearestNeighbour.swift
+let dimensionDifference = value.kdDimension(dim) - searchElement.kdDimension(dim)
+...
+if dimensionDifference * dimensionDifference < bestNewDistance {
+    // the far side might hold something closer: search it too
+}
+```
 
-And a third edge case: GeoNames has bad population data for many small cities. Bujanovac shows population 0 despite having ~18K residents. A population-based heuristic would let Vranje (56K, 15km away) absorb it.
+`kdDimension` returns degrees, so `dimensionDifference` is in degrees. `squaredDistance` returns kilometres squared, so `bestNewDistance` is in kilometres squared. The test compares a distance in degrees against a distance in kilometres. One degree of latitude is about 111 km, so the bound is about 111 times wider than it should be. With the best town 5 km away, the search crosses every split within 5 degrees of the photo, which is several hundred kilometres in every direction.
 
-### The Three-Layer Heuristic
+The answers stay correct, because the error only ever makes the bound wider, never narrower. It turns the tree into a slower scan. Counting node visits on the published package, over a sample of random points near real towns:
 
-The solution uses three checks:
+| Search | Nodes visited |
+| --- | --- |
+| Scan every town | 167,473 |
+| `nearest`, degrees vs km | ~2,400 |
+| `nearestK(100)`, degrees vs km | ~94,000 |
+| `nearest`, one unit (below) | ~25 |
+| `nearestK(100)`, one unit (below) | ~400 |
 
-1. **Distance:** Only consider a parent city within 20km (suburbs are typically < 20km from city center)
-2. **Population ratio:** The parent must have 3x the population of the nearest city
-3. **Metropolis threshold:** Only cities with population > 100K can absorb neighbors
+The third row is the one that matters, because the package's `nearestCity` asks the tree for the 100 nearest towns, not one (the next section explains why). For a photo in Pristina that search visits 106,208 of 167,473 nodes; in the middle of the Atlantic it visits all of them. On the same Mac, one `nearestK(100)` call takes about 9.6 ms, twice as long as the brute-force scan, because each visit also pays for the tree walk and for keeping the 100-best list sorted. With consistent units the same call takes about 0.05 ms.
 
-The metropolis threshold is the key insight. It prevents small cities from absorbing each other regardless of population data quality. Only genuine metropolises (Hamburg, Pristina, Istanbul) absorb their suburbs. Two small neighboring cities always stay independent.
+There is a second problem with splitting on raw latitude and longitude: the map has a seam at ±180° longitude. Two points 20 km apart across it, in Fiji or eastern Russia, are 359.8 "degrees" apart to the tree, so a town just across the seam can be pruned even when it is the closest one.
 
-### Coordinate-Quantized Cache
+The fix for both is to give the tree coordinates in which straight-line distance means something. Convert each town to a point on a sphere of radius 6,371 km and use the straight-line (chord) distance through it. Chord length grows with great-circle distance, so the nearest town by chord is the nearest town on the globe; all three axes and the distance are in kilometres; and there is no seam.
 
-Photos taken at similar locations resolve to the same city. A cache keyed by quantized coordinates (~110m grid) avoids redundant suburb detection. For 200 Hamburg photos, only ~50 unique grid cells exist - 150 cache hits save `nearestK(30)` + distance calculations each.
+```swift
+struct GeoCityVector: KDTreePoint {
+    static let dimensions = 3
+    static let earthRadiusKm = 6371.0
 
-## Smart Clustering: From Photos to Events
+    let x: Double
+    let y: Double
+    let z: Double
+    let city: GeoCity? // nil for a query point
 
-Geocoding gives us city names. But we also need to group photos into discrete events - "Hamburg, May 9–12" and "Hamburg, June 3–5" should be separate trips, not one giant bucket.
+    init(latitude: Double, longitude: Double, city: GeoCity? = nil) {
+        let lat = latitude * .pi / 180
+        let lng = longitude * .pi / 180
+        x = Self.earthRadiusKm * cos(lat) * cos(lng)
+        y = Self.earthRadiusKm * cos(lat) * sin(lng)
+        z = Self.earthRadiusKm * sin(lat)
+        self.city = city
+    }
 
-The demo below runs the first two rules of that pipeline live in your browser on a synthetic month of photos. Every dot is a photo placed by capture time; the cards are the events the rules produce.
+    func kdDimension(_ dimension: Int) -> Double {
+        switch dimension {
+        case 0: x
+        case 1: y
+        default: z
+        }
+    }
+
+    func squaredDistance(to other: GeoCityVector) -> Double {
+        let dx = x - other.x, dy = y - other.y, dz = z - other.z
+        return dx * dx + dy * dy + dz * dz
+    }
+
+    /// Chord length back to great-circle kilometres, where a km value is shown or compared.
+    static func surfaceKm(fromChordKm chord: Double) -> Double {
+        2 * earthRadiusKm * asin(min(1, chord / (2 * earthRadiusKm)))
+    }
+}
+```
+
+`GeoCity` is already `Equatable`, so the synthesized `==` works. Across 7,300 random lookups, this tree and the published one disagreed on the nearest town once.
+
+> **In plain words:** a k-d tree is fast because it can rule out a region with one subtraction. That only works when the subtraction and the distance it is compared to are in the same unit. Mixing degrees with kilometres keeps the answers right and quietly turns the tree back into a scan.
+
+---
+
+## Why the nearest town is not the answer
+
+A photo taken in western Hamburg is nearest to the GeoNames entry for Lurup, a district of 36,521 people. Nobody wants "Lurup, Germany" as the title of their Hamburg trip. The obvious fix, "pick the biggest place nearby", breaks the opposite way: Ferizaj is a city of 60,000 in its own right, 33.6 km from Pristina, and should never be called Pristina. And Bujanovac's population of 0 makes any ratio against it enormous.
+
+`nearestCity` handles this in three steps:
+
+1. **Fetch candidates.** The 100 nearest entries, sorted by distance.
+2. **Vote on the country.** Among candidates within `suburbRadiusKm` (30 km by default) of the photo, the country with the most entries wins, with total population as the tie-breaker. The starting answer is the nearest candidate in that country.
+3. **Promote suburbs.** Walk the candidates in distance order. A candidate replaces the current answer when it is in the voted country, within 30 km of the photo, larger than the current answer, has at least `metropolisThreshold` (100,000) people, and either is at least `suburbPopulationRatio` (3×) larger or the current answer is itself over 100,000.
+
+```swift
+for candidate in candidates {
+    guard candidate.countryCode == detectedCountry else { continue }
+    let distKm = GeoUtils.distanceInKm(
+        lat1: latitude, lng1: longitude,
+        lat2: candidate.latitude, lng2: candidate.longitude
+    )
+    guard distKm <= config.suburbRadiusKm else { continue }
+    guard candidate.population > chosen.population else { continue }
+    guard candidate.population >= config.metropolisThreshold else { continue }
+
+    let ratio = Double(candidate.population) / max(Double(chosen.population), 1)
+    if ratio >= config.suburbPopulationRatio {
+        chosen = candidate // a suburb folds into its city
+    } else if chosen.population >= config.metropolisThreshold {
+        chosen = candidate // two metropolises: the larger one wins
+    }
+}
+```
+
+Step through five real places:
+
+<CityResolveLadder />
+
+The 100,000 floor is the rule that does the protecting. It does not care whether population data is right: a town under 100,000 never absorbs anything, so two small neighbours always stay separate, however wrong their numbers are. The second branch exists for cities that GeoNames lists twice: Pest and Budapest are both over a million, at 1.7×, and without it the answer would stay "Pest".
+
+The figure also shows three things the parameter names hide.
+
+**The radius is capped by the candidate count.** Step 3 can only promote what step 1 fetched. In Hamburg the 100th-nearest entry is 18.6 km from the photo, in Budapest 11.2 km. In a dense region the effective radius is whichever is smaller, 30 km or the distance to the 100th entry, so a metropolis 20 km away can be invisible.
+
+**The radius is measured from the photo, and 30 km reaches past suburbs.** A photo in the centre of Podujeva, a separate town of 35,000, is 26.5 km from Pristina's centre, and Pristina is nearly 16 times larger: it is labelled Pristina. So are Vushtrri, Glogovac, Shtime and Novo Brdo. With a 20 km radius, Podujeva, Glogovac, Shtime and Novo Brdo keep their own names, and Vushtrri goes to Mitrovicë, 11 km away.
+
+**The country vote counts towns, not borders.** Within 30 km of Kamenica, a Kosovo town of 9,312, GeoNames has 8 Serbian entries and 6 Kosovar ones. The vote picks Serbia, the starting answer becomes the nearest Serbian entry, and photos in Kamenica come back as "Bujanovac, Serbia". The vote does fix cases where the nearest entry is across a border, but entry density is a proxy for a border, not a border. And because the same `suburbRadiusKm` drives both the vote and the suburb rule, widening one to fix the other changes both.
+
+### A cache keyed by a 110 m grid
+
+Photos from one afternoon share coordinates, so `nearestCity` caches its result by coordinates rounded to three decimals:
+
+```swift
+let cacheKey = "\(Int(latitude * 1000)),\(Int(longitude * 1000))"
+```
+
+A thousandth of a degree is 111 m north to south, and 111 m × cos(latitude) east to west: about 66 m in Hamburg. `Int(_:)` truncates toward zero, so the cells that touch the equator or the prime meridian are twice as wide, which does no harm here. The dictionary sits behind an `NSLock`, is never trimmed, and builds a `String` per lookup. Two threads that miss on the same cell both compute it and store the same answer, which is wasted work but not a race.
+
+The cache is what makes the cost of geocoding depend on the number of **distinct places**, not the number of photos. For 200 photos of a Hamburg trip there were about 50 distinct cells, so 150 lookups were free.
+
+> **In plain words:** the nearest entry is only the starting answer. Candidates are walked outward and a much larger city within reach takes over, as long as it has at least 100,000 people. The thresholds that make this work are also where it goes wrong: 30 km is wide enough to swallow separate towns, and the country vote can move a town across a border.
+
+---
+
+## From photos to events
+
+Geocoding names places. The trip structure comes from time. `clusterItems` runs six phases over the library, and the first two are simple enough to run live:
 
 <ClusterDemo />
 
-### Phase 1: Time + Distance Splitting
+**Phase 1: split on time and distance.** Photos with a timestamp are sorted, and a new cluster starts when the gap to the previous photo is more than 6 hours, or when both photos have coordinates and are more than 50 km apart. Morning and evening split; two cities visited on the same day split.
 
-Photos are sorted by date and walked sequentially. A new cluster starts when:
+**Phase 2: merge the same place.** Each cluster gets a location key from its first photo with coordinates, `"\(lat.rounded()),\(lng.rounded())"`, a cell one degree on a side: 111 km north to south, about 66 km east to west at Hamburg's latitude. Consecutive clusters with the same key whose gap is at most 48 hours merge, so an overnight stay becomes one cluster. Two clusters 5 km apart on either side of a cell edge do not.
 
-- Time gap to previous photo > 6 hours, OR
-- Distance to previous photo > 50 km
+**Phase 3: geocode, then pool by name.** Each cluster's first photo with coordinates is geocoded. Then every cluster with the same city name, anywhere in the library, is pooled, sorted, and split again wherever the gap exceeds 6 hours. Pooling is what joins Pristina, a day trip to Pejë, and Pristina again. The 6-hour re-split also undoes phase 2's overnight merges; phase 5 is what puts them back together.
 
-This naturally separates morning photos from evening photos (6h gap) and different cities visited the same day (50km distance).
+**Phase 4: name every photo, once.** Phase 5 has to ask, for every photo near every event, "what town is this?". Doing that through the tree inside the per-event loop is 8,000 photos × 500 events, 4 million lookups. Instead, every photo with coordinates is geocoded once into a dictionary:
 
-### Phase 2: Same-Location Merging
+```swift
+var itemCityNames: [String: String] = [:]
+for (index, item) in gpsItems.enumerated() {
+    if index % 500 == 0 {
+        await Task.yield()
+        guard !Task.isCancelled else { return [] }
+        onProgress(.resolvingLocations(progress: Double(index) / Double(gpsItems.count)))
+    }
+    guard let lat = item.latitude, let lng = item.longitude else { continue }
+    if let city = geoNamesService.nearestCity(latitude: lat, longitude: lng) {
+        itemCityNames[item.identifier] = city.displayName
+    }
+}
+```
 
-Consecutive clusters at the same quantized location (~111km grid) within 48 hours merge. This reconnects a multi-day stay: Day 1 Hamburg, sleep (6h gap), Day 2 Hamburg → one cluster.
+After that, "what town is this photo?" is a dictionary read. Before this change, that step froze the app for around 30 seconds. With the cache, the cost is one tree search per distinct 110 m cell, which makes this loop the most expensive part of the pipeline.
 
-### Phase 3: Post-Geocoding Merge
+**Phase 5: rebuild each event by chain.** This is the step that decides what an event finally contains. Events are processed largest first, and for each one:
 
-After geocoding, clusters with the same resolved city name within 48h merge. Two clusters at different Hamburg coordinates both geocode to "Hamburg, Germany" → one event.
+1. The anchor is the **centre of the resolved city**, from `nearestCity` on the event's first photo with coordinates.
+2. Candidates are photos that have coordinates and a timestamp, are not already in another event, lie within 50 km of the anchor, **and whose name from phase 4 matches the event's name**.
+3. The event's own timestamps seed a timeline with the candidates, and two passes with a 24-hour gap decide which candidates join (the next section shows the passes).
+4. Photos **without** coordinates whose timestamp falls inside the chain's first-to-last range are swept in.
+5. Every photo taken is marked as assigned, so no photo lands in two events.
 
-### Phase 4: Chain Rebuild with City Verification
+The name check is the load-bearing part. Before it existed, Pristina photos showed up in Vranje events, because they were within 50 km of the Vranje cluster's anchor photo. A 50 km circle around a city in Kosovo covers several other cities; with the name check, the circle is just a cheap first filter:
 
-This is the critical step. After geocoding determines cluster names and anchor coordinates, each cluster's photo set is rebuilt using a chain algorithm:
+<SuburbReachMap />
 
-1. Use the city center coordinates as the anchor (not a random photo's GPS - prevents border-area photos from pulling in neighboring cities)
-2. Find all library photos within 50km of the city center
-3. Verify each photo geocodes to the same city name - a photo 45km from Hamburg center that's actually closer to Bremen gets rejected
-4. Chain with 24h gap (explained below)
-5. Sweep no-GPS photos within the established date range
-
-The city-name verification is the key insight that prevents cross-city contamination. Without it, Pristina photos were appearing in Vranje events because they were within 50km of Vranje's cluster anchor.
-
-The whole pipeline, phase by phase, with the parameters each one reads:
+**Phase 6: rescue orphans.** Photos that were named in phase 4 but never claimed by any event are grouped by name and split on 6-hour gaps, so nothing with coordinates silently disappears. Empty events are dropped and the rest are returned newest first.
 
 <PhaseRail
   phases={[
     {
       title: 'Split on time and distance',
-      body: 'Photos sort chronologically. A new candidate cluster starts whenever the gap to the previous photo exceeds the split threshold, or the Haversine distance jumps past 50 km.',
+      body: 'Photos with a timestamp sort chronologically. A new cluster starts when the gap to the previous photo exceeds the split threshold, or when both have coordinates and are more than 50 km apart.',
       params: [
         { name: 'splitTimeThreshold', value: '6h' },
         { name: 'distanceThresholdKm', value: '50' },
@@ -165,130 +353,204 @@ The whole pipeline, phase by phase, with the parameters each one reads:
     },
     {
       title: 'Merge the same place',
-      body: 'Adjacent clusters at the same quantized location merge across gaps up to 48 hours, so an overnight stay survives instead of shattering at every sunrise.',
+      body: 'Consecutive clusters whose first located photo rounds to the same whole degree of latitude and longitude merge across gaps up to 48 hours.',
       params: [{ name: 'mergeTimeThreshold', value: '48h' }],
     },
     {
-      title: 'Resolve cities offline',
-      body: 'Each cluster anchor resolves through the K-D Tree over the bundled GeoNames dataset, with suburb detection folding districts into their metropolis. No network, no rate limits.',
+      title: 'Geocode, then pool by name',
+      body: 'Each cluster resolves through the tree and the suburb rule. Clusters with the same city name anywhere in the library are pooled, then split again on gaps over the split threshold.',
       params: [
-        { name: 'cities1000.tsv', value: '167,000 cities' },
-        { name: 'suburbRadiusKm', value: '20' },
+        { name: 'suburbRadiusKm', value: '30' },
+        { name: 'suburbPopulationRatio', value: '3' },
         { name: 'metropolisThreshold', value: '100,000' },
       ],
     },
     {
-      title: 'Merge again on the resolved name',
-      body: 'Two clusters at different coordinates that both geocode to the same city name collapse into one event when they fall inside the merge window.',
-      params: [{ name: 'mergeTimeThreshold', value: '48h' }],
+      title: 'Name every located photo once',
+      body: 'One nearestCity call per photo with coordinates, served from the 110 m cache where possible, into an identifier-to-name dictionary. Yields every 500 photos and honours cancellation.',
+      params: [{ name: 'progress', value: '.resolvingLocations' }],
     },
     {
       title: 'Rebuild each event by chain',
-      body: 'Anchored on the city center, every library photo within 50 km is verified against the same city name, then chained through 24-hour neighbour links forward and backward.',
+      body: 'Largest event first. Anchored on the resolved city centre, located photos within 50 km whose name matches are chained through 24-hour links forward and backward; photos without coordinates inside the chain’s date range are swept in. Nothing is assigned twice.',
       params: [
         { name: 'chainGapSeconds', value: '24h' },
-        { name: 'locationThresholdKm', value: '50' },
+        { name: 'distanceThresholdKm', value: '50' },
       ],
     },
     {
-      title: 'Sweep the photos with no GPS',
-      body: 'Once the chain fixes the date range, photos without coordinates that fall inside that window join the event. Nothing gets assigned twice.',
-      params: [{ name: 'includeScreenshots', value: 'configurable' }],
+      title: 'Rescue orphans',
+      body: 'Named photos no event claimed are grouped by name and split on the split threshold, then empty events are dropped.',
+      params: [{ name: 'splitTimeThreshold', value: '6h' }],
     },
   ]}
 />
 
-### The Pre-Computed Dictionary Optimization
+> **In plain words:** time and distance give rough clusters, names merge the ones that are the same place, and then each event is rebuilt from scratch: every nearby photo with the same town name, linked through time, plus the photos without coordinates taken in between.
 
-The naive approach - calling `nearestCity()` for each photo in each cluster's filter - is O(photos × clusters × log N). With 8K photos and 500 clusters, that's 4 million K-D Tree lookups.
+---
 
-Instead, I pre-compute a `[localIdentifier: cityDisplayName]` dictionary for ALL GPS photos once:
+## Chain expansion: a whole trip from one photo
 
-8,000 photos × O(log 167K) = ~8,000 lookups ≈ 100ms
+The same idea powers the second entry point, `findRelatedItems` on `ChainExpansionService`, which answers "this event already has some photos; which others belong to it?". The first version used a fixed window of 12 hours either side of each event photo. Starting from one photo of a five-day Hamburg trip, it found 45 of the trip's 163 photos.
 
-The per-cluster filter then does a dictionary lookup - O(1). Total: O(M log N) pre-compute + O(M) per cluster, instead of O(M × C × log N). This turned a 30-second freeze into a 100ms operation.
+Chain expansion is a flood fill along the time axis. Put the seed timestamps and the candidates on one sorted timeline, then:
 
-## Chain Expansion: Capturing Entire Trips
+1. Mark the seeds as included.
+2. **Forward pass:** walk left to right; a photo joins if the one before it is included and at most 24 hours earlier.
+3. **Backward pass:** walk right to left with the same rule.
 
-The original implementation used a fixed ±12-hour window around each event photo. Start from one photo of a 5-day Hamburg trip → only photos within 12 hours matched. 45 out of 163. Wrong.
+```swift
+var included = [Bool](repeating: false, count: timeline.count)
+for (i, entry) in timeline.enumerated() where entry.candidateIndex == nil {
+    included[i] = true // seeds
+}
+for i in 1..<timeline.count where !included[i] {
+    if included[i - 1],
+       timeline[i].date.timeIntervalSince(timeline[i - 1].date) <= config.chainGapSeconds {
+        included[i] = true
+    }
+}
+for i in stride(from: timeline.count - 2, through: 0, by: -1) where !included[i] {
+    if included[i + 1],
+       timeline[i + 1].date.timeIntervalSince(timeline[i].date) <= config.chainGapSeconds {
+        included[i] = true
+    }
+}
+```
 
-### The Algorithm
-
-Chain expansion works like a flood fill on the time axis:
-
-1. Start with seed photos (event photo timestamps) marked as "included"
-2. **Forward pass:** Walk the sorted timeline. If photo N is included and photo N+1 is within 24 hours → include N+1
-3. **Backward pass:** Same, expanding left
-
-Each newly-included photo extends the chain. A 5-day trip where you took at least one photo per day chains together entirely from a single seed. Switch the demo below between the two strategies to see what each one reaches from the same seed photo:
+Two passes are enough because inclusion only spreads to neighbours, and each pass carries it as far as it can go in one direction. A trip with at least one photo a day chains together from a single seed; the first gap longer than 24 hours stops it. After the sort, it is linear. Switch strategies to see the difference from the same seed:
 
 <ChainDemo />
 
-### No-GPS Photo Sweep
-
-After the chain establishes the trip's date range using GPS-confirmed photos, a final sweep includes photos without GPS (messaging saves, screenshots, older cameras) that fall within that window. These couldn't pass the location filter (no coordinates to verify), but they're temporally anchored to the trip. A configuration flag controls whether screenshots join that sweep.
-
 ```text
-Seed: May 9 21:17 (Hamburg port photo)
-Chain forward:  May 9 → May 10 → May 11 → May 12 (no 24h gaps)
-Chain backward: May 9 → May 9 14:22 (arrival photos)
-Result: May 9 14:22 to May 12 13:17 - entire trip captured
+Seed:           May 9 21:17 (Hamburg port photo)
+Chain forward:  May 9 → May 10 → May 11 → May 12 (no gap over 24 h)
+Chain backward: May 9 21:17 → May 9 14:22 (arrival photos)
+Result:         May 9 14:22 to May 12 13:17, the entire trip
 ```
 
-## Performance Summary
+`findRelatedItems` filters candidates differently from the clustering rebuild, and the differences matter:
 
-| Operation | Complexity | Real-world time |
-| --- | --- | --- |
-| K-D Tree build (167K cities) | O(N log N) | ~100ms (once) |
-| Single geocode lookup | O(log N) | ~0.01ms |
-| Pre-compute city names (8K photos) | O(M log N) | ~100ms |
-| Per-cluster chain filter | O(M) dict lookup | &lt;1ms |
-| Full pipeline (8K photos → 500 events) | O(M log N + M×C) | ~2–5 seconds |
+- **Location:** a candidate must be within 50 km of any seed location. There is no city-name check here.
+- **Duplicates:** a candidate whose timestamp is within one second of a photo already in the event is reported as a probable duplicate instead of returned.
+- **Screenshots:** with `excludeFilteredItems: true`, items flagged `isExcludable` (screenshots, for photos) are left out of both the chain and the sweep. The clustering pipeline has no such filter.
 
-Compare to CLGeocoder: 45+ seconds for 45 lookups, then you're rate-limited.
+After the chain fixes the date range, photos without coordinates inside it are swept in, as in phase 5: messaging saves, screenshots, photos from older cameras. They cannot pass a location filter, but they are anchored to the trip in time.
 
-## The SDK
+> **In plain words:** instead of "everything within 12 hours of this photo", the rule is "everything within 24 hours of something already in". Repeating that in both directions walks the whole trip.
 
-The entire engine is extracted into a reusable Swift Package - `GeoClusteringSDK`. Zero external dependencies. Zero network calls. Fully offline.
+---
 
-All parameters are configurable:
+## Concurrency, as the package stands
+
+The package declares `swift-tools-version: 5.9`, so it compiles in the Swift 5 language mode. Four details are worth knowing before calling it from a Swift 6 app:
+
+- **The `Sendable` claims are unchecked.** `GeoClusteringService` and `ChainExpansionService` are `final class ... @unchecked Sendable`. Both hold only `let` properties of `Sendable` types, so plain `Sendable` would compile and be checked. `GeoNamesService` does need the opt-out, because its cache is a mutable dictionary guarded by an `NSLock`; on iOS 16, [`OSAllocatedUnfairLock`](https://developer.apple.com/documentation/os/osallocatedunfairlock) can hold the dictionary itself and make that checkable.
+- **Where `clusterItems` runs depends on a language feature.** It is a `nonisolated async` function. In the package's current mode, that runs on the global concurrent executor, off the main actor. Under [SE-0461](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md) (Swift 6.2, the `NonisolatedNonsendingByDefault` feature), a `nonisolated async` function runs on the caller's actor instead. If the package turns that feature on, a call from a `@MainActor` view model runs the whole CPU-bound pipeline on the main thread, with only the `Task.yield()` gaps for the UI. Marking it `@concurrent` keeps today's behaviour.
+- **`onProgress` is called off the main actor.** It is `@Sendable`; hop to the main actor before touching UI state.
+- **Construction does work.** `GeoClusteringService()` reads, parses and builds the tree synchronously, a few hundred milliseconds. Create it off the main thread and keep it.
+
+Cancellation is honoured: the pipeline checks `Task.isCancelled` between phases and every 500 photos, and returns an empty result.
+
+---
+
+## Using the package
+
+Every photo becomes a `GeoTemporalItem`. From PhotoKit, the adapter is a few lines:
 
 ```swift
 import GeoClusteringSDK
+import Photos
 
-let sdk = GeoClusteringService()
-let events = await sdk.clusterItems(itemMetadata) { phase in
-    // Observe progress
+let assets = PHAsset.fetchAssets(with: .image, options: nil)
+let items = (0..<assets.count).map { index in
+    let asset = assets.object(at: index)
+    return GeoTemporalItem(
+        identifier: asset.localIdentifier,
+        timestamp: asset.creationDate,
+        latitude: asset.location?.coordinate.latitude,
+        longitude: asset.location?.coordinate.longitude,
+        isExcludable: asset.mediaSubtypes.contains(.photoScreenshot)
+    )
 }
-// events = [GeoCluster(name: "Hamburg, Germany", photoCount: ...)]
 
-var config = ClusteringConfiguration()
-config.splitTimeThreshold = 6 * 3600      // 6h gap split
-config.chainGapSeconds = 24 * 3600        // 24h chain gap
-config.suburbRadiusKm = 20                // Suburb detection radius
-config.metropolisThreshold = 100_000      // Min pop to absorb
-let sdk = GeoClusteringService(configuration: config)
+var configuration = ClusteringConfiguration()
+configuration.splitTimeThreshold = 6 * 3600 // 6 h gap starts a new cluster
+configuration.chainGapSeconds = 24 * 3600   // 24 h max gap in a chain
+configuration.suburbRadiusKm = 30           // suburb rule and country vote
+configuration.metropolisThreshold = 100_000 // minimum population to absorb
+
+let service = GeoClusteringService(configuration: configuration)
+let clusters = await service.clusterItems(items) { phase in
+    // Called off the main actor.
+}
+
+for cluster in clusters {
+    print(cluster.name, cluster.itemCount, cluster.dateRangeLabel)
+    // e.g. "Hamburg, Germany", its photo count, "May 9-12, 2025"
+}
 ```
 
-## Key Takeaways
+Items without a timestamp are ignored. Items without coordinates are fine: they join events through the date-range sweep. City names come from `GeoCity.displayName`, which localizes the country with `Locale.current`.
 
-> **Replace network calls with embedded data when the dataset fits.** 167K cities in 6MB is a reasonable tradeoff for instant, offline, unlimited geocoding.
+---
 
-> **K-D Trees make spatial search practical.** O(log N) instead of O(N) is the difference between a few seconds and minutes of freezing.
+## Where the time goes
 
-> **Pre-compute what you'll look up repeatedly.** A dictionary built in 100ms saves millions of redundant tree traversals.
+| Step | Cost |
+| --- | --- |
+| Parse 6.2 MB, build the tree | ~100 ms tree, ~0.4 s in all (Mac) |
+| One `nearestCity` | ~94,000 nodes, ~9.6 ms (Mac) |
+| Phase 4, name the photos | one lookup per distinct 110 m cell |
+| Phase 5, per event | one linear scan of the library |
+| 8,000 photos, end to end | 2–5 s on my library, on device |
 
-> **Nearest-neighbor isn't enough for geocoding.** Suburb detection needs distance + ratio + threshold. The metropolis threshold prevents bad data from corrupting results.
+The last row is my library on device. The middle rows explain why it is not a guarantee: the cost is dominated by `nearestK(100)`, paid once per distinct cell, so it grows with how many different places a library contains. A synthetic library of 8,000 photos in which almost every one of the 6,811 located photos lands in its own cell took about 47 seconds for the whole pipeline on the Mac. Fixing the units in the tree takes the per-lookup cost from about 9.6 ms to about 0.05 ms, which moves that worst case to well under a second of geocoding.
 
-> **Chain expansion beats fixed windows.** A flood-fill approach on sorted timestamps naturally captures multi-day trips from a single seed.
+Compared with the network: `CLGeocoder` spent about a minute on 45 names and then stopped answering.
 
-> **City-center anchoring prevents cross-contamination.** Using the geocoded city's coordinates (not a random photo's GPS) as the chain anchor stops border-area photos from pulling in neighboring cities.
+---
 
-## References & Links
+## What I would change next
 
-- **GeoClusteringSDK** - the open-source Swift Package described in this article
-- [Apple CLGeocoder Documentation](https://developer.apple.com/documentation/corelocation/clgeocoder) - Apple's built-in reverse geocoding API
-- [GeoNames](https://www.geonames.org/) - open geographic database providing the `cities1000.txt` dataset
-- [KDTree Swift Library](https://github.com/Bersaelor/KDTree) - K-D Tree implementation used for spatial search
-- [K-D Tree (Wikipedia)](https://en.wikipedia.org/wiki/K-d_tree) - background on the K-Dimensional Tree data structure
-- [Haversine Formula (Wikipedia)](https://en.wikipedia.org/wiki/Haversine_formula) - the distance formula used for geographic coordinate calculations
+- **Index unit vectors, not latitude and longitude.** The three-axis point above keeps the tree honest, removes the ±180° seam, and makes every lookup roughly 180 times cheaper.
+- **Fetch by radius, not by count.** With consistent units, `allPoints(within:of:)` returns every town within 30 km of chord distance, so a dense region no longer hides a nearby metropolis behind the 100th candidate.
+- **Split the radius into two settings.** One for the country vote, one for suburbs, so that fixing a border case does not swallow Podujeva. At 20 km for suburbs, the Kosovo towns in Fig 04 keep their names.
+- **Decide countries with polygons.** A point-in-polygon test against country boundaries answers the question the vote is approximating, and Kamenica stays in Kosovo.
+- **Key phase 2 by distance.** Rounded degrees split places that sit near a cell edge; comparing the two clusters' first located photos against the 50 km threshold does not.
+- **Make the concurrency explicit.** `@concurrent` on `clusterItems`, checked `Sendable` where it is free, and an initializer that loads the tree off the main thread.
+
+---
+
+## Takeaways
+
+> **Ask the smallest question.** The app needed "which town", not an address, and that fits in 6.2 MB on the device with no network and no rate limit.
+
+> **A spatial index is only as good as its units.** The k-d tree's pruning test compares a coordinate difference with a distance. Degrees against kilometres still gives right answers, and visits most of the tree to get them.
+
+> **Measure the structure, not just the result.** Correct answers and an acceptable total time both hid the units bug; a node-visit counter shows it on the first lookup.
+
+> **Nearest is a starting point.** Suburb folding needs a distance, a ratio and, above all, a population floor, because the floor holds even when the data is wrong.
+
+> **Every threshold is also a boundary that can be wrong.** A 30 km radius that folds Lurup into Hamburg also folds Podujeva into Pristina.
+
+> **Pre-compute what you will look up repeatedly.** One dictionary of photo names replaced millions of tree searches inside a loop.
+
+> **Chain, do not window.** Two linear passes over a sorted timeline capture a trip of any length from one photo; a fixed window cannot.
+
+> **Verify by name, filter by distance.** The 50 km circle is a cheap first cut. The city-name check is what keeps neighbouring cities out.
+
+---
+
+## References
+
+**GeoClusteringSDK** — [Repository](https://github.com/egzonpllana/geo-clustering-ios) · [`GeoNamesService.swift`](https://github.com/egzonpllana/geo-clustering-ios/blob/main/Sources/GeoClusteringSDK/Services/GeoNamesService.swift) · [`GeoClusteringService.swift`](https://github.com/egzonpllana/geo-clustering-ios/blob/main/Sources/GeoClusteringSDK/UseCases/GeoClusteringService.swift) · [`ChainExpansionService.swift`](https://github.com/egzonpllana/geo-clustering-ios/blob/main/Sources/GeoClusteringSDK/AutoImport/ChainExpansionService.swift) · [`ClusteringConfiguration.swift`](https://github.com/egzonpllana/geo-clustering-ios/blob/main/Sources/GeoClusteringSDK/Models/ClusteringConfiguration.swift)
+
+**Data** — [GeoNames](https://www.geonames.org/) · [GeoNames dump readme](https://download.geonames.org/export/dump/readme.txt) (file contents and columns) · [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/) (GeoNames licence)
+
+**Spatial search** — [KDTree for Swift](https://github.com/Bersaelor/KDTree) · J. L. Bentley, [Multidimensional binary search trees used for associative searching](https://dl.acm.org/doi/10.1145/361002.361007), CACM 18(9), 1975 · J. H. Friedman, J. L. Bentley, R. A. Finkel, [An algorithm for finding best matches in logarithmic expected time](https://dl.acm.org/doi/10.1145/355744.355745), ACM TOMS 3(3), 1977 · [k-d tree](https://en.wikipedia.org/wiki/K-d_tree) · [Haversine formula](https://en.wikipedia.org/wiki/Haversine_formula)
+
+**Apple** — [`CLGeocoder`](https://developer.apple.com/documentation/corelocation/clgeocoder) (rate limits, deprecated in iOS 26) · [`MKReverseGeocodingRequest`](https://developer.apple.com/documentation/mapkit/mkreversegeocodingrequest) · [`PHAsset`](https://developer.apple.com/documentation/photokit/phasset) · [`OSAllocatedUnfairLock`](https://developer.apple.com/documentation/os/osallocatedunfairlock)
+
+**Swift concurrency** — [SE-0461: Run nonisolated async functions on the caller's actor by default](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md)

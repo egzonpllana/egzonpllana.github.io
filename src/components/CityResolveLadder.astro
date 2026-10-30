@@ -1,0 +1,712 @@
+---
+/**
+ * The suburb rule, one candidate at a time. For five real places, the loop in
+ * GeoNamesService.nearestCity walks the 100 nearest GeoNames entries in
+ * distance order and either skips each one or promotes it to the current
+ * answer. Rows are the decisive candidates from that walk, computed from the
+ * bundled cities1000 data with the package's default configuration
+ * (30 km, 3x, 100,000); dozens of small villages that are skipped as
+ * "under 100,000" are left out of the list.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Populations and distances are the GeoNames values the package ships with, measured from a photo taken at the first town on each list. Promotions chain: in Hamburg the answer climbs from a district to a borough to the city. Two thresholds do the protecting: a town has to pass 100,000 people before it can absorb anything, and the 30 km radius keeps Ferizaj out of Pristina.',
+} = Astro.props;
+
+type Verdict =
+  'start' | 'under' | 'smaller' | 'far' | 'country' | 'ratio' | 'metro';
+interface Row {
+  name: string;
+  pop: number;
+  km: number;
+  verdict: Verdict;
+  note: string;
+}
+interface Scenario {
+  id: string;
+  label: string;
+  photo: string;
+  votes: string;
+  reach: number;
+  rows: Row[];
+  result: string;
+  summary: string;
+}
+
+const RADIUS = 30;
+const SCALE = 36;
+
+const scenarios: Scenario[] = [
+  {
+    id: 'lurup',
+    label: 'Lurup',
+    photo: 'a photo in Lurup, a district of Hamburg',
+    votes: 'DE 100',
+    reach: 18.6,
+    result: 'Hamburg, Germany',
+    summary:
+      'Three promotions in one walk. The 100 nearest entries all sit inside 18.6 km, so Hamburg is in the list only because its centre is 9 km away.',
+    rows: [
+      {
+        name: 'Lurup',
+        pop: 36521,
+        km: 0,
+        verdict: 'start',
+        note: 'The nearest entry in the voted country is the starting answer.',
+      },
+      {
+        name: 'Niendorf',
+        pop: 40906,
+        km: 5.6,
+        verdict: 'under',
+        note: 'Bigger than Lurup, but a town under 100,000 never absorbs a neighbour.',
+      },
+      {
+        name: 'Eimsbüttel',
+        pop: 269118,
+        km: 5.7,
+        verdict: 'ratio',
+        note: '269,118 / 36,521 = 7.4×, at least 3×: Eimsbüttel becomes the answer.',
+      },
+      {
+        name: 'Altona',
+        pop: 250192,
+        km: 6,
+        verdict: 'smaller',
+        note: 'Not bigger than the current answer, Eimsbüttel. Skipped.',
+      },
+      {
+        name: 'Hamburg-Nord',
+        pop: 315514,
+        km: 7.1,
+        verdict: 'metro',
+        note: 'Only 1.2× Eimsbüttel, but both are over 100,000, so the larger one wins.',
+      },
+      {
+        name: 'Hamburg',
+        pop: 1845229,
+        km: 9,
+        verdict: 'ratio',
+        note: '1,845,229 / 315,514 = 5.8×: the city itself becomes the answer.',
+      },
+    ],
+  },
+  {
+    id: 'obiliq',
+    label: 'Obiliq',
+    photo: 'a photo in Obiliq, Kosovo',
+    votes: 'XK 14',
+    reach: 76.2,
+    result: 'Pristina, Kosovo',
+    summary:
+      'Obiliq is in the dataset, and still ends up as Pristina: 8 km from a city 47 times its size is a suburb by this rule.',
+    rows: [
+      {
+        name: 'Obiliq',
+        pop: 11612,
+        km: 0,
+        verdict: 'start',
+        note: 'The nearest entry, and the starting answer.',
+      },
+      {
+        name: 'Kosovo Polje',
+        pop: 16154,
+        km: 3.3,
+        verdict: 'under',
+        note: 'Bigger, but under 100,000. Skipped.',
+      },
+      {
+        name: 'Pristina',
+        pop: 550000,
+        km: 8.1,
+        verdict: 'ratio',
+        note: '550,000 / 11,612 = 47×: Pristina becomes the answer.',
+      },
+      {
+        name: 'Mitrovicë',
+        pop: 107045,
+        km: 27.4,
+        verdict: 'smaller',
+        note: 'Over 100,000 and inside 30 km, but smaller than Pristina. Skipped.',
+      },
+    ],
+  },
+  {
+    id: 'ferizaj',
+    label: 'Ferizaj',
+    photo: 'a photo in Ferizaj, Kosovo',
+    votes: 'XK 17 · MK 2',
+    reach: 55.7,
+    result: 'Ferizaj, Kosovo',
+    summary:
+      'A town of 60,000 that is not a suburb stays itself. "Pick the biggest place nearby" would have called it Pristina.',
+    rows: [
+      {
+        name: 'Ferizaj',
+        pop: 59504,
+        km: 0,
+        verdict: 'start',
+        note: 'The nearest entry, and the starting answer.',
+      },
+      {
+        name: 'Suva Reka',
+        pop: 72229,
+        km: 27.2,
+        verdict: 'under',
+        note: 'Bigger, but under 100,000. Skipped.',
+      },
+      {
+        name: 'Gjilan',
+        pop: 51912,
+        km: 27.7,
+        verdict: 'smaller',
+        note: 'Smaller than Ferizaj. Skipped.',
+      },
+      {
+        name: 'Pristina',
+        pop: 550000,
+        km: 33.6,
+        verdict: 'far',
+        note: 'Nine times bigger, but 33.6 km from the photo, past the 30 km radius. Skipped.',
+      },
+    ],
+  },
+  {
+    id: 'bujanovac',
+    label: 'Bujanovac',
+    photo: 'a photo in Bujanovac, Serbia',
+    votes: 'RS 12 · XK 4 · MK 3',
+    reach: 69.5,
+    result: 'Bujanovac, Serbia',
+    summary:
+      'GeoNames lists Bujanovac with population 0, so any ratio against it is enormous. The 100,000 floor is what keeps Vranje from taking it.',
+    rows: [
+      {
+        name: 'Bujanovac',
+        pop: 0,
+        km: 0,
+        verdict: 'start',
+        note: 'The nearest entry. Its population field in GeoNames is 0.',
+      },
+      {
+        name: 'Samoljica',
+        pop: 2852,
+        km: 8.7,
+        verdict: 'under',
+        note: 'One of several villages nearby. Under 100,000, skipped.',
+      },
+      {
+        name: 'Vranje',
+        pop: 56199,
+        km: 15,
+        verdict: 'under',
+        note: '56,199 / max(0, 1) is a 56,199× ratio, but Vranje is under 100,000. Skipped.',
+      },
+      {
+        name: 'Gjilan',
+        pop: 51912,
+        km: 24.3,
+        verdict: 'country',
+        note: 'Inside 30 km, but in Kosovo. The vote picked Serbia, so other countries are never candidates.',
+      },
+    ],
+  },
+  {
+    id: 'pest',
+    label: 'Pest',
+    photo: 'a photo in Pest, Budapest',
+    votes: 'HU 100',
+    reach: 11.2,
+    result: 'Budapest, Hungary',
+    summary:
+      'Two entries over 100,000, 3.2 km apart, at 1.7×. The ratio rule alone would leave "Pest"; the second rule lets the larger metropolis win.',
+    rows: [
+      {
+        name: 'Pest',
+        pop: 1001748,
+        km: 0,
+        verdict: 'start',
+        note: 'GeoNames has an entry for Pest with a million people, and it is the nearest.',
+      },
+      {
+        name: 'Erzsébetváros',
+        pop: 62000,
+        km: 0.9,
+        verdict: 'smaller',
+        note: 'A district, smaller than Pest. Skipped.',
+      },
+      {
+        name: 'Budapest',
+        pop: 1741041,
+        km: 3.2,
+        verdict: 'metro',
+        note: 'Only 1.7×, below 3×, but both are over 100,000, so the larger one wins.',
+      },
+    ],
+  },
+];
+
+const VERDICT_LABEL: Record<Verdict, string> = {
+  start: 'start',
+  under: 'skip · under 100,000',
+  smaller: 'skip · not bigger',
+  far: 'skip · beyond 30 km',
+  country: 'skip · other country',
+  ratio: 'promote · ≥ 3×',
+  metro: 'promote · both ≥ 100,000',
+};
+const fmt = (n: number) => n.toLocaleString('en-US');
+---
+
+<VizFrame
+  fig="02"
+  title="Nearest is not the answer: walking the suburb rule"
+  caption={caption}
+  class="crl"
+  data-crl
+>
+  <div slot="tools" class="crl__tools">
+    <button type="button" class="viz-btn" data-next aria-label="Next candidate"
+      >step</button
+    >
+    <AnimControls label="Walk" />
+  </div>
+
+  <div
+    class="viz-seg crl__seg"
+    role="group"
+    aria-label="Place the photo was taken"
+  >
+    {
+      scenarios.map((s, i) => (
+        <button
+          type="button"
+          aria-pressed={i === 0 ? 'true' : 'false'}
+          data-scenario={s.id}
+        >
+          {s.label}
+        </button>
+      ))
+    }
+  </div>
+
+  {
+    scenarios.map((s, i) => (
+      <section class="crl__case" data-case={s.id} hidden={i !== 0}>
+        <div class="crl__head">
+          <span class="crl__photo">
+            <span class="viz-dot crl__photo-dot" />
+            {s.photo}
+          </span>
+          <span class="crl__meta">
+            <span class="viz-chip viz-chip--meta">
+              vote within 30 km: {s.votes}
+            </span>
+            <span
+              class:list={[
+                'viz-chip',
+                s.reach < RADIUS ? 'viz-chip--bad' : 'viz-chip--level',
+              ]}
+            >
+              100th candidate at {s.reach} km
+            </span>
+          </span>
+        </div>
+
+        <ol class="crl__rows viz-panel">
+          {s.rows.map((r, k) => (
+            <li class={`crl__row crl__row--${r.verdict}`} data-row={k}>
+              <span class="crl__name">{r.name}</span>
+              <span class="crl__pop viz-mono">
+                {r.pop === 0 ? 'pop. 0 (missing)' : `pop. ${fmt(r.pop)}`}
+              </span>
+              <span class="crl__verdict">{VERDICT_LABEL[r.verdict]}</span>
+              <span class="crl__dist">
+                <span class="crl__track" aria-hidden="true">
+                  <i
+                    class="crl__fill"
+                    style={`width:${Math.min(100, (r.km / SCALE) * 100).toFixed(2)}%`}
+                  />
+                  <i
+                    class="crl__limit"
+                    style={`left:${((RADIUS / SCALE) * 100).toFixed(2)}%`}
+                  />
+                  {s.reach < RADIUS && (
+                    <i
+                      class="crl__reach"
+                      style={`left:${((s.reach / SCALE) * 100).toFixed(2)}%`}
+                    />
+                  )}
+                </span>
+                <span class="crl__km viz-mono">{r.km.toFixed(1)} km</span>
+              </span>
+              <span class="crl__why" data-why>
+                {r.note}
+              </span>
+            </li>
+          ))}
+        </ol>
+
+        <div class="crl__result" data-result>
+          <span class="viz-label">answer</span>
+          <b data-answer>{s.rows[0].name}</b>
+          <span class="crl__final" data-final>
+            {s.result}
+          </span>
+        </div>
+        <p class="crl__summary" data-summary>
+          {s.summary}
+        </p>
+      </section>
+    ))
+  }
+
+  <div class="viz-legend crl__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-level)"></i>distance from the photo</span>
+    <span><i style="--c:var(--viz-meta)"></i>30 km radius</span>
+    <span
+      ><i style="--c:var(--viz-bad)"></i>where the 100 candidates run out</span
+    >
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = 1500;
+
+    function initCityResolveLadder(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const segBtns = [...root.querySelectorAll('[data-scenario]')];
+      const cases = [...root.querySelectorAll('[data-case]')];
+
+      let active = cases[0];
+      let current = 0;
+      let playing = false;
+      let timer = 0;
+
+      const rows = () => [...active.querySelectorAll('[data-row]')];
+      const last = () => rows().length;
+
+      // Step k shows rows 0..k-1 decided; step rows().length shows the answer.
+      function render() {
+        let answer = '';
+        rows().forEach((row, i) => {
+          const shown = i < current || (i === 0 && current === 0);
+          row.classList.toggle('is-shown', shown);
+          row.classList.toggle('is-now', i === current - 1);
+          if (
+            shown &&
+            (row.classList.contains('crl__row--start') ||
+              row.classList.contains('crl__row--ratio') ||
+              row.classList.contains('crl__row--metro'))
+          ) {
+            answer = row.querySelector('.crl__name').textContent;
+          }
+        });
+        active.querySelector('[data-answer]').textContent = answer;
+        const done = current >= last();
+        active.querySelector('[data-result]').classList.toggle('is-done', done);
+        active
+          .querySelector('[data-summary]')
+          .classList.toggle('is-done', done);
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(() => {
+          current += 1;
+          render();
+          if (current >= last()) {
+            playing = false;
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          schedule();
+        }, STEP_MS);
+      }
+      function play() {
+        if (playing) return;
+        if (current >= last()) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        schedule();
+      }
+      function reset() {
+        stop();
+        current = 1;
+        render();
+      }
+
+      root.querySelector('[data-next]').addEventListener('click', () => {
+        stop();
+        current = current >= last() ? 1 : current + 1;
+        render();
+        root.dispatchEvent(
+          new CustomEvent(current >= last() ? 'anim:ended' : 'anim:paused'),
+        );
+      });
+
+      segBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const next = cases.find(
+            (c) => c.dataset.case === btn.dataset.scenario,
+          );
+          if (!next || next === active) return;
+          segBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          cases.forEach((c) => (c.hidden = c !== next));
+          active = next;
+          reset();
+          if (reduce) {
+            current = last();
+            render();
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          play();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      // Reduced motion rests on the finished walk until the reader plays it.
+      current = reduce ? last() : 1;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-crl]').forEach(initCityResolveLadder);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .crl__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .crl__seg {
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+
+  .crl__case {
+    margin-top: var(--sp-3);
+  }
+  .crl__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-2);
+  }
+  .crl__photo {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .crl__photo-dot {
+    color: var(--viz-sound);
+  }
+  .crl__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .crl__rows {
+    display: grid;
+    gap: 2px;
+    padding: 4px;
+  }
+  .crl__row {
+    --c: var(--fg-faint);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'name verdict'
+      'pop pop'
+      'dist dist'
+      'why why';
+    align-items: center;
+    gap: 3px var(--sp-3);
+    padding: 8px 10px;
+    border-radius: 8px;
+    border-left: 3px solid transparent;
+    opacity: 0.28;
+    transition:
+      opacity 0.3s var(--ease),
+      background 0.3s var(--ease),
+      border-color 0.3s var(--ease);
+  }
+  .crl__row + .crl__row {
+    border-top: 1px dashed var(--border);
+  }
+  .crl__row.is-shown {
+    opacity: 1;
+  }
+  .crl__row--start,
+  .crl__row--ratio,
+  .crl__row--metro {
+    --c: var(--viz-level);
+  }
+  .crl__row--far,
+  .crl__row--country {
+    --c: var(--viz-meta);
+  }
+  .crl__row.is-now {
+    border-left-color: var(--c);
+    background: color-mix(in srgb, var(--c) 9%, transparent);
+  }
+  .crl__name {
+    grid-area: name;
+    font-weight: 600;
+    font-size: var(--fs-sm);
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .crl__pop {
+    grid-area: pop;
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .crl__verdict {
+    grid-area: verdict;
+    justify-self: end;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--c);
+    text-align: right;
+  }
+  .crl__dist {
+    grid-area: dist;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+  .crl__track {
+    flex: 1 1 auto;
+    position: relative;
+    height: 8px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--fg) 7%, transparent);
+  }
+  .crl__fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 4px;
+    background: var(--viz-level);
+    opacity: 0.85;
+  }
+  .crl__limit,
+  .crl__reach {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--viz-meta);
+  }
+  .crl__reach {
+    background: var(--viz-bad);
+  }
+  .crl__km {
+    flex: none;
+    font-size: 11px;
+    color: var(--fg-muted);
+    min-width: 4.4em;
+    text-align: right;
+  }
+  .crl__why {
+    grid-area: why;
+    display: none;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--fg-muted);
+  }
+  .crl__row.is-now .crl__why {
+    display: block;
+  }
+
+  .crl__result {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px var(--sp-2);
+    margin-top: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--viz-level);
+    border-radius: var(--radius-sm);
+  }
+  .crl__result b {
+    font-size: var(--fs-sm);
+    color: var(--fg);
+  }
+  .crl__final {
+    display: none;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--viz-level);
+  }
+  .crl__final::before {
+    content: '→ ';
+  }
+  .crl__result.is-done .crl__final {
+    display: inline;
+  }
+  .crl__summary {
+    margin: var(--sp-2) 0 0;
+    min-height: 3.2rem;
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg-muted);
+    visibility: hidden;
+  }
+  .crl__summary.is-done {
+    visibility: visible;
+  }
+  .crl__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .crl__row {
+      transition: none;
+    }
+  }
+</style>

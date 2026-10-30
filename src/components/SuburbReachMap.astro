@@ -1,0 +1,555 @@
+---
+/**
+ * Rebuilding the Pristina event: every library photo within 50 km of the
+ * city centre is a candidate, and the city-name check keeps only those whose
+ * precomputed label is "Pristina". The labels themselves depend on the suburb
+ * radius, so the figure carries both: the labels a photo at each town's
+ * centre gets from GeoNamesService.nearestCity with a 20 km and with a 30 km
+ * suburb radius (computed with the published package and its bundled
+ * cities1000 data). Photos are scattered within about 1.5 km of each centre
+ * and take that centre's label.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Central Kosovo, about 90 km across, with Pristina at the anchor. The 50 km circle alone pulls in almost every town on the map; the name check is what keeps the event to Pristina. What counts as "Pristina" is decided earlier, by the suburb radius: at 30 km, separate towns such as Podujeva, Vushtrri and Glogovac are labelled Pristina, and Kamenica loses a country vote and comes back as Bujanovac, Serbia.',
+} = Astro.props;
+
+const LAT_TOP = 42.98;
+const LAT_BOTTOM = 42.27;
+const LNG_LEFT = 20.75;
+const LNG_RIGHT = 21.85;
+const KM_LAT = 111.2;
+const KM_LNG = 111.2 * Math.cos((42.62 * Math.PI) / 180);
+const W = Math.round((LNG_RIGHT - LNG_LEFT) * KM_LNG);
+const H = Math.round((LAT_TOP - LAT_BOTTOM) * KM_LAT);
+
+type Side = 'l' | 'r' | 't' | 'b';
+interface Town {
+  name: string;
+  lat: number;
+  lng: number;
+  pop: number;
+  at20: string;
+  at30: string;
+  side: Side;
+}
+const towns: Town[] = [
+  {
+    name: 'Pristina',
+    lat: 42.67272,
+    lng: 21.16688,
+    pop: 550000,
+    at20: 'Pristina',
+    at30: 'Pristina',
+    side: 'r',
+  },
+  {
+    name: 'Obiliq',
+    lat: 42.68694,
+    lng: 21.07028,
+    pop: 11612,
+    at20: 'Pristina',
+    at30: 'Pristina',
+    side: 'l',
+  },
+  {
+    name: 'Lipljan',
+    lat: 42.52167,
+    lng: 21.12583,
+    pop: 9047,
+    at20: 'Pristina',
+    at30: 'Pristina',
+    side: 'r',
+  },
+  {
+    name: 'Vushtrri',
+    lat: 42.82306,
+    lng: 20.9675,
+    pop: 30651,
+    at20: 'Mitrovicë',
+    at30: 'Pristina',
+    side: 'r',
+  },
+  {
+    name: 'Podujeva',
+    lat: 42.91056,
+    lng: 21.19306,
+    pop: 35000,
+    at20: 'Podujeva',
+    at30: 'Pristina',
+    side: 'r',
+  },
+  {
+    name: 'Glogovac',
+    lat: 42.62833,
+    lng: 20.89389,
+    pop: 58579,
+    at20: 'Glogovac',
+    at30: 'Pristina',
+    side: 'b',
+  },
+  {
+    name: 'Mitrovicë',
+    lat: 42.88333,
+    lng: 20.86667,
+    pop: 107045,
+    at20: 'Mitrovicë',
+    at30: 'Mitrovicë',
+    side: 'r',
+  },
+  {
+    name: 'Shtime',
+    lat: 42.43306,
+    lng: 21.03972,
+    pop: 35000,
+    at20: 'Shtime',
+    at30: 'Pristina',
+    side: 'l',
+  },
+  {
+    name: 'Novo Brdo',
+    lat: 42.6159,
+    lng: 21.43405,
+    pop: 6720,
+    at20: 'Novo Brdo',
+    at30: 'Pristina',
+    side: 'b',
+  },
+  {
+    name: 'Ferizaj',
+    lat: 42.37056,
+    lng: 21.15528,
+    pop: 59504,
+    at20: 'Ferizaj',
+    at30: 'Ferizaj',
+    side: 'r',
+  },
+  {
+    name: 'Gjilan',
+    lat: 42.46045,
+    lng: 21.46986,
+    pop: 51912,
+    at20: 'Gjilan',
+    at30: 'Gjilan',
+    side: 'b',
+  },
+  {
+    name: 'Kamenica',
+    lat: 42.57806,
+    lng: 21.58028,
+    pop: 9312,
+    at20: 'Kamenica',
+    at30: 'Bujanovac, RS',
+    side: 'b',
+  },
+  {
+    name: 'Suva Reka',
+    lat: 42.35861,
+    lng: 20.825,
+    pop: 72229,
+    at20: 'Suva Reka',
+    at30: 'Suva Reka',
+    side: 'r',
+  },
+  {
+    name: 'Vitina',
+    lat: 42.32139,
+    lng: 21.35833,
+    pop: 46959,
+    at20: 'Vitina',
+    at30: 'Vitina',
+    side: 'r',
+  },
+  {
+    name: 'Bujanovac',
+    lat: 42.45917,
+    lng: 21.76667,
+    pop: 0,
+    at20: 'Bujanovac',
+    at30: 'Bujanovac',
+    side: 'l',
+  },
+];
+
+const ANCHOR = towns[0];
+const project = (lat: number, lng: number) => ({
+  x: (lng - LNG_LEFT) * KM_LNG,
+  y: (LAT_TOP - lat) * KM_LAT,
+});
+const haversine = (a: Town, b: Town) => {
+  const r = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * r;
+  const dLng = (b.lng - a.lng) * r;
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+};
+
+function mulberry32(seed: number) {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(42672);
+
+const placed = towns.map((t, i) => {
+  const p = project(t.lat, t.lng);
+  const km = Math.round(haversine(ANCHOR, t) * 10) / 10;
+  const n = Math.max(4, Math.min(12, Math.round(Math.sqrt(t.pop) / 50)));
+  const photos = Array.from({ length: n }, () => {
+    const a = rand() * Math.PI * 2;
+    const d = Math.sqrt(rand()) * 1.6;
+    return {
+      x: Math.round((p.x + Math.cos(a) * d) * 100) / 100,
+      y: Math.round((p.y + Math.sin(a) * d) * 100) / 100,
+    };
+  });
+  return { ...t, i, x: p.x, y: p.y, km, photos };
+});
+const anchor = placed[0];
+const RADIUS_KM = 50;
+---
+
+<VizFrame
+  fig="04"
+  title="Rebuilding one event: a 50 km net, then a name check"
+  caption={caption}
+  class="srm"
+  data-srm
+>
+  <div class="srm__bar">
+    <div class="srm__ctl">
+      <span class="viz-label">suburb radius</span>
+      <div class="viz-seg" role="group" aria-label="Suburb radius">
+        <button type="button" aria-pressed="false" data-radius="20"
+          >20 km</button
+        >
+        <button type="button" aria-pressed="true" data-radius="30"
+          >30 km · shipped</button
+        >
+      </div>
+    </div>
+    <div class="srm__ctl">
+      <span class="viz-label">city-name check</span>
+      <div class="viz-seg" role="group" aria-label="City-name check">
+        <button type="button" aria-pressed="false" data-check="off">off</button>
+        <button type="button" aria-pressed="true" data-check="on">on</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="srm__stats" aria-live="polite">
+    <span class="viz-chip viz-chip--sound" data-in
+      >Pristina event: 0 photos</span
+    >
+    <span class="viz-chip viz-chip--bad" data-wrong
+      >labelled as another town: 0</span
+    >
+  </div>
+
+  <div class="srm__map viz-panel">
+    <div class="srm__stage" style={`aspect-ratio:${W} / ${H}`}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label="Map of central Kosovo with towns, photos and a 50 km circle around Pristina"
+      >
+        <circle class="srm__net" cx={anchor.x} cy={anchor.y} r={RADIUS_KM}
+        ></circle>
+        {
+          placed.map((t) =>
+            t.photos.map((p) => (
+              <circle
+                class="srm__photo"
+                cx={p.x}
+                cy={p.y}
+                r="0.9"
+                data-t={t.i}
+              />
+            )),
+          )
+        }
+        <g class="srm__anchor">
+          <circle cx={anchor.x} cy={anchor.y} r="2.6"></circle>
+          <circle cx={anchor.x} cy={anchor.y} r="1.1"></circle>
+        </g>
+      </svg>
+      {
+        placed.map((t) => (
+          <span
+            class={`srm__town srm__town--${t.side}`}
+            style={`left:${((t.x / W) * 100).toFixed(2)}%;top:${((t.y / H) * 100).toFixed(2)}%`}
+            data-town={t.i}
+            data-at20={t.at20}
+            data-at30={t.at30}
+            data-own={t.name}
+            data-km={t.km}
+          >
+            <b>{t.name}</b>
+            <small data-label />
+          </span>
+        ))
+      }
+    </div>
+  </div>
+
+  <p class="srm__note" data-note aria-live="polite"></p>
+
+  <div class="viz-legend srm__legend" aria-hidden="true">
+    <span
+      ><i style="--c:var(--viz-sound)"></i>photo kept, labelled Pristina</span
+    >
+    <span><i style="--c:var(--viz-bad)"></i>photo kept, another town</span>
+    <span><i style="--c:var(--viz-meta)"></i>50 km from the anchor</span>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initSuburbReachMap(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const RADIUS = 50;
+      const towns = [...root.querySelectorAll('[data-town]')].map((el) => ({
+        el,
+        i: Number(el.dataset.town),
+        own: el.dataset.own,
+        at: { 20: el.dataset.at20, 30: el.dataset.at30 },
+        km: Number(el.dataset.km),
+        labelEl: el.querySelector('[data-label]'),
+      }));
+      const photosByTown = new Map();
+      root.querySelectorAll('[data-t]').forEach((el) => {
+        const k = Number(el.dataset.t);
+        if (!photosByTown.has(k)) photosByTown.set(k, []);
+        photosByTown.get(k).push(el);
+      });
+      const inEl = root.querySelector('[data-in]');
+      const wrongEl = root.querySelector('[data-wrong]');
+      const noteEl = root.querySelector('[data-note]');
+      const radiusBtns = [...root.querySelectorAll('[data-radius]')];
+      const checkBtns = [...root.querySelectorAll('[data-check]')];
+
+      let radius = 30;
+      let check = true;
+
+      function render() {
+        let kept = 0;
+        let wrong = 0;
+        const keptTowns = [];
+        const absorbed = [];
+        towns.forEach((t) => {
+          const label = t.at[radius];
+          const isPristina = label === 'Pristina';
+          const inNet = t.km <= RADIUS;
+          const keep = inNet && (!check || isPristina);
+          const photos = photosByTown.get(t.i) || [];
+          photos.forEach((p) => {
+            p.classList.toggle('is-kept', keep && isPristina);
+            p.classList.toggle('is-wrong', keep && !isPristina);
+            p.classList.toggle('is-out', !keep);
+          });
+          if (keep) {
+            kept += photos.length;
+            keptTowns.push(t.own);
+            if (!isPristina) wrong += photos.length;
+          }
+          if (isPristina && t.own !== 'Pristina') absorbed.push(t.own);
+          const relabelled = label !== t.own;
+          t.labelEl.textContent = relabelled ? `→ ${label}` : '';
+          t.el.classList.toggle('is-relabelled', relabelled);
+          t.el.classList.toggle('is-foreign', label.endsWith(', RS'));
+          t.el.classList.toggle('is-kept', keep);
+        });
+
+        inEl.textContent = `Pristina event: ${kept} photos from ${keptTowns.length} towns`;
+        wrongEl.textContent = `labelled as another town: ${wrong}`;
+        wrongEl.classList.toggle('is-zero', wrong === 0);
+
+        if (!check) {
+          noteEl.textContent = `Without the name check, the 50 km circle is the only filter, and ${keptTowns.length} towns fall inside it: Ferizaj, Gjilan and Mitrovicë photos would all show up in the Pristina event.`;
+        } else if (radius === 30) {
+          noteEl.textContent = `The name check removes every photo with another town's label. But at a 30 km suburb radius, ${absorbed.length} towns are labelled Pristina, including Podujeva (26 km away) and Glogovac (23 km), so they stay in the event by design.`;
+        } else {
+          noteEl.textContent = `At 20 km only Obiliq and Lipljan fold into Pristina. Podujeva, Glogovac and Shtime keep their own names and their own events, and Kamenica is Kosovo again, because the country vote uses the same radius.`;
+        }
+      }
+
+      radiusBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          radius = Number(btn.dataset.radius);
+          radiusBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+      checkBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          check = btn.dataset.check === 'on';
+          checkBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-srm]').forEach(initSuburbReachMap);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .srm__bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-4);
+  }
+  .srm__ctl {
+    display: grid;
+    gap: 4px;
+  }
+  .srm__stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-block: var(--sp-3);
+  }
+  .srm__stats .is-zero {
+    --c: var(--fg-faint);
+  }
+
+  .srm__map {
+    padding: 6px;
+    overflow: hidden;
+  }
+  .srm__stage {
+    position: relative;
+    width: 100%;
+  }
+  .srm__stage svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+  .srm__net {
+    fill: color-mix(in srgb, var(--viz-meta) 6%, transparent);
+    stroke: var(--viz-meta);
+    stroke-width: 1.4;
+    stroke-dasharray: 6 4;
+    vector-effect: non-scaling-stroke;
+  }
+  .srm__photo {
+    fill: var(--fg-faint);
+    opacity: 0.45;
+    transition:
+      fill 0.25s var(--ease),
+      opacity 0.25s var(--ease);
+  }
+  .srm__photo.is-kept {
+    fill: var(--viz-sound);
+    opacity: 1;
+  }
+  .srm__photo.is-wrong {
+    fill: var(--viz-bad);
+    opacity: 1;
+  }
+  .srm__anchor circle:first-child {
+    fill: color-mix(in srgb, var(--viz-sound) 18%, transparent);
+    stroke: var(--viz-sound);
+    stroke-width: 1.2;
+    vector-effect: non-scaling-stroke;
+  }
+  .srm__anchor circle:last-child {
+    fill: var(--viz-sound);
+  }
+
+  .srm__town {
+    position: absolute;
+    display: grid;
+    line-height: 1.15;
+    font-size: 11px;
+    color: var(--fg-muted);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .srm__town b {
+    font-weight: 600;
+  }
+  .srm__town small {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--viz-sound-text);
+  }
+  .srm__town.is-kept b {
+    color: var(--fg);
+  }
+  .srm__town.is-foreign small {
+    color: var(--viz-bad);
+    font-weight: 600;
+  }
+  .srm__town--r {
+    transform: translate(9px, -50%);
+  }
+  .srm__town--l {
+    transform: translate(calc(-100% - 9px), -50%);
+    text-align: right;
+  }
+  .srm__town--t {
+    transform: translate(-50%, calc(-100% - 8px));
+    text-align: center;
+  }
+  .srm__town--b {
+    transform: translate(-50%, 8px);
+    text-align: center;
+  }
+
+  .srm__note {
+    margin: var(--sp-3) 0 0;
+    padding: var(--sp-3) var(--sp-4);
+    min-height: 4.6rem;
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--viz-meta);
+    border-radius: var(--radius-sm);
+  }
+  .srm__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 560px) {
+    .srm__town {
+      font-size: 9.5px;
+    }
+    .srm__town small {
+      font-size: 8.5px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .srm__photo {
+      transition: none;
+    }
+  }
+</style>
