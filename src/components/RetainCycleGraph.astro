@@ -1,0 +1,823 @@
+---
+/**
+ * A pushed screen as an object graph: the navigation stack owns the view
+ * controller, which owns its view model, which owns an onUpdate closure and a
+ * repeating timer. The reader picks how the closure and the timer block
+ * capture self, whether the timer is invalidated when the screen disappears,
+ * and pops the screen. ARC is simulated the way it works: an object is freed
+ * when no live object holds a strong reference to it, so a cycle that nothing
+ * else reaches stays alive (leaked), and anything the run loop still reaches
+ * stays alive too (abandoned, invisible to leak detection).
+ *
+ * The rules match small Swift 6 programs run on macOS 26: a scheduled timer
+ * keeps its block until invalidated, invalidate() releases it, and reading an
+ * unowned reference after deinit traps.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Pop the screen with each combination. Freed objects fade out. An object kept alive only by its own cycle is leaked: nothing reaches it, and the Leaks instrument can find it. An object the run loop still reaches is abandoned: reachable, never used again, and invisible to leak detection.',
+} = Astro.props;
+
+interface Node {
+  id: string;
+  name: string;
+  role: string;
+  kind: 'root' | 'object' | 'boundary';
+}
+const NODES: Node[] = [
+  { id: 'nav', name: 'Navigation stack', role: 'root', kind: 'root' },
+  { id: 'loop', name: 'Main run loop', role: 'root', kind: 'root' },
+  {
+    id: 'vc',
+    name: 'Profile<wbr>View<wbr>Controller',
+    role: 'the screen',
+    kind: 'object',
+  },
+  { id: 'tm', name: 'Timer', role: 'repeats every 1 s', kind: 'boundary' },
+  {
+    id: 'vm',
+    name: 'Profile<wbr>View<wbr>Model',
+    role: 'owned by the screen',
+    kind: 'object',
+  },
+  {
+    id: 'cl',
+    name: 'onUpdate closure',
+    role: 'stored on the view model',
+    kind: 'boundary',
+  },
+];
+
+interface Edge {
+  id: string;
+  from: string;
+  to: string;
+  label: string;
+}
+const EDGES: Edge[] = [
+  { id: 'e1', from: 'nav', to: 'vc', label: 'viewControllers' },
+  { id: 'e2', from: 'vc', to: 'vm', label: 'viewModel' },
+  { id: 'e3', from: 'vm', to: 'cl', label: 'onUpdate' },
+  { id: 'e4', from: 'cl', to: 'vc', label: 'captures self' },
+  { id: 'e5', from: 'loop', to: 'tm', label: 'scheduled timer' },
+  { id: 'e6', from: 'vm', to: 'tm', label: 'timer property' },
+  { id: 'e7', from: 'tm', to: 'vm', label: 'block captures self' },
+];
+const plainName = (n: Node) => n.name.replace(/<wbr>/g, '');
+const nodeNames = Object.fromEntries(NODES.map((n) => [n.id, plainName(n)]));
+---
+
+<VizFrame
+  fig="02"
+  title="Pop the screen: what ARC can free"
+  caption={caption}
+  class="rcg"
+  data-rcg
+>
+  <div class="rcg__controls">
+    <div class="rcg__ctl">
+      <span class="viz-label">onUpdate captures self</span>
+      <div class="viz-seg" role="group" aria-label="onUpdate captures self">
+        <button type="button" aria-pressed="true" data-closure="strong"
+          >strong</button
+        >
+        <button type="button" aria-pressed="false" data-closure="weak"
+          >weak</button
+        >
+        <button type="button" aria-pressed="false" data-closure="unowned"
+          >unowned</button
+        >
+      </div>
+    </div>
+    <div class="rcg__ctl">
+      <span class="viz-label">timer block captures self</span>
+      <div class="viz-seg" role="group" aria-label="Timer block captures self">
+        <button type="button" aria-pressed="true" data-timer="strong"
+          >strong</button
+        >
+        <button type="button" aria-pressed="false" data-timer="weak"
+          >weak</button
+        >
+      </div>
+    </div>
+    <div class="rcg__ctl">
+      <span class="viz-label">timer, when the screen disappears</span>
+      <div class="viz-seg" role="group" aria-label="Timer on disappear">
+        <button type="button" aria-pressed="true" data-stop="running"
+          >keeps running</button
+        >
+        <button type="button" aria-pressed="false" data-stop="invalidated"
+          >stop() invalidates</button
+        >
+      </div>
+    </div>
+    <button type="button" class="viz-btn viz-btn--primary" data-pop
+      >Pop the screen</button
+    >
+  </div>
+
+  <div class="rcg__map" data-map>
+    <svg class="rcg__wires" data-wires aria-hidden="true"></svg>
+    {
+      NODES.map((n) => (
+        <div
+          class:list={['rcg__node', 'viz-panel', `rcg__node--${n.kind}`]}
+          data-node={n.id}
+        >
+          <span class="rcg__name viz-mono" set:html={n.name} />
+          <span class="rcg__role">{n.role}</span>
+          <span class="viz-chip rcg__state" data-state />
+        </div>
+      ))
+    }
+    {
+      EDGES.map((e, i) => (
+        <span class="rcg__badge viz-mono" data-badge={e.id} aria-hidden="true">
+          {i + 1}
+        </span>
+      ))
+    }
+  </div>
+
+  <ol class="rcg__refs" aria-label="References">
+    {
+      EDGES.map((e, i) => (
+        <li data-ref={e.id}>
+          <span class="rcg__num viz-mono">{i + 1}</span>
+          <span class="rcg__path">
+            {nodeNames[e.from]} → {nodeNames[e.to]}
+            <span class="rcg__why"> · {e.label}</span>
+          </span>
+          <span class="viz-chip" data-kind />
+        </li>
+      ))
+    }
+  </ol>
+
+  <div class="rcg__verdict viz-panel" aria-live="polite">
+    <p class="rcg__headline" data-headline></p>
+    <p class="rcg__detail" data-detail></p>
+    <div class="rcg__tools">
+      <span class="viz-label">Leaks instrument</span>
+      <span class="viz-chip" data-leaks></span>
+      <span class="viz-label">memory graph</span>
+      <span class="viz-chip" data-graph></span>
+    </div>
+  </div>
+
+  <div class="viz-legend rcg__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-meta)"></i>strong reference</span>
+    <span
+      ><i style="--c:transparent;border:1.5px dashed var(--viz-meta);width:12px"
+      ></i>weak or unowned</span
+    >
+    <span><i style="--c:var(--viz-bad)"></i>kept alive after the pop</span>
+    <span><i style="--c:var(--viz-net)"></i>closure or timer</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-rcg-data
+    set:html={JSON.stringify({ edges: EDGES, names: nodeNames })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const NS = 'http://www.w3.org/2000/svg';
+    const ROOTS = ['nav', 'loop'];
+    const OBJECTS = ['vc', 'vm', 'cl', 'tm'];
+
+    /**
+     * Which references exist and how strong they are, for one configuration.
+     * Popping removes the stack's reference; stop() invalidates the timer,
+     * which removes the run loop's reference and releases the block.
+     */
+    function references(cfg, edges) {
+      return edges.map((e) => {
+        let kind = 'strong';
+        if (e.id === 'e4') kind = cfg.closure;
+        if (e.id === 'e7') kind = cfg.timer;
+        let gone = false;
+        if (cfg.popped && e.id === 'e1') gone = true;
+        if (cfg.popped && cfg.stop === 'invalidated') {
+          if (e.id === 'e5' || e.id === 'e7') gone = true;
+        }
+        return { ...e, kind, gone };
+      });
+    }
+
+    /** ARC, simulated: free anything no live object holds strongly. */
+    function simulate(refs) {
+      const alive = new Set([...ROOTS, ...OBJECTS]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        OBJECTS.forEach((id) => {
+          if (!alive.has(id)) return;
+          const held = refs.some(
+            (r) =>
+              !r.gone &&
+              r.kind === 'strong' &&
+              r.to === id &&
+              alive.has(r.from),
+          );
+          if (!held) {
+            alive.delete(id);
+            changed = true;
+          }
+        });
+      }
+      const reached = new Set(ROOTS);
+      changed = true;
+      while (changed) {
+        changed = false;
+        refs.forEach((r) => {
+          if (r.gone || r.kind !== 'strong') return;
+          if (reached.has(r.from) && !reached.has(r.to)) {
+            reached.add(r.to);
+            changed = true;
+          }
+        });
+      }
+      return { alive, reached };
+    }
+
+    function describe(cfg, sim, names) {
+      const { alive, reached } = sim;
+      if (!cfg.popped) {
+        return {
+          headline: 'The screen is on screen. Everything is alive and in use.',
+          detail:
+            'Pick how each closure captures self and what happens on disappear, then pop the screen.',
+          leaks: ['nothing to report', ''],
+          graph: ['1 of each', ''],
+        };
+      }
+      const kept = OBJECTS.filter((id) => alive.has(id));
+      const leaked = kept.filter((id) => !reached.has(id));
+      const abandoned = kept.filter((id) => reached.has(id));
+      const list = (ids) => ids.map((id) => names[id]).join(', ');
+      const timerFiring = alive.has('tm') && cfg.stop === 'running';
+      const dangling =
+        cfg.closure === 'unowned' && !alive.has('vc') && alive.has('cl');
+
+      let headline = '';
+      const detail = [];
+      if (dangling && timerFiring) {
+        headline =
+          'Crash on the next tick. The controller is gone, but the closure still points at it.';
+        detail.push(
+          'The timer keeps the view model alive and calls onUpdate every second. The closure reads its unowned self, which has already been deinitialized, and the app traps: “Attempted to read an unowned reference but object was already destroyed”.',
+        );
+      } else if (kept.length === 0) {
+        headline = 'Everything the screen created is freed.';
+        detail.push(
+          'deinit runs for the controller and the view model, the closure is released with the view model, and the invalidated timer is released by the run loop.',
+        );
+      } else if (kept.length === 1 && kept[0] === 'tm') {
+        headline = 'The screen is freed, but its timer is not.';
+        detail.push(
+          'The weak capture let the view model go, so deinit ran. The timer was never invalidated, so the run loop keeps it and it fires every second with self == nil, forever.',
+        );
+      } else if (leaked.length && !abandoned.length) {
+        headline = `Leaked: ${list(leaked)}.`;
+        detail.push(
+          'Nothing outside reaches them any more, but they hold each other: the controller owns the view model, the view model owns the closure, the closure owns the controller. Every count stays at 1, so no deinit ever runs.',
+        );
+      } else if (leaked.length) {
+        headline = `Leaked: ${list(leaked)}. Abandoned: ${list(abandoned)}.`;
+        detail.push(
+          `${list(leaked)} hold each other in a cycle that nothing else reaches, which leak detection can find. ${list(abandoned)} is still reachable from the run loop, so it is abandoned instead: it fires every second with self == nil.`,
+        );
+      } else {
+        headline = `Still alive: ${list(kept)}.`;
+        detail.push(
+          'None of it is a leak in the strict sense: the run loop still reaches the timer, and the timer reaches the rest. This is abandoned memory. It counts against the footprint and will never be used again.',
+        );
+      }
+
+      const leaksChip = leaked.length
+        ? [
+            `flags ${leaked.length} object${leaked.length === 1 ? '' : 's'}`,
+            'bad',
+          ]
+        : kept.length
+          ? ['silent: all reachable', 'level']
+          : ['nothing to report', ''];
+      const graphChip = kept.some((id) => id === 'vc' || id === 'vm')
+        ? ['one more instance per push', 'bad']
+        : kept.length
+          ? ['one more Timer per push', 'bad']
+          : ['0 after the pop', ''];
+      return {
+        headline,
+        detail: detail.join(' '),
+        leaks: leaksChip,
+        graph: graphChip,
+      };
+    }
+
+    function initGraph(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-rcg-data]').textContent,
+      );
+      const map = root.querySelector('[data-map]');
+      const svg = root.querySelector('[data-wires]');
+      const popBtn = root.querySelector('[data-pop]');
+      const nodeEls = new Map(
+        [...root.querySelectorAll('[data-node]')].map((el) => [
+          el.dataset.node,
+          el,
+        ]),
+      );
+      const badgeEls = new Map(
+        [...root.querySelectorAll('[data-badge]')].map((el) => [
+          el.dataset.badge,
+          el,
+        ]),
+      );
+      const refEls = new Map(
+        [...root.querySelectorAll('[data-ref]')].map((el) => [
+          el.dataset.ref,
+          el,
+        ]),
+      );
+      const out = {
+        headline: root.querySelector('[data-headline]'),
+        detail: root.querySelector('[data-detail]'),
+        leaks: root.querySelector('[data-leaks]'),
+        graph: root.querySelector('[data-graph]'),
+      };
+
+      const cfg = {
+        closure: 'strong',
+        timer: 'strong',
+        stop: 'running',
+        popped: false,
+      };
+      let refs = [];
+      let sim = null;
+
+      function bindSeg(attr, key) {
+        const btns = [...root.querySelectorAll(`[data-${attr}]`)];
+        btns.forEach((btn) =>
+          btn.addEventListener('click', () => {
+            cfg[key] = btn.dataset[attr];
+            btns.forEach((b) =>
+              b.setAttribute('aria-pressed', String(b === btn)),
+            );
+            render();
+          }),
+        );
+      }
+      bindSeg('closure', 'closure');
+      bindSeg('timer', 'timer');
+      bindSeg('stop', 'stop');
+      popBtn.addEventListener('click', () => {
+        cfg.popped = !cfg.popped;
+        render();
+      });
+
+      /** Anchor points on a node's box, relative to the map. */
+      function box(id) {
+        const m = map.getBoundingClientRect();
+        const r = nodeEls.get(id).getBoundingClientRect();
+        return {
+          l: r.left - m.left,
+          r: r.right - m.left,
+          t: r.top - m.top,
+          b: r.bottom - m.top,
+          cx: r.left - m.left + r.width / 2,
+          cy: r.top - m.top + r.height / 2,
+          w: r.width,
+          h: r.height,
+        };
+      }
+
+      /** Cubic path [start, c1, c2, end] for each edge, by layout role. */
+      function geometry(id) {
+        const g = (a, c1, c2, b) => [a, c1, c2, b];
+        const nav = box('nav');
+        const loop = box('loop');
+        const vc = box('vc');
+        const vm = box('vm');
+        const cl = box('cl');
+        const tm = box('tm');
+        switch (id) {
+          case 'e1':
+          case 'e2':
+          case 'e3': {
+            const [a, b] =
+              id === 'e1' ? [nav, vc] : id === 'e2' ? [vc, vm] : [vm, cl];
+            const x = a.cx + 10;
+            return g([x, a.b], [x, a.b + 8], [x, b.t - 8], [x, b.t]);
+          }
+          case 'e4': {
+            const out = Math.max(6, vc.l - 18);
+            return g([cl.l, cl.cy], [out, cl.cy], [out, vc.cy], [vc.l, vc.cy]);
+          }
+          case 'e5': {
+            const x = loop.cx;
+            return g([x, loop.b], [x, loop.b + 8], [x, tm.t - 8], [x, tm.t]);
+          }
+          case 'e6': {
+            const a = [vm.r, vm.cy - 7];
+            const b = [tm.l + tm.w * 0.3, tm.b];
+            return g(a, [b[0], a[1]], [b[0], a[1]], b);
+          }
+          case 'e7': {
+            const a = [tm.l + tm.w * 0.62, tm.b];
+            const b = [vm.r, vm.cy + 9];
+            return g(a, [a[0], b[1]], [a[0], b[1]], b);
+          }
+          default:
+            return g([0, 0], [0, 0], [0, 0], [0, 0]);
+        }
+      }
+
+      const at = (p, t) => {
+        const [a, b, c, d] = p;
+        const u = 1 - t;
+        return [0, 1].map(
+          (i) =>
+            u * u * u * a[i] +
+            3 * u * u * t * b[i] +
+            3 * u * t * t * c[i] +
+            t * t * t * d[i],
+        );
+      };
+
+      function draw() {
+        const m = map.getBoundingClientRect();
+        if (!m.width || !sim) return;
+        svg.setAttribute('viewBox', `0 0 ${m.width} ${m.height}`);
+        svg.setAttribute('width', String(m.width));
+        svg.setAttribute('height', String(m.height));
+        svg.replaceChildren();
+        refs.forEach((r) => {
+          const p = geometry(r.id);
+          const [a, c1, c2, b] = p;
+          const fmt = (pt) => `${pt[0].toFixed(1)} ${pt[1].toFixed(1)}`;
+          const cls = ['rcg__wire', `rcg__wire--${r.kind}`];
+          const live = sim.alive.has(r.from) && !r.gone;
+          if (r.gone || !live) cls.push('is-gone');
+          else if (cfg.popped && r.kind === 'strong' && !ROOTS.includes(r.from))
+            cls.push('is-kept');
+          if (
+            cfg.popped &&
+            r.kind === 'unowned' &&
+            live &&
+            !sim.alive.has(r.to)
+          )
+            cls.push('is-dangling');
+
+          const path = document.createElementNS(NS, 'path');
+          path.setAttribute('d', `M${fmt(a)} C${fmt(c1)} ${fmt(c2)} ${fmt(b)}`);
+          path.setAttribute('class', cls.join(' '));
+          svg.appendChild(path);
+
+          // Arrowhead along the last control segment.
+          const dx = b[0] - c2[0] || b[0] - a[0];
+          const dy = b[1] - c2[1] || b[1] - a[1];
+          const len = Math.hypot(dx, dy) || 1;
+          const ux = dx / len;
+          const uy = dy / len;
+          const s = 6;
+          const head = document.createElementNS(NS, 'path');
+          head.setAttribute(
+            'd',
+            `M${(b[0] - ux * s - uy * s * 0.6).toFixed(1)} ${(b[1] - uy * s + ux * s * 0.6).toFixed(1)} L${b[0].toFixed(1)} ${b[1].toFixed(1)} L${(b[0] - ux * s + uy * s * 0.6).toFixed(1)} ${(b[1] - uy * s - ux * s * 0.6).toFixed(1)}`,
+          );
+          head.setAttribute('class', `${cls.join(' ')} rcg__head`);
+          svg.appendChild(head);
+
+          const mid = at(p, r.id === 'e4' ? 0.5 : 0.45);
+          const badge = badgeEls.get(r.id);
+          badge.style.left = `${mid[0]}px`;
+          badge.style.top = `${mid[1]}px`;
+          badge.classList.toggle('is-gone', r.gone || !live);
+        });
+      }
+
+      function chip(el, [text, tone]) {
+        el.textContent = text;
+        el.className = `viz-chip${tone ? ` viz-chip--${tone}` : ''}`;
+      }
+
+      function render() {
+        refs = references(cfg, data.edges);
+        sim = simulate(refs);
+        popBtn.textContent = cfg.popped ? 'Push it again' : 'Pop the screen';
+        root.dataset.popped = cfg.popped ? '1' : '0';
+
+        nodeEls.forEach((el, id) => {
+          const state = el.querySelector('[data-state]');
+          if (ROOTS.includes(id)) {
+            chip(state, ['root', 'meta']);
+            el.classList.remove('is-freed', 'is-kept');
+            return;
+          }
+          const alive = sim.alive.has(id);
+          const kept = cfg.popped && alive;
+          el.classList.toggle('is-freed', !alive);
+          el.classList.toggle('is-kept', kept);
+          if (!alive) chip(state, ['freed', '']);
+          else if (!cfg.popped) chip(state, ['alive', 'sound']);
+          else if (sim.reached.has(id)) chip(state, ['abandoned', 'bad']);
+          else chip(state, ['leaked', 'bad']);
+        });
+
+        refs.forEach((r) => {
+          const li = refEls.get(r.id);
+          const kind = li.querySelector('[data-kind]');
+          const fromAlive = sim.alive.has(r.from);
+          let text = r.kind;
+          let tone = 'meta';
+          if (r.gone) {
+            text =
+              r.id === 'e1' ? 'removed by the pop' : 'released by invalidate()';
+            tone = '';
+          } else if (!fromAlive) {
+            text = `${r.kind}, freed`;
+            tone = '';
+          } else if (
+            r.kind !== 'strong' &&
+            cfg.popped &&
+            !sim.alive.has(r.to)
+          ) {
+            text = r.kind === 'weak' ? 'weak → nil' : 'unowned → dangling';
+            tone = r.kind === 'weak' ? '' : 'bad';
+          } else if (
+            cfg.popped &&
+            r.kind === 'strong' &&
+            !ROOTS.includes(r.from)
+          ) {
+            tone = 'bad';
+          }
+          kind.textContent = text;
+          kind.className = `viz-chip${tone ? ` viz-chip--${tone}` : ''}`;
+          li.classList.toggle('is-gone', r.gone || !fromAlive);
+        });
+
+        const d = describe(cfg, sim, data.names);
+        out.headline.textContent = d.headline;
+        out.detail.textContent = d.detail;
+        chip(out.leaks, d.leaks);
+        chip(out.graph, d.graph);
+        draw();
+      }
+
+      render();
+      if ('ResizeObserver' in window) new ResizeObserver(draw).observe(map);
+      else window.addEventListener('resize', draw);
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-rcg]').forEach(initGraph);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .rcg__controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-4);
+  }
+  .rcg__ctl {
+    display: grid;
+    gap: 5px;
+  }
+  .rcg__controls .viz-btn {
+    margin-left: auto;
+  }
+  @media (max-width: 560px) {
+    .rcg__controls .viz-btn {
+      margin-left: 0;
+      width: 100%;
+    }
+  }
+
+  .rcg__map {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      'nav loop'
+      'vc tm'
+      'vm .'
+      'cl .';
+    gap: 34px clamp(20px, 7vw, 72px);
+    padding: 4px 4px 4px 30px;
+  }
+  .rcg__wires {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: visible;
+  }
+  .rcg__node {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    gap: 3px;
+    align-content: start;
+    justify-items: start;
+    padding: 8px 10px;
+    transition:
+      opacity 0.25s var(--ease),
+      border-color 0.25s var(--ease);
+  }
+  .rcg__node[data-node='nav'] {
+    grid-area: nav;
+  }
+  .rcg__node[data-node='loop'] {
+    grid-area: loop;
+  }
+  .rcg__node[data-node='vc'] {
+    grid-area: vc;
+  }
+  .rcg__node[data-node='tm'] {
+    grid-area: tm;
+  }
+  .rcg__node[data-node='vm'] {
+    grid-area: vm;
+  }
+  .rcg__node[data-node='cl'] {
+    grid-area: cl;
+  }
+  .rcg__name {
+    font-weight: 600;
+    font-size: 12px;
+    line-height: 1.25;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .rcg__node--object .rcg__name {
+    color: var(--viz-sound-text);
+  }
+  .rcg__node--boundary .rcg__name {
+    color: var(--viz-net);
+  }
+  .rcg__node--root {
+    background: color-mix(in srgb, var(--viz-meta) 6%, var(--viz-panel));
+  }
+  .rcg__role {
+    font-size: var(--fs-xs);
+    line-height: 1.3;
+    color: var(--fg-muted);
+  }
+  .rcg__state {
+    margin-top: 3px;
+  }
+  .rcg__node.is-freed {
+    opacity: 0.4;
+    border-style: dashed;
+  }
+  .rcg__node.is-kept {
+    border-color: color-mix(in srgb, var(--viz-bad) 60%, transparent);
+  }
+
+  .rcg__wires :global(.rcg__wire) {
+    fill: none;
+    stroke: var(--viz-meta);
+    stroke-width: 1.75;
+    transition:
+      stroke 0.2s var(--ease),
+      opacity 0.2s var(--ease);
+  }
+  .rcg__wires :global(.rcg__wire--weak) {
+    stroke-dasharray: 5 4;
+  }
+  .rcg__wires :global(.rcg__wire--unowned) {
+    stroke-dasharray: 1.5 3.5;
+    stroke-linecap: round;
+  }
+  .rcg__wires :global(.rcg__wire.is-kept) {
+    stroke: var(--viz-bad);
+    stroke-width: 2.25;
+  }
+  .rcg__wires :global(.rcg__wire.is-dangling) {
+    stroke: var(--viz-bad);
+  }
+  .rcg__wires :global(.rcg__wire.is-gone) {
+    stroke: var(--fg-faint);
+    opacity: 0.35;
+  }
+  .rcg__wires :global(.rcg__head) {
+    stroke-dasharray: none;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+  }
+
+  .rcg__badge {
+    position: absolute;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    transform: translate(-50%, -50%);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--viz-meta);
+    background: var(--viz-panel);
+    border: 1px solid color-mix(in srgb, var(--viz-meta) 50%, transparent);
+    border-radius: 50%;
+    pointer-events: none;
+  }
+  .rcg__badge.is-gone {
+    opacity: 0.4;
+  }
+
+  .rcg__refs {
+    display: grid;
+    gap: 4px;
+    margin-top: var(--sp-4) !important;
+  }
+  .rcg__refs li {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    font-size: var(--fs-xs);
+    line-height: 1.35;
+    color: var(--fg);
+    transition: opacity 0.2s var(--ease);
+  }
+  .rcg__refs li.is-gone {
+    opacity: 0.55;
+  }
+  .rcg__num {
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--viz-meta);
+  }
+  .rcg__why {
+    color: var(--fg-muted);
+  }
+  @media (max-width: 480px) {
+    .rcg__refs li {
+      grid-template-columns: 20px minmax(0, 1fr);
+    }
+    .rcg__refs li .viz-chip {
+      grid-column: 2;
+      justify-self: start;
+    }
+  }
+
+  .rcg__verdict {
+    display: grid;
+    gap: 6px;
+    margin-top: var(--sp-4);
+    padding: var(--sp-3);
+  }
+  [data-popped='1'] .rcg__verdict {
+    border-color: var(--border-strong);
+  }
+  .rcg__headline {
+    margin: 0;
+    font-weight: 600;
+    font-size: var(--fs-sm);
+    line-height: 1.4;
+    color: var(--fg);
+  }
+  .rcg__detail {
+    margin: 0;
+    min-height: 2.8em;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+  .rcg__tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--border);
+  }
+  .rcg__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rcg__node,
+    .rcg__refs li,
+    .rcg__wires :global(.rcg__wire) {
+      transition: none;
+    }
+  }
+</style>

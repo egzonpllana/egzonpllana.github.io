@@ -1,0 +1,564 @@
+---
+/**
+ * Memory over ten minutes of tab switching, before and after the fixes.
+ * Each switch builds the tab's screen (a short spike) and then settles. With
+ * the leak, the floor it settles to is 10 to 15 MB higher every time: a
+ * staircase. With the fixes it settles 1 to 2 MB higher. The marker toggle
+ * shows what a sampler sees: a reading every 60 seconds shows the trend,
+ * a reading at each switch ties it to the action that causes it.
+ *
+ * The baseline (196 MB), the per-switch ranges and the ten-minute totals
+ * (about 310 and 211 MB) are the measurements from the article. The switch
+ * times, the individual steps inside those ranges and the spike height are
+ * illustrative.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Each tab switch builds a screen, so memory spikes and settles. What matters is where it settles. With the leak, every switch leaves 10 to 15 MB behind and the floor climbs like a staircase; with the fixes, it leaves 1 to 2 MB. Baseline and totals are measured; switch times and spike height are illustrative.',
+} = Astro.props;
+
+const BASE = 196;
+const SPIKE = 14;
+const SWITCH_AT = [0.4, 0.9, 1.6, 2.7, 3.2, 4.6, 5.3, 6.8, 8.0, 9.2];
+const LEAK_STEPS = [12, 10, 14, 11, 13, 10, 12, 11, 12, 10];
+const FIXED_STEPS = [2, 1, 2, 1, 2, 1, 2, 1, 2, 1];
+const MINUTES = 10;
+const Y_MIN = 180;
+const Y_MAX = 330;
+
+type Point = [number, number];
+
+/** The settled level after each switch, starting from the baseline. */
+function levels(steps: number[]): number[] {
+  const out = [BASE];
+  steps.forEach((s, i) => out.push(out[i] + s));
+  return out;
+}
+
+/** Polyline for one series: flat, spike at each switch, settle a bit higher. */
+function series(steps: number[]): Point[] {
+  const lv = levels(steps);
+  const pts: Point[] = [[0, BASE]];
+  SWITCH_AT.forEach((t, i) => {
+    pts.push([t, lv[i]]);
+    pts.push([t + 0.04, lv[i] + SPIKE]);
+    pts.push([t + 0.16, lv[i + 1]]);
+  });
+  pts.push([MINUTES, lv[lv.length - 1]]);
+  return pts;
+}
+
+const data = {
+  minutes: MINUTES,
+  yMin: Y_MIN,
+  yMax: Y_MAX,
+  switchAt: SWITCH_AT,
+  leak: { points: series(LEAK_STEPS), levels: levels(LEAK_STEPS) },
+  fixed: { points: series(FIXED_STEPS), levels: levels(FIXED_STEPS) },
+};
+
+const Y_TICKS = [200, 250, 300];
+const X_TICKS = [0, 2, 4, 6, 8, 10];
+const yPct = (mb: number) => ((Y_MAX - mb) / (Y_MAX - Y_MIN)) * 100;
+---
+
+<VizFrame
+  fig="01"
+  title="Ten minutes of tab switches, with the leak and with the fixes"
+  caption={caption}
+  class="tsm"
+  data-tsm
+>
+  <div slot="tools">
+    <AnimControls label="Switches" />
+  </div>
+
+  <div class="tsm__bar">
+    <span class="viz-label">readings</span>
+    <div class="viz-seg" role="group" aria-label="Memory readings">
+      <button type="button" aria-pressed="true" data-marks="none">none</button>
+      <button type="button" aria-pressed="false" data-marks="timer"
+        >every 60 s</button
+      >
+      <button type="button" aria-pressed="false" data-marks="event"
+        >per switch</button
+      >
+    </div>
+  </div>
+
+  <div class="tsm__plot">
+    <div class="tsm__yaxis" aria-hidden="true">
+      {
+        Y_TICKS.map((v) => (
+          <span class="viz-mono" style={`top:${yPct(v)}%`}>
+            {v}
+          </span>
+        ))
+      }
+      <span class="tsm__unit viz-label">MB</span>
+    </div>
+    <div class="tsm__chart" data-chart>
+      <svg
+        class="tsm__svg"
+        viewBox="0 0 1000 400"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        {
+          Y_TICKS.map((v) => (
+            <line
+              class="tsm__grid"
+              x1="0"
+              x2="1000"
+              y1={yPct(v) * 4}
+              y2={yPct(v) * 4}
+              vector-effect="non-scaling-stroke"
+            />
+          ))
+        }
+        <line
+          class="tsm__base"
+          x1="0"
+          x2="1000"
+          y1={yPct(BASE) * 4}
+          y2={yPct(BASE) * 4}
+          vector-effect="non-scaling-stroke"></line>
+        <polyline
+          class="tsm__line tsm__line--fixed"
+          data-line="fixed"
+          vector-effect="non-scaling-stroke"></polyline>
+        <polyline
+          class="tsm__line tsm__line--leak"
+          data-line="leak"
+          vector-effect="non-scaling-stroke"></polyline>
+      </svg>
+      <div class="tsm__switches" data-switches aria-hidden="true">
+        {SWITCH_AT.map((t) => <i style={`left:${(t / MINUTES) * 100}%`} />)}
+      </div>
+      <div class="tsm__marks" data-marklayer aria-hidden="true"></div>
+      <span
+        class="tsm__baselabel viz-mono"
+        style={`top:${yPct(BASE)}%`}
+        aria-hidden="true">baseline 196</span
+      >
+    </div>
+    <div class="tsm__xaxis" aria-hidden="true">
+      {
+        X_TICKS.map((v) => (
+          <span class="viz-mono" style={`left:${(v / MINUTES) * 100}%`}>
+            {v}
+          </span>
+        ))
+      }
+    </div>
+    <span class="tsm__xunit viz-label" aria-hidden="true">minutes</span>
+  </div>
+
+  <div class="tsm__scrub">
+    <label class="viz-label" for="tsm-range">tab switches</label>
+    <input
+      id="tsm-range"
+      type="range"
+      min="0"
+      max={SWITCH_AT.length}
+      step="1"
+      value={SWITCH_AT.length}
+      data-scrub
+    />
+    <span class="viz-mono tsm__count" data-count></span>
+  </div>
+
+  <dl class="tsm__read" aria-live="polite">
+    <div class="viz-panel tsm__cell tsm__cell--leak">
+      <dt class="viz-label">with the leak</dt>
+      <dd><b class="viz-mono" data-val="leak"></b></dd>
+    </div>
+    <div class="viz-panel tsm__cell tsm__cell--fixed">
+      <dt class="viz-label">with the fixes</dt>
+      <dd><b class="viz-mono" data-val="fixed"></b></dd>
+    </div>
+    <div class="viz-panel tsm__cell">
+      <dt class="viz-label">left behind</dt>
+      <dd><b class="viz-mono" data-val="gap"></b></dd>
+    </div>
+  </dl>
+
+  <p class="tsm__note" data-note></p>
+
+  <div class="viz-legend tsm__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-bad)"></i>with the leak</span>
+    <span><i style="--c:var(--viz-sound)"></i>with the fixes</span>
+    <span><i style="--c:var(--viz-meta)"></i>tab switch</span>
+    <span><i style="--c:var(--viz-level)"></i>a reading</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-tsm-data
+    set:html={JSON.stringify(data)}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = 650;
+    const NOTES = {
+      none: 'Peaks are the screen being built. The floor between switches is what stays.',
+      timer:
+        'A timer reading every 60 seconds sees the floor rising, but not which action raised it: several switches can fall between two readings, and none of the readings lands on a spike.',
+      event:
+        'A reading taken right after each switch puts every step next to the action that caused it. That is what tied the growth to tab switches.',
+    };
+
+    function initStaircase(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-tsm-data]').textContent,
+      );
+      const scrub = root.querySelector('[data-scrub]');
+      const countEl = root.querySelector('[data-count]');
+      const noteEl = root.querySelector('[data-note]');
+      const markLayer = root.querySelector('[data-marklayer]');
+      const switchEls = [...root.querySelectorAll('[data-switches] i')];
+      const markBtns = [...root.querySelectorAll('[data-marks]')];
+      const lines = {
+        leak: root.querySelector('[data-line="leak"]'),
+        fixed: root.querySelector('[data-line="fixed"]'),
+      };
+      const vals = {
+        leak: root.querySelector('[data-val="leak"]'),
+        fixed: root.querySelector('[data-val="fixed"]'),
+        gap: root.querySelector('[data-val="gap"]'),
+      };
+      const last = data.switchAt.length;
+
+      let k = last;
+      let marks = 'none';
+      let playing = false;
+      let timer = 0;
+
+      const x = (t) => (t / data.minutes) * 1000;
+      const y = (mb) => ((data.yMax - mb) / (data.yMax - data.yMin)) * 400;
+      const xPct = (t) => (t / data.minutes) * 100;
+      const yPct = (mb) => ((data.yMax - mb) / (data.yMax - data.yMin)) * 100;
+
+      // The visible part of the timeline ends just before the next switch.
+      const cutoff = (n) =>
+        n >= last ? data.minutes : data.switchAt[n] - 0.02;
+
+      function valueAt(points, t) {
+        let v = points[0][1];
+        for (const [pt, pv] of points) {
+          if (pt > t) break;
+          v = pv;
+        }
+        return v;
+      }
+
+      function draw(name, end) {
+        const pts = data[name].points.filter(([t]) => t <= end);
+        pts.push([end, valueAt(data[name].points, end)]);
+        lines[name].setAttribute(
+          'points',
+          pts
+            .map(([t, v]) => `${x(t).toFixed(1)},${y(v).toFixed(1)}`)
+            .join(' '),
+        );
+      }
+
+      function readings(end) {
+        if (marks === 'none') return [];
+        const times =
+          marks === 'timer'
+            ? Array.from({ length: data.minutes }, (_, i) => i + 1)
+            : data.switchAt.map((t) => t + 0.2);
+        return times.filter((t) => t <= end);
+      }
+
+      function render() {
+        const end = cutoff(k);
+        scrub.value = String(k);
+        countEl.textContent = `${k} of ${last}`;
+        draw('leak', end);
+        draw('fixed', end);
+
+        const leak = data.leak.levels[k];
+        const fixed = data.fixed.levels[k];
+        vals.leak.textContent = `${leak} MB`;
+        vals.fixed.textContent = `${fixed} MB`;
+        vals.gap.textContent = `${leak - fixed} MB`;
+
+        switchEls.forEach((el, i) => el.classList.toggle('is-on', i < k));
+
+        const dots = [];
+        readings(end).forEach((t) => {
+          ['leak', 'fixed'].forEach((name) => {
+            const dot = document.createElement('i');
+            dot.className = 'tsm__dot';
+            dot.style.left = `${xPct(t)}%`;
+            dot.style.top = `${yPct(valueAt(data[name].points, t))}%`;
+            dots.push(dot);
+          });
+        });
+        markLayer.replaceChildren(...dots);
+        noteEl.textContent = NOTES[marks];
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(() => {
+          k += 1;
+          render();
+          if (k >= last) {
+            playing = false;
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          schedule();
+        }, STEP_MS);
+      }
+
+      scrub.addEventListener('input', () => {
+        stop();
+        k = Number(scrub.value);
+        render();
+        root.dispatchEvent(
+          new CustomEvent(k >= last ? 'anim:ended' : 'anim:paused'),
+        );
+      });
+
+      markBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.marks === marks) return;
+          marks = btn.dataset.marks;
+          markBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play() {
+          if (playing) return;
+          if (k >= last) {
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          playing = true;
+          schedule();
+        },
+        pause: stop,
+        reset() {
+          stop();
+          k = 0;
+          render();
+        },
+      });
+
+      // Until it plays (the runtime never autoplays under reduced motion),
+      // rest on all ten switches.
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-tsm]').forEach(initStaircase);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .tsm__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+
+  .tsm__plot {
+    position: relative;
+    padding: 6px 4px 34px 40px;
+  }
+  .tsm__chart {
+    position: relative;
+    height: 220px;
+    border-left: 1px solid var(--viz-line);
+    border-bottom: 1px solid var(--viz-line);
+  }
+  @media (max-width: 560px) {
+    .tsm__chart {
+      height: 180px;
+    }
+  }
+  .tsm__svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+  .tsm__grid {
+    stroke: var(--viz-grid);
+    stroke-width: 1;
+  }
+  .tsm__base {
+    stroke: var(--fg-faint);
+    stroke-width: 1;
+    stroke-dasharray: 3 4;
+  }
+  .tsm__line {
+    fill: none;
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+  }
+  .tsm__line--leak {
+    stroke: var(--viz-bad);
+  }
+  .tsm__line--fixed {
+    stroke: var(--viz-sound);
+  }
+
+  .tsm__switches i {
+    position: absolute;
+    bottom: -5px;
+    width: 2px;
+    height: 9px;
+    margin-left: -1px;
+    border-radius: 1px;
+    background: var(--border-strong);
+    transition: background 0.2s var(--ease);
+  }
+  .tsm__switches i.is-on {
+    background: var(--viz-meta);
+  }
+  .tsm__marks :global(.tsm__dot) {
+    position: absolute;
+    width: 9px;
+    height: 9px;
+    margin: -4.5px 0 0 -4.5px;
+    border-radius: 50%;
+    background: var(--viz-level);
+    box-shadow: 0 0 0 2px var(--viz-panel);
+  }
+  .tsm__baselabel {
+    position: absolute;
+    right: 4px;
+    transform: translateY(4px);
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+
+  .tsm__yaxis span {
+    position: absolute;
+    left: 0;
+    width: 34px;
+    text-align: right;
+    transform: translateY(-50%);
+    font-size: 10.5px;
+    color: var(--fg-muted);
+  }
+  .tsm__yaxis {
+    position: absolute;
+    top: 6px;
+    bottom: 34px;
+    left: 0;
+    width: 36px;
+  }
+  .tsm__yaxis .tsm__unit {
+    top: -4px;
+    transform: none;
+    font-size: 10px;
+  }
+  .tsm__xaxis {
+    position: absolute;
+    left: 40px;
+    right: 4px;
+    bottom: 14px;
+    height: 14px;
+  }
+  .tsm__xaxis span {
+    position: absolute;
+    transform: translateX(-50%);
+    font-size: 10.5px;
+    color: var(--fg-muted);
+  }
+  .tsm__xunit {
+    position: absolute;
+    right: 4px;
+    bottom: 0;
+    font-size: 10px;
+  }
+
+  .tsm__scrub {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-top: var(--sp-2);
+  }
+  .tsm__count {
+    font-size: 11.5px;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+
+  .tsm__read {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-2);
+    margin: var(--sp-3) 0 0;
+  }
+  .tsm__cell {
+    display: grid;
+    gap: 4px;
+    padding: 8px 10px;
+  }
+  .tsm__cell dd {
+    margin: 0;
+  }
+  .tsm__cell b {
+    font-size: 14px;
+    color: var(--fg);
+  }
+  .tsm__cell--leak {
+    border-color: color-mix(in srgb, var(--viz-bad) 45%, transparent);
+  }
+  .tsm__cell--fixed {
+    border-color: color-mix(in srgb, var(--viz-sound) 45%, transparent);
+  }
+
+  .tsm__note {
+    margin: var(--sp-3) 0 0;
+    min-height: 2.9em;
+    font-size: var(--fs-sm);
+    line-height: 1.45;
+    color: var(--fg);
+  }
+  .tsm__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tsm__switches i {
+      transition: none;
+    }
+  }
+</style>

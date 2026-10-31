@@ -1,0 +1,521 @@
+---
+/**
+ * How long six kinds of work keep a view model alive after its screen is
+ * popped, and how long the work itself keeps running. The reader picks the
+ * capture (strong self, [weak self] with guard let self at the top, or
+ * [weak self] checked at each use) and the cleanup (none, in deinit, or on
+ * disappear).
+ *
+ * Every lane follows from an ownership rule: a task holds its closure until
+ * it finishes, the run loop holds a scheduled timer until it is invalidated,
+ * NotificationCenter holds an observer block until it is removed, and an
+ * AnyCancellable cancels its subscription when it is deinitialized. The timer,
+ * task, Combine and observer lanes match small Swift 6 programs run on
+ * macOS 26. The times on the axis are illustrative.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'The screen is popped at 2 s. A capture list decides who keeps self alive; cleanup decides when the work stops. Cleanup in deinit only runs if the capture lets deinit happen. Cleanup on disappear runs regardless, and [weak self] is the safety net for when it is forgotten.',
+} = Astro.props;
+
+type Capture = 'strong' | 'guard' | 'weak';
+type Cleanup = 'none' | 'deinit' | 'disappear';
+interface Span {
+  self: number;
+  work: number;
+  note: string;
+}
+
+const POP = 2;
+const REPLY = 3.5;
+const NEXT = 4.5;
+const NEVER = 99;
+
+interface Lane {
+  id: string;
+  name: string;
+  owner: string;
+  /** Whether this capture holds self for as long as the work runs. */
+  holds: (c: Capture) => boolean;
+  /** Natural end of the work when self is not held. */
+  naturalEnd: number;
+  stopped: string;
+  held: string;
+  heldDeinit: string;
+  free: string;
+  freeDeinit: string;
+}
+
+const LANES: Lane[] = [
+  {
+    id: 'completion',
+    name: 'Completion handler',
+    owner: 'held by the request until it answers',
+    holds: (c) => c === 'strong',
+    naturalEnd: REPLY,
+    stopped:
+      'The request is cancelled on disappear, the handler runs with an error and is released.',
+    held: 'self is kept until the response arrives at 3.5 s, then freed.',
+    heldDeinit:
+      'deinit cannot run before the response arrives, so cancelling the request there changes nothing.',
+    free: 'self is freed at the pop. The request still finishes and its result is dropped.',
+    freeDeinit:
+      'self is freed at the pop, and deinit cancels the request it no longer needs.',
+  },
+  {
+    id: 'task',
+    name: 'Task { } for one request',
+    owner: 'held by the task until it finishes',
+    holds: (c) => c !== 'weak',
+    naturalEnd: REPLY,
+    stopped:
+      'The task is cancelled on disappear; URLSession throws, the task finishes and lets go.',
+    held: 'The task holds self across the await and lets go when it finishes at 3.5 s.',
+    heldDeinit:
+      'deinit cannot run while the task holds self, so the cancel in deinit comes after the work is already done.',
+    free: 'self is freed at the pop. The request still finishes and its result is dropped.',
+    freeDeinit:
+      'self is freed at the pop, and deinit cancels the task, which stops the request.',
+  },
+  {
+    id: 'stream',
+    name: 'Task { for await … }',
+    owner: 'held by the task until the loop ends',
+    holds: (c) => c !== 'weak',
+    naturalEnd: NEXT,
+    stopped: 'Cancelling the task on disappear ends the for await loop.',
+    held: 'The loop never ends, so the task never lets go of self.',
+    heldDeinit:
+      'The loop never ends, and deinit, which would cancel it, never runs.',
+    free: 'self is freed at the pop, but the task stays suspended until the next notification, then notices and returns.',
+    freeDeinit: 'self is freed at the pop, and deinit cancels the task.',
+  },
+  {
+    id: 'timer',
+    name: 'Repeating Timer',
+    owner: 'held by the run loop until invalidated',
+    holds: (c) => c === 'strong',
+    naturalEnd: NEVER,
+    stopped:
+      'stop() invalidates the timer on disappear; the run loop releases it and its block.',
+    held: 'The run loop keeps the timer, the timer keeps its block, the block keeps self.',
+    heldDeinit:
+      'The run loop keeps the timer and the block keeps self, so the invalidate() in deinit never runs.',
+    free: 'self is freed at the pop, but the timer fires every second forever with self == nil.',
+    freeDeinit:
+      'self is freed at the pop, and an isolated deinit invalidates the timer.',
+  },
+  {
+    id: 'sink',
+    name: 'Combine sink in self.cancellables',
+    owner: 'held by self, through its AnyCancellable',
+    holds: (c) => c === 'strong',
+    naturalEnd: POP,
+    stopped:
+      'cancellables.removeAll() on disappear cancels the subscription and breaks the cycle.',
+    held: 'self → cancellables → subscription → closure → self. A cycle.',
+    heldDeinit:
+      'A cycle: deinit, where the AnyCancellable would cancel, never runs.',
+    free: 'self is freed at the pop, and its AnyCancellable cancels the subscription on the way out.',
+    freeDeinit:
+      'self is freed at the pop, and its AnyCancellable cancels the subscription on the way out.',
+  },
+  {
+    id: 'observer',
+    name: 'NotificationCenter block observer',
+    owner: 'held by NotificationCenter until removed',
+    holds: (c) => c === 'strong',
+    naturalEnd: NEVER,
+    stopped:
+      'removeObserver(token) on disappear; NotificationCenter releases the block.',
+    held: 'NotificationCenter keeps the block until it is removed, and the block keeps self.',
+    heldDeinit:
+      'NotificationCenter keeps the block and the block keeps self, so the removeObserver in deinit never runs.',
+    free: 'self is freed at the pop, but the block stays registered and runs on every notification.',
+    freeDeinit: 'self is freed at the pop, and deinit removes the observer.',
+  },
+];
+
+function span(lane: Lane, capture: Capture, cleanup: Cleanup): Span {
+  if (cleanup === 'disappear') {
+    return { self: POP, work: POP, note: lane.stopped };
+  }
+  if (lane.holds(capture)) {
+    const end = lane.naturalEnd === POP ? NEVER : lane.naturalEnd;
+    const work = lane.id === 'stream' ? NEVER : end;
+    return {
+      self: work,
+      work,
+      note: cleanup === 'deinit' ? lane.heldDeinit : lane.held,
+    };
+  }
+  if (cleanup === 'deinit') {
+    return { self: POP, work: POP, note: lane.freeDeinit };
+  }
+  return { self: POP, work: lane.naturalEnd, note: lane.free };
+}
+
+const CAPTURES: Capture[] = ['strong', 'guard', 'weak'];
+const CLEANUPS: Cleanup[] = ['none', 'deinit', 'disappear'];
+const table: Record<string, Span[]> = {};
+CAPTURES.forEach((c) =>
+  CLEANUPS.forEach((u) => {
+    table[`${c}|${u}`] = LANES.map((l) => span(l, c, u));
+  }),
+);
+
+const SPAN = 7; // seconds on the axis; the last one stands for "never"
+const pct = (t: number) => (Math.min(t, SPAN) / SPAN) * 100;
+const MARKS = [
+  { t: 0, label: 'push', row: 0 },
+  { t: POP, label: 'pop', row: 0 },
+  { t: REPLY, label: 'reply', row: 0 },
+  { t: NEXT, label: 'notification', row: 1 },
+];
+---
+
+<VizFrame
+  fig="03"
+  title="How long the work keeps self alive after the pop"
+  caption={caption}
+  class="cll"
+  data-cll
+>
+  <div class="cll__controls">
+    <div class="cll__ctl">
+      <span class="viz-label">capture</span>
+      <div class="viz-seg" role="group" aria-label="Capture">
+        <button type="button" aria-pressed="true" data-capture="strong"
+          >self</button
+        >
+        <button type="button" aria-pressed="false" data-capture="guard"
+          >weak + guard</button
+        >
+        <button type="button" aria-pressed="false" data-capture="weak"
+          >weak</button
+        >
+      </div>
+    </div>
+    <div class="cll__ctl">
+      <span class="viz-label">cleanup</span>
+      <div class="viz-seg" role="group" aria-label="Cleanup">
+        <button type="button" aria-pressed="true" data-cleanup="none"
+          >none</button
+        >
+        <button type="button" aria-pressed="false" data-cleanup="deinit"
+          >in deinit</button
+        >
+        <button type="button" aria-pressed="false" data-cleanup="disappear"
+          >on disappear</button
+        >
+      </div>
+    </div>
+  </div>
+
+  <div class="cll__board">
+    <div class="cll__axis" aria-hidden="true">
+      {
+        MARKS.map((m) => (
+          <span
+            class:list={['viz-mono', 'cll__mark', { 'cll__mark--low': m.row }]}
+            style={`left:${pct(m.t)}%`}
+          >
+            {m.label}
+          </span>
+        ))
+      }
+      <span class="viz-mono cll__mark cll__mark--never">never</span>
+    </div>
+
+    <ol class="cll__lanes">
+      {
+        LANES.map((l, i) => (
+          <li class="cll__lane" data-lane={i}>
+            <div class="cll__head">
+              <span class="cll__name viz-mono">{l.name}</span>
+              <span class="cll__owner">{l.owner}</span>
+            </div>
+            <div class="cll__track" aria-hidden="true">
+              <span class="cll__guides">
+                <i class="cll__never" style={`left:${pct(SPAN - 1)}%`} />
+                <i class="cll__guide" style={`left:${pct(POP)}%`} />
+              </span>
+              <span class="cll__row">
+                <b class="cll__rlabel">self</b>
+                <span class="cll__bar cll__bar--self" data-self>
+                  <span class="cll__after" data-after />
+                </span>
+              </span>
+              <span class="cll__row">
+                <b class="cll__rlabel">work</b>
+                <span class="cll__bar cll__bar--work" data-work />
+              </span>
+            </div>
+            <p class="cll__note" data-note />
+          </li>
+        ))
+      }
+    </ol>
+  </div>
+
+  <p class="cll__sum viz-panel" data-sum aria-live="polite"></p>
+
+  <div class="viz-legend cll__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>self, screen on screen</span>
+    <span><i style="--c:var(--viz-bad)"></i>self, alive after the pop</span>
+    <span><i style="--c:var(--viz-net)"></i>the work still running</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-cll-data
+    set:html={JSON.stringify({ table, pop: POP, span: SPAN, never: NEVER })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initLanes(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-cll-data]').textContent,
+      );
+      const lanes = [...root.querySelectorAll('[data-lane]')];
+      const sumEl = root.querySelector('[data-sum]');
+      const state = { capture: 'strong', cleanup: 'none' };
+      const pct = (t) => (Math.min(t, data.span) / data.span) * 100;
+
+      function render() {
+        const spans = data.table[`${state.capture}|${state.cleanup}`];
+        let kept = 0;
+        let forever = 0;
+        lanes.forEach((lane, i) => {
+          const s = spans[i];
+          const selfEl = lane.querySelector('[data-self]');
+          const afterEl = lane.querySelector('[data-after]');
+          const workEl = lane.querySelector('[data-work]');
+          selfEl.style.width = `${pct(s.self)}%`;
+          const after = Math.max(0, s.self - data.pop);
+          afterEl.style.left = `${(data.pop / Math.min(s.self, data.span)) * 100}%`;
+          afterEl.hidden = after <= 0;
+          workEl.style.width = `${pct(s.work)}%`;
+          selfEl.classList.toggle('is-never', s.self >= data.never);
+          workEl.classList.toggle('is-never', s.work >= data.never);
+          lane.querySelector('[data-note]').textContent = s.note;
+          lane.classList.toggle('is-kept', s.self > data.pop);
+          if (s.self > data.pop) kept += 1;
+          if (s.work >= data.never) forever += 1;
+        });
+        const parts = [
+          `self outlives the screen in ${kept} of ${lanes.length} lanes`,
+          forever
+            ? `the work never stops in ${forever}`
+            : 'all of the work stops',
+        ];
+        sumEl.textContent = `${parts.join('; ')}.`;
+        sumEl.classList.toggle('is-bad', kept > 0 || forever > 0);
+      }
+
+      ['capture', 'cleanup'].forEach((key) => {
+        const btns = [...root.querySelectorAll(`[data-${key}]`)];
+        btns.forEach((btn) =>
+          btn.addEventListener('click', () => {
+            state[key] = btn.dataset[key];
+            btns.forEach((b) =>
+              b.setAttribute('aria-pressed', String(b === btn)),
+            );
+            render();
+          }),
+        );
+      });
+
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-cll]').forEach(initLanes);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .cll__controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-4);
+  }
+  .cll__ctl {
+    display: grid;
+    gap: 5px;
+  }
+
+  .cll__board {
+    --label-w: 40px;
+  }
+  .cll__axis {
+    position: relative;
+    height: 30px;
+    margin-left: var(--label-w);
+    border-bottom: 1px solid var(--viz-line);
+  }
+  .cll__mark {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    font-size: 10.5px;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+  .cll__mark:first-child {
+    transform: none;
+  }
+  .cll__mark--low {
+    top: 14px;
+  }
+  .cll__mark--never {
+    right: 0;
+    left: auto;
+    transform: none;
+    color: var(--viz-bad);
+  }
+
+  .cll__lanes {
+    display: grid;
+    gap: var(--sp-3);
+    margin-top: var(--sp-3) !important;
+  }
+  .cll__lane {
+    display: grid;
+    gap: 5px;
+  }
+  .cll__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 10px;
+  }
+  .cll__name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--viz-net);
+  }
+  .cll__owner {
+    font-size: var(--fs-xs);
+    color: var(--fg-muted);
+  }
+
+  .cll__track {
+    position: relative;
+    display: grid;
+    gap: 4px;
+  }
+  .cll__guides {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    left: var(--label-w);
+    right: 0;
+    pointer-events: none;
+  }
+  .cll__guide {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1.5px dashed var(--fg-faint);
+  }
+  .cll__never {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    background: repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--viz-bad) 14%, transparent) 0 4px,
+      transparent 4px 8px
+    );
+    border-radius: 3px;
+  }
+  .cll__row {
+    position: relative;
+  }
+  .cll__row {
+    display: grid;
+    grid-template-columns: var(--label-w) minmax(0, 1fr);
+    align-items: center;
+  }
+  .cll__rlabel {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--fg-faint);
+  }
+  .cll__bar {
+    position: relative;
+    display: block;
+    height: 9px;
+    border-radius: 3px;
+    transition: width 0.3s var(--ease);
+  }
+  .cll__bar--self {
+    background: var(--viz-sound);
+    overflow: hidden;
+  }
+  .cll__after {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--viz-bad);
+  }
+  .cll__bar--work {
+    height: 5px;
+    background: var(--viz-net);
+    opacity: 0.85;
+  }
+  .cll__bar.is-never {
+    border-radius: 3px 0 0 3px;
+    mask-image: linear-gradient(90deg, #000 86%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, #000 86%, transparent);
+  }
+
+  .cll__note {
+    margin: 0;
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+    color: var(--fg-muted);
+  }
+  .cll__lane.is-kept .cll__note {
+    color: var(--fg);
+  }
+
+  .cll__sum {
+    margin: var(--sp-4) 0 0;
+    padding: 8px 12px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--fg);
+  }
+  .cll__sum.is-bad {
+    border-color: color-mix(in srgb, var(--viz-bad) 50%, transparent);
+  }
+  .cll__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cll__bar {
+      transition: none;
+    }
+  }
+</style>

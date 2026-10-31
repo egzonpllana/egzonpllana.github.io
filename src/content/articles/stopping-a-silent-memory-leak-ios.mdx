@@ -1,0 +1,550 @@
+---
+title: 'How I Stopped a Silent Memory Leak in My iOS App'
+description: 'Every tab switch in one of my apps left 10 to 15 MB behind. The causes were timers, Combine sinks and tasks holding their view models, multiplied by .id(UUID()). Re-checked in Swift 6: what ARC frees, why leak detection stays silent for most of these, which captures actually help, and what the memory profiler I built does and does not measure.'
+date: 2025-07-27
+updated: 2026-10-30
+tags:
+  [
+    'Swift',
+    'iOS',
+    'SwiftUI',
+    'Memory Management',
+    'Combine',
+    'Swift Concurrency',
+    'Instruments',
+  ]
+heroImage: '../../assets/covers/stopping-a-silent-memory-leak-ios.png'
+repoUrl: 'https://github.com/egzonpllana/memory-profiler-ios'
+---
+
+import StatTiles from '../../components/StatTiles.astro';
+import TabSwitchMemoryStaircase from '../../components/TabSwitchMemoryStaircase.astro';
+import RetainCycleGraph from '../../components/RetainCycleGraph.astro';
+import CaptureLifetimeLanes from '../../components/CaptureLifetimeLanes.astro';
+import PhaseRail from '../../components/PhaseRail.astro';
+
+With automatic reference counting, you do not leak memory by forgetting to free it. You leak it by holding on to it: something still points at an object after the object's job is over, so the object is never freed. Nothing crashes and nothing is logged. The app just gets a little heavier every time the user repeats the action that created the object, until the system decides it is too heavy and terminates it.
+
+That is what I found in one of my iOS apps. It started at 196 MB on a cold launch, and every tab switch added 10 to 15 MB that never came back. After ten minutes of ordinary use it was past 310 MB and still climbing. The causes were four ordinary things: views given a new identity on every render with `.id(UUID())`, Combine subscriptions that were never torn down, tasks that held on to their view models, and timers that were never invalidated. I also wanted to watch memory while I used the app, not only in a separate profiling session, so I wrote a small memory profiler and later open-sourced it.
+
+The first version of this article listed those fixes. Re-reading it in October 2026 against Swift 6 and Apple's tools, I found the explanations were weaker than the result. Two of its code samples do not compile in Swift 6 language mode. One of its `[weak self]` fixes does not do what it appears to. It had the `.id` mechanism backwards. And the profiler's default warning threshold is not "a common best practice". This version keeps the story and the measurements and corrects the rest. Swift and SwiftUI are the worked example. The reference-counting rules are the same in Objective-C, and the question every section comes back to, "what still points at this object?", applies to any managed runtime.
+
+<StatTiles
+  tiles={[
+    { label: 'cold launch', value: 196, suffix: ' MB', sub: 'the baseline' },
+    {
+      label: 'after 10 minutes',
+      value: 310,
+      suffix: '+ MB',
+      sub: 'with the leak, and still climbing',
+    },
+    {
+      label: 'after 10 minutes',
+      value: 211,
+      suffix: ' MB',
+      sub: 'with the fixes',
+    },
+    {
+      label: 'growth per tab switch',
+      value: 85,
+      suffix: '% less',
+      sub: '10 to 15 MB down to 1 to 2 MB',
+    },
+  ]}
+/>
+
+---
+
+## The symptom: a staircase, not a sawtooth
+
+In a healthy app, memory looks like a sawtooth. Opening a screen allocates its views, view models, images and caches, so memory jumps. Closing it frees most of that, so memory falls back to about where it was. Apple's WWDC24 session on heap memory calls the jump _transient growth_. Large spikes still cause memory pressure, but the memory comes back.
+
+A leak looks like a staircase. Every time the action repeats, memory falls back to a slightly higher floor, and the steps add up. Apple calls that _persistent growth_: memory that is never deallocated. In my app the action was a tab switch, and each step was 10 to 15 MB.
+
+<TabSwitchMemoryStaircase />
+
+Watch the floor between actions, not the peak. A peak is the cost of building a screen. The floor is what the screen leaves behind. Ten switches at 10 to 15 MB each is the whole gap between 196 and 310 MB.
+
+There is a second question: which number. Xcode's memory gauge shows the app's **footprint**, which is dirty memory (anything the app has written, including every heap allocation) plus compressed memory. Clean memory, such as mapped code and read-only files, does not count, because the system can drop it and read it back later. Footprint is the number iOS uses when it decides to terminate an app, and it is the number to compare between builds. The profiler later in this article reads a different number, and that matters.
+
+> **In plain words:** repeat the action and look at where memory settles. If it settles a little higher every time, something created by the action outlives it.
+
+---
+
+## What ARC frees, and the two ways it doesn't
+
+Every class instance carries a count of the strong references to it. When the count reaches zero, `deinit` runs and the memory is freed. That is all ARC does. It never asks whether an object is still useful. It only counts.
+
+SwiftUI views are structs, so a SwiftUI view is never leaked. What survives is the reference types the views create and hold: view models in `@StateObject` or `@State`, closures, tasks, timers, Combine subscriptions, and UIKit objects. Swift gives you three kinds of reference to them:
+
+- **strong**, the default, adds to the count and keeps the object alive.
+- **`weak`** does not add to the count. It is always optional and becomes `nil` when the object is deinitialized. Swift allocates a small side table for an object the first time something references it weakly.
+- **`unowned`** does not add to the count either, and is not optional: it assumes the object is still there. Reading it after the object has been deinitialized traps, every time. I ran it to check: `Fatal error: Attempted to read an unowned reference but object 0x101735b00 was already destroyed`.
+
+A closed screen can survive in two ways, and the difference decides which tools can see the problem.
+
+1. **A cycle.** The controller holds the view model, the view model holds a closure, and the closure holds the controller. After the screen is popped, nothing outside the three points at any of them, but each keeps the next one's count at one. Apple calls this **leaked** memory: unreachable, and impossible to free until the process exits.
+2. **A long-lived owner.** The run loop holds every scheduled timer. NotificationCenter holds every observer block. A running task holds its closure. If any of those reaches the screen's objects, they stay alive, and they are still reachable from something the system owns. Apple's term for that is **abandoned** memory: "reachable and could be used but won't actually ever be used again".
+
+Leak detection, in Instruments' Leaks template and in the memory graph's leak markers, looks for unreachable memory. By definition it does not report abandoned memory. Most of what I had was abandoned.
+
+<RetainCycleGraph />
+
+Start from the defaults and pop the screen: nothing is freed, because the run loop still reaches the timer and the timer reaches everything else. Leaks would report nothing. Now make `stop()` invalidate the timer and pop again: the run loop lets go, but the controller, the view model and the closure still hold each other. That is the textbook cycle, and leak detection can now find it. Make the closure's capture `weak` and everything is freed.
+
+This is the cycle in code:
+
+```swift
+@MainActor
+final class ProfileViewModel {
+    var onUpdate: ((Profile) -> Void)?
+
+    func apply(_ profile: Profile) {
+        onUpdate?(profile)
+    }
+}
+
+final class ProfileViewController: UIViewController {
+    private let viewModel: ProfileViewModel // init(viewModel:) and render(_:) omitted
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        viewModel.onUpdate = { profile in
+            self.render(profile) // self → viewModel → onUpdate → self
+        }
+    }
+}
+```
+
+The fix is to make the reference that points back toward the owner non-owning:
+
+```swift
+viewModel.onUpdate = { [weak self] profile in
+    self?.render(profile)
+}
+```
+
+The same rule covers delegates, the oldest form of this cycle: a delegate points back at the object that owns the delegator, so the property is `weak var delegate: (any ProfileViewDelegate)?`, with the protocol constrained to `AnyObject`.
+
+`unowned` is safe only when the closure cannot outlive `self`. It would be tempting here, because the view model belongs to the controller. Fig 02 shows why it is not safe: once a timer keeps the view model alive, the closure outlives the controller, and the next tick crashes. Apple's guidance in the WWDC24 session matches: `weak` is the right default, and `unowned` saves the side table and some access time when you can guarantee the lifetimes.
+
+> **In plain words:** ARC frees an object when nothing strong points at it any more. A cycle keeps itself alive. A long-lived owner, such as the run loop, keeps alive whatever it reaches, and leak detection cannot see that, because it is still reachable.
+
+---
+
+## Finding it: which tool sees what
+
+No single tool sees both kinds of survivor, so it is worth knowing what each one actually checks.
+
+| Tool | What it shows | Finds |
+| --- | --- | --- |
+| Xcode memory gauge | Footprint now, and the peak | growth, not its cause |
+| Allocations, Mark Generation | What was allocated between two marks and is still alive | cycles and abandoned |
+| Leaks instrument | Periodic scans for unreachable memory | cycles only |
+| Memory Graph Debugger | Every allocation and the references between them, leaks marked | cycles marked; abandoned if you count instances |
+| `leaks`, `heap`, `vmmap` | The same snapshot on the command line; `heap -diffFrom` compares two | cycles and abandoned |
+| `deinit` print, weak check | Whether one object died when it should have | both, one object at a time |
+
+What I do now when memory climbs:
+
+1. **Repeat the action a known number of times.** Open and close the screen five times, or switch tabs five times.
+2. **Capture a memory graph** with the Debug Memory Graph button in Xcode's debug bar, filter the navigator by type, and count. Five `ProfileViewModel` instances after five closed screens is the bug, whether or not anything is marked as a leak.
+3. **Select one instance and follow its incoming references** until you reach something that should not be holding it: a timer, an observer block, a task, a cache.
+4. **Turn on Malloc Stack Logging** (scheme, Diagnostics, Malloc Stack, Live Allocations Only). Every node then shows the backtrace where it was allocated. For a closure context, that is the line that created the closure, and each closure context in the heap is one live closure.
+5. **Use Allocations with Mark Generation** when the graph is too busy: mark, repeat the action, mark again, and read what each generation left alive.
+
+Two caveats from the WWDC24 session are worth knowing. The tools scan memory that has no type information conservatively, so a value that happens to look like a pointer can hide a real leak; repeating the action makes a missed leak show up anyway. And if weak or unowned references are missing from the graph, check that the Reflection Metadata Level build setting is still at its default, All.
+
+> **In plain words:** count instances after repeating the action. Leak markers tell you about cycles. The count tells you about everything.
+
+---
+
+## The causes
+
+### 1. `.id(UUID())`: not a leak, a multiplier
+
+SwiftUI keeps a view's state (`@State`, `@StateObject`) for as long as the view keeps its identity. Identity normally comes from the view's position in the view tree. The `.id(_:)` modifier sets it explicitly, and Apple's documentation spells out the consequence: when the value changes, the identity of the view, "for example, its state", is reset. SwiftUI treats the view as a new one, discards the old one's state and builds fresh state.
+
+`UUID()` written inside `body` is a new value every time `body` runs:
+
+```swift
+TabView(selection: $selectedTab) {
+    HomeView()
+        .id(UUID()) // a new identity every time this body runs
+        .tabItem { Text("Home") }
+        .tag(0)
+    SettingsView()
+        .id(UUID())
+        .tabItem { Text("Settings") }
+        .tag(1)
+}
+```
+
+So every time this `body` is evaluated, both tabs throw away their state and build new view models, which start new tasks, timers and subscriptions.
+
+The first version of this article said `.id` was "keeping views alive". It does the opposite: it discards state. Memory grows because of what the discarded objects leave behind. If a discarded view model cannot be deallocated, because a timer, a sink or an endless task still holds it, every evaluation abandons one more. That is how one stuck object per screen becomes 10 to 15 MB per tab switch. Fixing only `.id` would slow the growth. Fixing only the retains would stop the growth but keep the churn of rebuilding the tabs and refetching their data.
+
+`tag` is all `TabView` needs to tell its tabs apart:
+
+```swift
+TabView(selection: $selectedTab) {
+    HomeView()
+        .tabItem { Text("Home") }
+        .tag(0)
+    SettingsView()
+        .tabItem { Text("Settings") }
+        .tag(1)
+}
+```
+
+`.id` is still the right tool when you want a reset, for example `.id(account.id)` to start a screen fresh for a different account. It is the wrong tool with a value created inside `body`.
+
+> **In plain words:** `.id(UUID())` gives a view a new identity on every render, which throws its state away and builds it again. On its own that costs time. Combined with objects that cannot die, it is a leak per render.
+
+### Closures, tasks and timers: who holds self, and for how long
+
+The other three causes have the same shape: a piece of work holds `self`, and something other than the screen holds the work. A capture list only answers the first half. Before going through them one by one, here are six common variants side by side. `self` is a strong capture, `weak + guard` is `[weak self]` followed by `guard let self` at the top of the closure, and `weak` is `[weak self]` with `self?` at each use or a `guard` inside the loop.
+
+<CaptureLifetimeLanes />
+
+Two things in Fig 03 are easy to miss. `[weak self]` followed by `guard let self else { return }` at the top of a `Task` is the same as a strong capture for as long as the task runs. And cleanup in `deinit` only helps when the capture already lets `deinit` happen. The capture list decides who keeps whom alive. Cleanup decides when the work stops. You need both.
+
+### 2. Combine subscriptions that own their owner
+
+`sink` returns an `AnyCancellable`, and storing it in `self.cancellables` is the standard pattern. If the sink's closure captures `self` strongly, that is a cycle: `self` owns the set, the set owns the cancellable, the cancellable owns the subscription, the subscription owns the closure, and the closure owns `self`. An `AnyCancellable` cancels its subscription when it is deinitialized, and it never is.
+
+```swift
+@MainActor
+final class SearchViewModel: ObservableObject {
+    @Published var query = ""
+    @Published private(set) var results: [String] = []
+    private var cancellables = Set<AnyCancellable>()
+
+    init(search: any SearchServiceProtocol) {
+        $query
+            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            .map { search.results(for: $0) }
+            .sink { self.results = $0 } // a cycle through cancellables
+            .store(in: &cancellables)
+    }
+}
+```
+
+`assign(to: \.results, on: self)` builds the same cycle, because it holds its target strongly. When the pipeline ends in a `@Published` property, `assign(to:)` with the property's publisher avoids the problem entirely. It returns no `AnyCancellable`, and Apple documents that it cancels the subscription automatically when the property's owner is deinitialized:
+
+```swift
+init(search: any SearchServiceProtocol) {
+    $query
+        .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+        .map { search.results(for: $0) }
+        .assign(to: &$results)
+}
+```
+
+For any other sink, capture `[weak self]`. I checked all four variants with `deinit` prints: the strong `sink` and `assign(to:on: self)` never deinitialize, while `[weak self]` and `assign(to: &$results)` do.
+
+### 3. Tasks: alive until they finish
+
+A `Task` holds its closure, and everything the closure captured, until the task finishes. Nobody has to keep the handle: unstructured tasks "run to completion even if there are no remaining uses of their task handle" ([SE-0304](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0304-structured-concurrency.md)). That is also why Swift lets you write `self` without `self.` inside a `Task`. There is no lasting cycle, only a reference held until the work ends.
+
+So the question for a task is not whether it creates a cycle, but how long it runs:
+
+- **One request.** A strong `self` delays `deinit` until the request finishes. I measured it with a 300 ms task: the view model was still alive at 100 ms and freed after the task ended. That is usually acceptable, but the screen's work keeps running after the screen is gone.
+- **An endless loop.** `for await` over notifications, an `AsyncStream` or a socket never finishes, so a strong `self` stays alive forever.
+
+`[weak self]` helps only if `self` stays weak across the `await`. This is the version from the first article:
+
+```swift
+loadTask = Task { [weak self] in
+    guard let self else { return }
+    // self is strong from here to the end of the task, across every await
+    let posts = try await apiClient.fetchPosts()
+}
+```
+
+The `guard` turns the weak reference into a strong one at the start of the task, so the capture list buys nothing. It also means the `deinit { loadTask?.cancel() }` next to it can never cancel anything that is still running: `deinit` cannot run while the task holds `self`. Neither of the two original samples compiles in Swift 6 language mode, either. The first assigns `try await self?.apiClient.fetchPosts()` to a non-optional `[PostDTO]`, which is a type error. The second captures `self` from a class that is neither `Sendable` nor isolated to an actor, and the compiler rejects it: `passing closure as a 'sending' parameter risks causing data races`.
+
+This version compiles in Swift 6 mode with no warnings. It captures the client directly, so `self` is weak across the `await`, and it cancels the request when the view model goes away:
+
+```swift
+@MainActor
+final class PostsViewModel: ObservableObject {
+    enum ViewState: Equatable {
+        case idle
+        case loading
+        case loaded([Post])
+        case failed
+    }
+
+    @Published private(set) var state: ViewState = .idle
+    private let apiClient: any APIClientProtocol
+    private var loadTask: Task<Void, Never>?
+
+    init(apiClient: any APIClientProtocol) {
+        self.apiClient = apiClient
+    }
+
+    deinit {
+        loadTask?.cancel()
+    }
+
+    func loadPosts() {
+        loadTask?.cancel()
+        state = .loading
+        loadTask = Task { [weak self, apiClient] in
+            do {
+                let posts = try await apiClient.fetchPosts()
+                self?.state = .loaded(posts)
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.state = .failed
+            }
+        }
+    }
+}
+```
+
+In SwiftUI there is a simpler owner for the work: the view. Work started from the `.task` modifier is cancelled by SwiftUI "at some point after the view disappears before the action completes", and when the view changes identity:
+
+```swift
+Text("Posts")
+    .task { await viewModel.load() }
+```
+
+For an endless loop, bind `self` inside the loop, so it is strong only for one iteration, and cancel the task when the owner goes away:
+
+```swift
+func observeLocaleChanges() {
+    localeTask = Task { [weak self] in
+        let changes = NotificationCenter.default.notifications(
+            named: NSLocale.currentLocaleDidChangeNotification
+        )
+        for await _ in changes {
+            guard let self else { return }
+            self.reload()
+        }
+    }
+}
+
+deinit {
+    localeTask?.cancel()
+}
+```
+
+Without the cancel, `self` is still freed, but the task stays suspended until the next notification arrives, and only then finds `self` gone and returns. I ran both: with the `guard` at the top of the task the view model never deinitialized, with the `guard` inside the loop it did, and without the cancel the task stayed suspended until the next notification.
+
+Cancellation is cooperative. `cancel()` only sets a flag. `URLSession`'s async methods and `for await` over notifications react to it. Your own loops have to check `Task.isCancelled` or call `try Task.checkCancellation()`.
+
+> **In plain words:** a task keeps what it captured until it finishes. For one request that is a delay. For a loop that never ends, it is forever. A `guard let self` at the top of the task undoes `[weak self]`.
+
+### 4. Timers and observers: the run loop is the owner
+
+This was the third cause in my app. A view model started a repeating timer, nothing invalidated it, and the view model stayed in memory after its view disappeared:
+
+```swift
+timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+    self.secondsLeft -= 1
+}
+```
+
+Apple's documentation states the ownership: "Run loops maintain strong references to their timers." A scheduled timer keeps its block, or its target, until it is invalidated, and a repeating timer never invalidates itself. `invalidate()` is "the only way to remove a timer from an NSRunLoop object", and it also releases the target. So:
+
+- **A strong capture** keeps the view model alive for as long as the timer runs, which is forever.
+- **`[weak self]` alone** frees the view model, but the timer keeps firing every second with `self == nil` until someone invalidates it. My test program confirmed both: the strong version never deinitialized, and in the weak version the timer was still valid after the object was gone.
+- **The target-selector form** of `Timer.scheduledTimer` retains its target strongly, and so does `CADisplayLink(target:selector:)` ("The newly constructed display link retains the target"). There is no capture list to make weak, and `deinit` never runs while the timer holds the target, so invalidating in `deinit` cannot work. Only an explicit `invalidate()` from outside breaks it.
+
+The first article's fix, `[weak self]` plus `timer?.invalidate()` in `deinit`, was the right idea. In Swift 6 it no longer compiles in a `@MainActor` view model. `deinit` is nonisolated, so it cannot touch the main-actor `timer` property: `cannot access property 'timer' with a non-Sendable type 'Timer?' from nonisolated deinit`. And the documentation for `invalidate()` says "You must send this message from the thread on which the timer was installed", which is the main thread here.
+
+The dependable fix is to stop the timer when the screen disappears, with an `isolated deinit` as a backstop:
+
+```swift
+@MainActor
+final class CountdownViewModel: ObservableObject {
+    @Published private(set) var secondsLeft = 60
+    private var timer: Timer?
+
+    func start() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.tick()
+            }
+        }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    isolated deinit {
+        timer?.invalidate()
+    }
+
+    private func tick() {
+        secondsLeft -= 1
+        if secondsLeft == 0 { stop() }
+    }
+}
+
+struct CountdownView: View {
+    @StateObject private var viewModel = CountdownViewModel()
+
+    var body: some View {
+        Text("\(viewModel.secondsLeft)")
+            .onAppear { viewModel.start() }
+            .onDisappear { viewModel.stop() }
+    }
+}
+```
+
+Two details make it compile and stay correct. The timer's block is `@Sendable`, so it cannot call main-actor methods directly. A timer scheduled from the main thread fires on the main run loop, so `MainActor.assumeIsolated` is true here, and it traps instead of racing if it is ever wrong. `isolated deinit` ([SE-0371](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0371-isolated-synchronous-deinit.md), Swift 6.2) runs `deinit` on the main actor, so it can touch `timer` and invalidates it on the right thread. For main-actor classes the compiler links a back-deployment shim: the code above compiles for an iOS 16 deployment target, and a test binary with a macOS 13 deployment target ran its `deinit` on the main thread.
+
+NotificationCenter's block-based observers follow the same rule. The center "strongly holds the copied block until you remove the observer registration", and it holds the returned token too. A strong `self` in the block is forever. With `[weak self]` the object is freed, but the block stays registered until the token is removed. The `notifications(named:)` sequence in a task you cancel, as in the previous section, avoids the token entirely.
+
+> **In plain words:** the run loop owns your timers and NotificationCenter owns your observer blocks. `[weak self]` stops them from keeping your object alive. Only `invalidate()` or `removeObserver` stops them from running.
+
+---
+
+## The profiler: what it measures, and what it can't
+
+Instruments answers why memory is held, but only during a profiling session. I wanted to see memory move while I used the app, so I could tell which action raised the floor. That is what [MemoryProfiler](https://github.com/egzonpllana/memory-profiler-ios) does. Version 2.1 is a Foundation-only Swift package, with no UIKit dependency, and it is debug-only by default:
+
+```swift
+import MemoryProfiler
+
+let profiler: any MemoryProfilerServicing = MemoryProfilerService()
+profiler.startMonitoring() // a reading every 60 seconds
+profiler.logMemoryUsage(context: "tab switch: home -> settings")
+```
+
+`logMemoryUsage(context:)` is the call that mattered. Logged after each tab switch, it put every step of the staircase next to the action that caused it, which is the "at each switch" view in Fig 01. The 60-second readings show the trend but cannot attribute it. The profiler told me which action leaked. The memory graph told me what was holding the memory.
+
+Version 2.0 added two checks aimed at the question this article keeps asking, "did this object die when it should have?":
+
+```swift
+func dismiss() {
+    DeinitTracker.expectDeinit(of: viewModel) // checks a weak reference after 2 s
+    navigationController?.popViewController(animated: true)
+}
+```
+
+If the view model is still alive two seconds later, it logs the type and the call site:
+
+```
+[MemoryProfiler] Potential leak: DetailViewModel was not deallocated after 2.0s (<file>:<line>)
+```
+
+`trackObject(_:expectedLifetime:)` does the same through the service, and `detectMemoryLeaks()` reports every tracked object that outlived its grace period. Both hold only a weak reference, so tracking an object never keeps it alive.
+
+Re-reading the profiler for this article, I found four things in it that are wrong or weaker than they look:
+
+<PhaseRail
+  phases={[
+    {
+      title: 'It reads resident size, not footprint',
+      body: 'SystemMemoryMonitor reports the resident_size field of mach_task_basic_info: pages that are in RAM right now. That includes clean pages, such as mapped code and frameworks, and leaves out compressed pages. Footprint is dirty plus compressed, and it is what Xcode shows and what the system limits. The staircase still shows up in resident size, but the numbers do not match the gauge.',
+      params: [
+        { name: 'reads', value: 'resident_size' },
+        { name: 'should read', value: 'phys_footprint' },
+      ],
+    },
+    {
+      title: 'The 70% threshold is not a best practice',
+      body: 'The default warning fires at 70% of physical RAM. Apple publishes no such rule, and an app’s limit is not a fraction of physical memory: limits “can change during the app life cycle and don’t necessarily correspond to the amount of physical memory available on the device”. The system tells you the remaining headroom directly: os_proc_available_memory() returns the current limit minus the footprint.',
+      params: [{ name: 'use', value: 'os_proc_available_memory()' }],
+    },
+    {
+      title: '“available” is physical RAM minus usage',
+      body: 'MemoryStats.availableMemory is total physical memory minus resident size. That is not memory available to the app. On a 16 GB Mac, a 5 MB test process logged “available: 16378MB”.',
+      params: [{ name: 'replace with', value: 'the headroom above' }],
+    },
+    {
+      title: 'Grace periods start at trackObject',
+      body: 'A .scopeBound object counts as leaked 3 seconds after it was tracked, not 3 seconds after its screen closed. Track at dismissal, as DeinitTracker does, or a screen that stays open longer than the grace period is reported while it is still in use.',
+      params: [{ name: 'track', value: 'when the screen closes' }],
+    },
+  ]}
+/>
+
+Reading the footprint takes one more Mach call, and the headroom is a single function:
+
+```swift
+import Darwin
+import os
+
+func memoryFootprint() -> UInt64? {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(
+        MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size
+    )
+    let result = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    guard result == KERN_SUCCESS else { return nil }
+    return info.phys_footprint
+}
+
+let headroom = os_proc_available_memory() // bytes left before the limit, iOS 13+
+```
+
+Two smaller notes. The package declares `swift-tools-version: 5.9`, so it builds in Swift 5 language mode, and an app in Swift 6 mode can depend on it without trouble. Built in Swift 6 mode, it fails on one line in `DeinitTracker`, where a captured `weak var` is sent to the main queue (`sending 'weakRef' risks causing data races`). And the scheduler's documentation says its timer runs on the main run loop, but `Timer.scheduledTimer` uses the current thread's run loop. Started from a background thread with no running run loop, the 60-second readings never fire.
+
+> **In plain words:** the profiler is good at telling you which action makes memory grow, while you use the app. It reads a different number than Xcode, its default threshold is arbitrary, and finding the cause is still the memory graph's job.
+
+---
+
+## The results
+
+With the four causes fixed (no `.id(UUID())`, subscriptions that do not own their owner, tasks that let go, and timers stopped on disappear), these were my measurements:
+
+- Each tab switch added 1 to 2 MB instead of 10 to 15 MB, about 85% less growth per switch.
+- After ten minutes the app sat at around 211 MB instead of more than 310 MB.
+- The responsiveness problems I had seen under heavier use went away.
+
+The remaining 1 to 2 MB per switch is the next thing I would look at. Ten switches at that rate account for the whole 15 MB between 196 and 211, so from the totals alone I cannot tell whether it levels off. One Mark Generation run answers it: if the later generations come back nearly empty, it is caches warming up. If every generation keeps the same types, it is a second, smaller leak.
+
+---
+
+## What I would change next
+
+- **Make the leak a failing test.** A UI test with `XCTMemoryMetric` that switches tabs ten times, with a baseline set, fails when the average grows past it. WWDC21's "Detect and diagnose memory issues" shows this setup, and it can collect memory graphs from before and after the measured run.
+- **Check every pushed screen's view model in debug builds.** One `DeinitTracker.expectDeinit(of:)` per dismissal catches the next cycle the day it is written, not after ten minutes of tab switching.
+- **Fix the profiler's measurement.** Report `phys_footprint` and `os_proc_available_memory()`, drop the 70% default and the "available" field, start grace periods at dismissal, and build in Swift 6 language mode.
+- **Prefer owners that cancel for you.** SwiftUI's `.task` and `assign(to:)` tie work to a lifetime that already exists. Every hand-written `cancel()` and `invalidate()` is one more thing to forget.
+
+---
+
+## Takeaways
+
+> **A leak under ARC is a reference, not a missing free.** Ask what still points at the object, and why.
+
+> **Leaked and abandoned are different problems.** Leak detection finds cycles that nothing reaches. Objects held by the run loop, NotificationCenter or a running task are still reachable, so only an instance count shows them.
+
+> **Watch the floor, not the peak.** Repeat the action and check where memory settles.
+
+> **`.id(UUID())` resets state on every render.** On its own that is churn. With objects that cannot die, it is a leak per render.
+
+> **A task holds `self` until it finishes.** `guard let self` at the top of a task undoes `[weak self]`. Bind `self` inside the loop, after the `await`.
+
+> **A capture list decides who keeps whom. Cleanup decides when the work stops.** `invalidate()`, `cancel()` and `removeObserver` on disappear, with `[weak self]` as the safety net.
+
+> **`deinit` cleanup only runs if `deinit` can.** In Swift 6, touching main-actor state there needs `isolated deinit`.
+
+> **Measure footprint, and ask the system for headroom.** Resident size and fractions of physical RAM are not what iOS limits.
+
+The profiler is open source: [MemoryProfiler on GitHub](https://github.com/egzonpllana/memory-profiler-ios).
+
+---
+
+## References
+
+**MemoryProfiler** — [Repository](https://github.com/egzonpllana/memory-profiler-ios) · [`SystemMemoryMonitor.swift`](https://github.com/egzonpllana/memory-profiler-ios/blob/main/Sources/MemoryProfiler/Monitoring/SystemMemoryMonitor.swift) · [`DeinitTracker.swift`](https://github.com/egzonpllana/memory-profiler-ios/blob/main/Sources/MemoryProfiler/LeakDetection/DeinitTracker.swift) · [`WeakReferenceTracker.swift`](https://github.com/egzonpllana/memory-profiler-ios/blob/main/Sources/MemoryProfiler/LeakDetection/WeakReferenceTracker.swift)
+
+**Apple, memory tools** — [WWDC21: Detect and diagnose memory issues](https://developer.apple.com/videos/play/wwdc2021/10180/) · [WWDC24: Analyze heap memory](https://developer.apple.com/videos/play/wwdc2024/10173/) · [Gathering information about memory use](https://developer.apple.com/documentation/xcode/gathering-information-about-memory-use) · [`os_proc_available_memory()`](https://developer.apple.com/documentation/os/os_proc_available_memory)
+
+**Swift** — [The Swift Programming Language: Automatic Reference Counting](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/automaticreferencecounting/) · [SE-0304: Structured concurrency](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0304-structured-concurrency.md) · [SE-0371: Isolated synchronous deinit](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0371-isolated-synchronous-deinit.md)
+
+**Frameworks** — [`Timer`](https://developer.apple.com/documentation/foundation/timer) · [`Timer.invalidate()`](<https://developer.apple.com/documentation/foundation/timer/invalidate()>) · [CADisplayLink `init(target:selector:)`](<https://developer.apple.com/documentation/quartzcore/cadisplaylink/init(target:selector:)>) · [NotificationCenter block observers](<https://developer.apple.com/documentation/foundation/notificationcenter/addobserver(forname:object:queue:using:)>) · [Combine `assign(to:)`](<https://developer.apple.com/documentation/combine/publisher/assign(to:)>) · [SwiftUI `id(_:)`](<https://developer.apple.com/documentation/swiftui/view/id(_:)>) · [SwiftUI `task` modifier](<https://developer.apple.com/documentation/swiftui/view/task(name:priority:file:line:_:)>)
