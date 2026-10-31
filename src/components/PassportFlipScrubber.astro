@@ -1,0 +1,837 @@
+---
+/**
+ * The passport cover turning, frame by frame, two ways:
+ *   - original: BookViewXK as published. The page is a plain layer, so its
+ *     faces are flattened into it and both are double-sided. A timer toggles
+ *     isHidden on the faces at half the 0.6 s duration. The back face has no
+ *     transform of its own. The perspective is part of the animated matrix
+ *     (identity -> R x P), so Core Animation's decomposition interpolates m34
+ *     from 0 to -1/500 together with the angle.
+ *   - fixed: the article's FlippablePageView. The page is a CATransformLayer,
+ *     the faces have isDoubleSided = false, the back face is pre-rotated by
+ *     180 degrees, and the perspective is the book's sublayerTransform.
+ * Curves: linear 0.6 s (the original), and Core Animation / SwiftUI springs
+ * with perceptual duration 0.6 s, bounce 0 and 0.3 (stiffness (2 pi / 0.6)^2,
+ * damping ratio 1 - bounce). A probe with SwiftUI's Spring gave the same
+ * values: bounce 0 crosses 0.5 at 161 ms and settles at 0.9 s; bounce 0.3
+ * peaks at 1.046 (8.3 degrees past 180) at 420 ms.
+ * Every face rule here was checked with CARenderer: a plain layer draws the
+ * front from behind past 90 degrees and never culls; a CATransformLayer culls,
+ * and a pre-rotated back reads the right way round.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '03',
+  caption = 'Played at a quarter of real speed; drag the scrubber to stop on any frame. The original swaps faces with a timer at 300 ms, half the 0.6 s duration. With its linear curve that is exactly 90°, but the back face has no transform of its own, so it lands mirrored. Switch to a spring and the page passes 90° at 161 ms: for 139 ms the front is on the left, seen from behind. The fixed page culls whichever face points away, at 90° on any curve, and its back is drawn pre-rotated. Bounce 0.3 shows why page springs should not bounce: the page swings 8° past flat, into the spread.',
+} = Astro.props;
+
+const MODES = [
+  { id: 'original', label: 'original: timer swap' },
+  { id: 'fixed', label: 'fixed: CATransformLayer' },
+];
+const CURVES = [
+  { id: 'linear', label: 'linear 0.6 s', bounce: null },
+  { id: 'spring', label: 'spring, bounce 0', bounce: 0 },
+  { id: 'bouncy', label: 'spring, bounce 0.3', bounce: 0.3 },
+];
+const AXIS_MS = 1250;
+const DURATION_S = 0.6;
+const TIMER_MS = 300;
+const ticks = [0, 300, 600, 900, 1200];
+---
+
+<VizFrame
+  fig={fig}
+  title="The passport cover, frame by frame"
+  caption={caption}
+  class="ppf"
+  data-ppf
+>
+  <div slot="tools">
+    <AnimControls label="Turn" />
+  </div>
+
+  <div class="ppf__bars">
+    <div class="ppf__bar">
+      <span class="viz-label">faces</span>
+      <div class="viz-seg" role="group" aria-label="Page implementation">
+        {
+          MODES.map((m, i) => (
+            <button
+              type="button"
+              aria-pressed={i === 0 ? 'true' : 'false'}
+              data-mode={m.id}
+            >
+              {m.label}
+            </button>
+          ))
+        }
+      </div>
+    </div>
+    <div class="ppf__bar">
+      <span class="viz-label">curve</span>
+      <div class="viz-seg" role="group" aria-label="Timing curve">
+        {
+          CURVES.map((c, i) => (
+            <button
+              type="button"
+              aria-pressed={i === 0 ? 'true' : 'false'}
+              data-curve={c.id}
+            >
+              {c.label}
+            </button>
+          ))
+        }
+      </div>
+    </div>
+  </div>
+
+  <div class="ppf__top">
+    <div
+      class="ppf__stage viz-panel"
+      data-stage
+      role="img"
+      aria-label="A passport: the cover turns about the spine from the right page onto the left, revealing the host's details."
+    >
+      <div class="ppf__world" data-world data-mode="original">
+        <span class="ppf__slot ppf__slot--left"></span>
+        <div class="ppf__inside">
+          <span class="ppf__kicker">About</span>
+          <span class="ppf__line ppf__line--title">Mira</span>
+          <span class="ppf__line">Speaks English, Albanian</span>
+          <span class="ppf__line">Lives in Prishtina</span>
+          <span class="ppf__line">Replies within an hour</span>
+          <span class="ppf__bars-row"><i></i><i></i></span>
+        </div>
+        <div class="ppf__cover" data-cover>
+          <div class="ppf__face ppf__face--front">
+            <span class="ppf__emblem"></span>
+            <span class="ppf__brand">PASSPORT</span>
+            <span class="ppf__holder">M. Kelmendi</span>
+          </div>
+          <div class="ppf__face ppf__face--back">
+            <span class="ppf__photo"></span>
+            <span class="ppf__line ppf__line--title">Mira</span>
+            <span class="ppf__line">Host since 2019</span>
+            <span class="ppf__bars-row"><i></i><i></i><i></i></span>
+          </div>
+        </div>
+        <span class="ppf__spine" aria-hidden="true"></span>
+      </div>
+    </div>
+
+    <div class="ppf__tree viz-panel">
+      <span class="viz-label">layer tree, this frame</span>
+      <ol class="ppf__layers">
+        <li class="ppf__layer" style="--depth:0">
+          <code>BookView.layer</code>
+          <span class="ppf__detail" data-d-book></span>
+        </li>
+        <li class="ppf__layer" style="--depth:1">
+          <code>page.layer</code>
+          <span class="ppf__detail" data-d-page></span>
+        </li>
+        <li class="ppf__layer" style="--depth:2">
+          <code>frontFace</code>
+          <span class="ppf__detail" data-d-front></span>
+          <span class="viz-chip" data-s-front></span>
+        </li>
+        <li class="ppf__layer" style="--depth:2">
+          <code>backFace</code>
+          <span class="ppf__detail" data-d-back></span>
+          <span class="viz-chip" data-s-back></span>
+        </li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="ppf__read">
+    <span class="viz-chip viz-chip--level" data-out-t>t 0 ms</span>
+    <span class="viz-chip viz-chip--level" data-out-a>0°</span>
+    <span class="viz-chip" data-out-face aria-live="polite"></span>
+    <span class="viz-chip viz-chip--bad" data-out-over hidden></span>
+  </div>
+
+  <label class="ppf__scrub">
+    <span class="viz-label">time</span>
+    <input
+      type="range"
+      min="0"
+      max={AXIS_MS}
+      step="1"
+      value={AXIS_MS}
+      data-scrub
+      aria-label="Time into the turn in milliseconds"
+    />
+  </label>
+
+  <div class="ppf__plot viz-panel">
+    <div class="ppf__plot-area">
+      <svg
+        viewBox={`0 0 ${AXIS_MS} 200`}
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <rect class="ppf__band" data-band x="0" y="0" width="0" height="200"
+        ></rect>
+        <line class="ppf__grid" x1="0" y1="15" x2={AXIS_MS} y2="15"></line>
+        <line class="ppf__ninety" x1="0" y1="105" x2={AXIS_MS} y2="105"></line>
+        <path class="ppf__curve" data-curve-path d=""></path>
+        <line
+          class="ppf__timer"
+          data-timer
+          x1={TIMER_MS}
+          y1="0"
+          x2={TIMER_MS}
+          y2="200"></line>
+        <line class="ppf__cross" data-cross x1="0" y1="0" x2="0" y2="200"
+        ></line>
+        <line class="ppf__head" data-head x1="0" y1="0" x2="0" y2="200"></line>
+      </svg>
+      <span class="ppf__y" style="top:7.5%">180°</span>
+      <span class="ppf__y" style="top:52.5%">90°</span>
+    </div>
+    <div class="ppf__x" aria-hidden="true">
+      {
+        ticks.map((t) => (
+          <i style={`left:${(t / AXIS_MS) * 100}%`}>
+            {t / 1000}
+            {t === 0 || t === 1200 ? ' s' : ''}
+          </i>
+        ))
+      }
+    </div>
+    <div class="viz-legend ppf__legend" aria-hidden="true">
+      <span><i style="--c:var(--viz-sound)"></i>angle of the cover</span>
+      <span><i style="--c:var(--viz-level)"></i>crosses 90°</span>
+      <span data-legend-timer
+        ><i style="--c:var(--viz-net)"></i>timer swaps faces</span
+      >
+      <span><i style="--c:var(--viz-bad)"></i>wrong face showing</span>
+    </div>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-ppf-data
+    set:html={JSON.stringify({
+      curves: CURVES,
+      axis: AXIS_MS,
+      duration: DURATION_S,
+      timer: TIMER_MS,
+    })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const WORLD_W = 440;
+    const WORLD_H = 420;
+    const SLOWDOWN = 4;
+    const FACE = {
+      front: { text: 'front face', bad: false },
+      frontBehind: { text: 'front face, from behind', bad: true },
+      backEarly: { text: 'back face, before 90°', bad: true },
+      backMirrored: { text: 'back face, mirrored', bad: true },
+      back: { text: 'back face, reads correctly', bad: false },
+    };
+
+    /** Progress 0...1 (past 1 when a spring overshoots) at t seconds. */
+    function progress(curve, duration, t) {
+      if (curve.bounce === null) return Math.min(t / duration, 1);
+      const w = (2 * Math.PI) / duration;
+      const zeta = 1 - curve.bounce;
+      if (zeta >= 1) return 1 - (1 + w * t) * Math.exp(-w * t);
+      const wd = w * Math.sqrt(1 - zeta * zeta);
+      return (
+        1 -
+        Math.exp(-zeta * w * t) *
+          (Math.cos(wd * t) + ((zeta * w) / wd) * Math.sin(wd * t))
+      );
+    }
+
+    function initPassport(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-ppf-data]').textContent,
+      );
+      const stage = root.querySelector('[data-stage]');
+      const world = root.querySelector('[data-world]');
+      const cover = root.querySelector('[data-cover]');
+      const scrub = root.querySelector('[data-scrub]');
+      const modeBtns = [...root.querySelectorAll('[data-mode]')];
+      const curveBtns = [...root.querySelectorAll('[data-curve]')];
+      const curvePath = root.querySelector('[data-curve-path]');
+      const band = root.querySelector('[data-band]');
+      const timerLine = root.querySelector('[data-timer]');
+      const legendTimer = root.querySelector('[data-legend-timer]');
+      const cross = root.querySelector('[data-cross]');
+      const head = root.querySelector('[data-head]');
+      const out = {
+        t: root.querySelector('[data-out-t]'),
+        a: root.querySelector('[data-out-a]'),
+        face: root.querySelector('[data-out-face]'),
+        over: root.querySelector('[data-out-over]'),
+        book: root.querySelector('[data-d-book]'),
+        page: root.querySelector('[data-d-page]'),
+        front: root.querySelector('[data-d-front]'),
+        back: root.querySelector('[data-d-back]'),
+        sFront: root.querySelector('[data-s-front]'),
+        sBack: root.querySelector('[data-s-back]'),
+      };
+
+      let mode = 'original';
+      let curve = data.curves[0];
+      let cross90 = 0;
+      let now = data.axis;
+      let raf = 0;
+      let since = null;
+      let lastFace = '';
+
+      const p = (ms) => progress(curve, data.duration, ms / 1000);
+      const y = (deg) => 195 - Math.min(190, Math.abs(deg));
+
+      function fit() {
+        const s = Math.min(1, stage.clientWidth / WORLD_W);
+        world.style.setProperty('--s', String(s));
+        stage.style.height = `${WORLD_H * s}px`;
+      }
+
+      function plot() {
+        let d = '';
+        for (let ms = 0; ms <= data.axis; ms += 5) {
+          d += `${ms === 0 ? 'M' : 'L'}${ms} ${y(-180 * p(ms)).toFixed(2)} `;
+        }
+        curvePath.setAttribute('d', d);
+        cross90 = 0;
+        while (cross90 < data.axis && p(cross90) < 0.5) cross90 += 1;
+        cross.setAttribute('x1', String(cross90));
+        cross.setAttribute('x2', String(cross90));
+        const original = mode === 'original';
+        timerLine.style.display = original ? '' : 'none';
+        legendTimer.style.display = original ? '' : 'none';
+        const from = Math.min(cross90, data.timer);
+        const to = Math.max(cross90, data.timer);
+        band.setAttribute('x', String(from));
+        band.setAttribute('width', String(original ? to - from : 0));
+      }
+
+      function faceAt(ms, facingFront) {
+        if (mode === 'fixed') return facingFront ? 'front' : 'back';
+        const showsFront = ms < data.timer;
+        if (showsFront) return facingFront ? 'front' : 'frontBehind';
+        return facingFront ? 'backEarly' : 'backMirrored';
+      }
+
+      function setChip(el, text, kind) {
+        el.textContent = text;
+        el.className = `viz-chip viz-chip--${kind}`;
+      }
+
+      function render() {
+        const prog = p(now);
+        const deg = -180 * prog;
+        const facingFront = Math.abs(deg) < 90;
+        const face = faceAt(now, facingFront);
+        const original = mode === 'original';
+
+        world.dataset.mode = mode;
+        if (original) {
+          // The perspective is interpolated with the matrix: m34 = -progress / 500.
+          const persp =
+            prog > 0.002 ? `perspective(${(500 / prog).toFixed(1)}px) ` : '';
+          cover.style.transform = `${persp}rotateY(${deg.toFixed(2)}deg)`;
+          cover.dataset.show = now < data.timer ? 'front' : 'back';
+        } else {
+          cover.style.transform = `rotateY(${deg.toFixed(2)}deg)`;
+          cover.dataset.show = 'both';
+        }
+
+        scrub.value = String(Math.round(now));
+        head.setAttribute('x1', String(now));
+        head.setAttribute('x2', String(now));
+        out.t.textContent = `t ${Math.round(now)} ms`;
+        out.a.textContent = `${deg > -0.5 ? '0' : `−${Math.abs(deg).toFixed(0)}`}°`;
+        if (face !== lastFace) {
+          setChip(out.face, FACE[face].text, FACE[face].bad ? 'bad' : 'sound');
+          lastFace = face;
+        }
+        const over = Math.abs(deg) - 180;
+        out.over.hidden = over < 0.5;
+        out.over.textContent = `${over.toFixed(1)}° past flat`;
+
+        // The layer tree for this frame.
+        if (original) {
+          out.book.textContent = 'no sublayerTransform';
+          out.page.textContent =
+            prog > 0.002
+              ? `CALayer · transform R(${deg.toFixed(0)}°) × P, m34 −1/${Math.round(500 / prog)}`
+              : 'CALayer · transform identity';
+          const frontShown = now < data.timer;
+          out.front.textContent = `isHidden = ${!frontShown}`;
+          out.back.textContent = `no transform · isHidden = ${frontShown}`;
+          if (frontShown) {
+            setChip(
+              out.sFront,
+              facingFront ? 'drawn' : 'drawn from behind',
+              facingFront ? 'sound' : 'bad',
+            );
+            setChip(out.sBack, 'hidden', 'meta');
+          } else {
+            setChip(out.sFront, 'hidden', 'meta');
+            setChip(
+              out.sBack,
+              facingFront ? 'drawn too early' : 'drawn mirrored',
+              'bad',
+            );
+          }
+        } else {
+          out.book.textContent = 'sublayerTransform.m34 = −1/500';
+          out.page.textContent = `CATransformLayer · rotation.y ${deg.toFixed(0)}°`;
+          out.front.textContent = 'isDoubleSided = false';
+          out.back.textContent = 'rotation.y 180° · isDoubleSided = false';
+          setChip(
+            out.sFront,
+            facingFront ? 'drawn' : 'culled',
+            facingFront ? 'sound' : 'meta',
+          );
+          setChip(
+            out.sBack,
+            facingFront ? 'culled' : 'drawn',
+            facingFront ? 'meta' : 'sound',
+          );
+        }
+      }
+
+      function frame(ts) {
+        const total = data.axis * SLOWDOWN;
+        if (since === null) since = ts - now * SLOWDOWN;
+        now = Math.min(data.axis, (ts - since) / SLOWDOWN);
+        render();
+        if (ts - since < total) {
+          raf = requestAnimationFrame(frame);
+          return;
+        }
+        raf = 0;
+        since = null;
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
+      function stop() {
+        cancelAnimationFrame(raf);
+        raf = 0;
+        since = null;
+      }
+
+      function play() {
+        if (raf) return;
+        if (now >= data.axis) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        raf = requestAnimationFrame(frame);
+      }
+
+      function reset() {
+        stop();
+        now = 0;
+        render();
+      }
+
+      scrub.addEventListener('input', () => {
+        if (raf) {
+          stop();
+          root.dispatchEvent(new CustomEvent('anim:paused'));
+        }
+        now = Number(scrub.value);
+        render();
+      });
+
+      modeBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          mode = btn.dataset.mode;
+          modeBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          plot();
+          render();
+        }),
+      );
+      curveBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          curve = data.curves.find((c) => c.id === btn.dataset.curve);
+          curveBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          plot();
+          render();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      if ('ResizeObserver' in window) new ResizeObserver(fit).observe(stage);
+      fit();
+      plot();
+      // Until it plays, and always with reduced motion, rest on the last frame.
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-ppf]').forEach(initPassport);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .ppf__bars {
+    display: grid;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .ppf__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+  }
+  .ppf__bar .viz-label {
+    min-width: 3.5rem;
+  }
+  .ppf__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+
+  .ppf__top {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    gap: var(--sp-3);
+    align-items: start;
+  }
+
+  .ppf__stage {
+    position: relative;
+    overflow: hidden;
+    height: 420px;
+  }
+  .ppf__world {
+    --s: 1;
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 440px;
+    height: 420px;
+    margin-left: -220px;
+    transform: scale(var(--s));
+    transform-origin: 50% 0;
+  }
+  /* The fixed page: one camera for the book, at the spine. */
+  .ppf__world[data-mode='fixed'] {
+    perspective: 500px;
+    perspective-origin: 220px 210px;
+  }
+  .ppf__slot {
+    position: absolute;
+    top: 85px;
+    left: 20px;
+    width: 200px;
+    height: 250px;
+    border: 2px dashed var(--border-strong);
+    border-radius: 8px;
+  }
+  .ppf__spine {
+    position: absolute;
+    top: 70px;
+    left: 219px;
+    width: 2px;
+    height: 280px;
+    background: var(--viz-meta);
+    pointer-events: none;
+  }
+
+  .ppf__inside,
+  .ppf__face {
+    display: grid;
+    align-content: start;
+    gap: 10px;
+    padding: 22px 20px;
+    border-radius: 8px;
+    font-size: 16px;
+    line-height: 1.25;
+  }
+  .ppf__inside {
+    position: absolute;
+    top: 85px;
+    left: 220px;
+    width: 200px;
+    height: 250px;
+    background: var(--viz-panel);
+    border: 2px solid var(--border-strong);
+  }
+  .ppf__kicker {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+  .ppf__line {
+    color: var(--fg-muted);
+  }
+  .ppf__line--title {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--fg);
+  }
+  .ppf__bars-row {
+    display: grid;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .ppf__bars-row i {
+    display: block;
+    height: 9px;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--fg) 12%, transparent);
+  }
+  .ppf__bars-row i:last-child {
+    width: 60%;
+  }
+
+  .ppf__cover {
+    position: absolute;
+    top: 85px;
+    left: 220px;
+    width: 200px;
+    height: 250px;
+    transform-origin: 0 50%;
+  }
+  .ppf__face {
+    position: absolute;
+    inset: 0;
+  }
+  .ppf__face--front {
+    align-content: space-between;
+    justify-items: start;
+    background: var(--viz-sound);
+    color: var(--accent-fg);
+  }
+  .ppf__emblem {
+    width: 54px;
+    height: 54px;
+    border: 4px solid currentColor;
+    border-radius: 50%;
+    opacity: 0.85;
+  }
+  .ppf__brand {
+    font-family: var(--font-mono);
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+  .ppf__holder {
+    font-size: 16px;
+    font-weight: 600;
+    opacity: 0.9;
+  }
+  .ppf__face--back {
+    background: var(--viz-panel);
+    border: 2px solid var(--viz-sound);
+  }
+  .ppf__photo {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--viz-sound) 30%, var(--viz-panel));
+    border: 3px solid var(--viz-sound);
+  }
+
+  /* Original: a flat layer, double-sided faces, a timer picks one. */
+  .ppf__cover[data-show='front'] .ppf__face--back,
+  .ppf__cover[data-show='back'] .ppf__face--front {
+    display: none;
+  }
+  /* Fixed: a true 3D page; the face pointing away is culled. */
+  .ppf__world[data-mode='fixed'] .ppf__cover {
+    transform-style: preserve-3d;
+  }
+  .ppf__world[data-mode='fixed'] .ppf__face {
+    -webkit-backface-visibility: hidden;
+    backface-visibility: hidden;
+  }
+  .ppf__world[data-mode='fixed'] .ppf__face--back {
+    transform: rotateY(180deg);
+  }
+
+  .ppf__tree {
+    display: grid;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    min-width: 0;
+  }
+  .ppf__layers {
+    display: grid;
+    gap: 6px;
+  }
+  .ppf__layer {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 8px;
+    align-items: center;
+    padding: 6px 8px;
+    margin-left: calc(var(--depth) * 14px) !important;
+    border: 1px solid color-mix(in srgb, var(--viz-meta) 40%, transparent);
+    border-left-width: 3px;
+    border-radius: 8px;
+  }
+  .ppf__layer code {
+    grid-column: 1;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--viz-meta);
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+  .ppf__detail {
+    grid-column: 1;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+  }
+  .ppf__layer .viz-chip {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  .ppf__read {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: var(--sp-3);
+  }
+  .ppf__read .viz-chip {
+    font-variant-numeric: tabular-nums;
+  }
+  .ppf__scrub {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: var(--sp-3);
+    margin-top: var(--sp-3);
+  }
+
+  .ppf__plot {
+    display: grid;
+    gap: 4px;
+    margin-top: var(--sp-2);
+    padding: var(--sp-3);
+  }
+  .ppf__plot-area {
+    position: relative;
+    height: 120px;
+  }
+  .ppf__plot-area svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+  .ppf__plot-area line,
+  .ppf__plot-area path {
+    vector-effect: non-scaling-stroke;
+  }
+  .ppf__grid {
+    stroke: var(--border-strong);
+    stroke-width: 1;
+  }
+  .ppf__ninety {
+    stroke: var(--viz-meta);
+    stroke-width: 1.5;
+    stroke-dasharray: 5 4;
+  }
+  .ppf__curve {
+    fill: none;
+    stroke: var(--viz-sound);
+    stroke-width: 2.5;
+  }
+  .ppf__band {
+    fill: color-mix(in srgb, var(--viz-bad) 16%, transparent);
+  }
+  .ppf__timer {
+    stroke: var(--viz-net);
+    stroke-width: 2;
+  }
+  .ppf__cross {
+    stroke: var(--viz-level);
+    stroke-width: 2;
+    stroke-dasharray: 3 3;
+  }
+  .ppf__head {
+    stroke: var(--fg);
+    stroke-width: 1.5;
+  }
+  .ppf__y {
+    position: absolute;
+    left: 4px;
+    transform: translateY(-50%);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-faint);
+    background: var(--viz-panel);
+    padding: 0 3px;
+  }
+  .ppf__x {
+    position: relative;
+    height: 14px;
+  }
+  .ppf__x i {
+    position: absolute;
+    top: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-style: normal;
+    color: var(--fg-faint);
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+  .ppf__x i:first-child {
+    transform: none;
+  }
+  .ppf__x i:last-child {
+    transform: translateX(-100%);
+  }
+  .ppf__legend {
+    margin-top: var(--sp-2);
+  }
+
+  @media (max-width: 720px) {
+    .ppf__top {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (max-width: 560px) {
+    .ppf__scrub {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 4px;
+    }
+  }
+</style>

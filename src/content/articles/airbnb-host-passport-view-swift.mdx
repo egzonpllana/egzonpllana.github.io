@@ -1,0 +1,548 @@
+---
+title: 'Building the Airbnb Host Passport view in Swift 5.9 on iOS'
+description: 'A page that turns like the cover of Airbnb’s Host Passport, built in UIKit with a double-width view and CATransform3D, then re-checked with Core Animation’s own renderer: where the page pivots, what m34 really does, why the back face comes out mirrored, why a half-duration timer only works for a linear curve, and the same effect in SwiftUI.'
+date: 2024-08-17
+updated: 2026-10-30
+tags: ['Swift', 'iOS', 'UIKit', 'SwiftUI', '3D Animation', 'Core Animation']
+heroImage: '../../assets/covers/airbnb-host-passport-view-swift.png'
+repoUrl: 'https://github.com/egzonpllana/SwiftAndMathematicalChallenges/tree/main/BookViewXK'
+---
+
+import StatTiles from '../../components/StatTiles.astro';
+import PageHingeAnchor from '../../components/PageHingeAnchor.astro';
+import PerspectiveM34Lab from '../../components/PerspectiveM34Lab.astro';
+import PassportFlipScrubber from '../../components/PassportFlipScrubber.astro';
+
+Airbnb's Host Passport is a small card that opens like a booklet. Tap it and the cover swings around its left edge, its inside lands on the left, and the host's details are on the right. Anne Lu described how Airbnb built it on iOS in [a post on the Airbnb Tech Blog](https://medium.com/airbnb-engineering/animations-bringing-the-host-passport-to-life-on-ios-72856aea68a7). I rebuilt the effect in UIKit as `BookViewXK`, a book with several pages instead of a single cover, so the turn can repeat.
+
+A page turn looks like one animation, but it rests on three separate decisions. **Where the page rotates**: around its spine, not its middle. **Where the eye is**: a rotation in 3D only looks 3D if near things are drawn larger, and Core Animation's `m34` sets how near the eye is. **Which face you see**: a view has no back, so the back of the page is a second view, and something has to decide when it shows and which way round it is drawn. Each section below takes one of them from the intuition to the mechanism to the code.
+
+The first version of this article, from August 2024, described the idea and got parts of the mechanism wrong. It said `m34` "modifies the Z coordinate"; it does not change z at all, it makes the divisor depend on z. It turned the page with an angle of `-.pi` without saying that, for a half turn, the sign does not choose the direction. It left out that the back face renders mirrored, which the demo hid by shipping its back-page images already mirrored. It swapped the two faces with a timer at half the duration, which only works for a linear curve. And its book snippet did not compile. This version re-checks every claim against the [repository](https://github.com/egzonpllana/SwiftAndMathematicalChallenges/tree/main/BookViewXK), Apple's documentation, and probes. For the rendering questions I rendered the layer trees with Core Animation's own renderer, `CARenderer` into a Metal texture on macOS, at chosen moments of the animation, and read the pixels back. The title still says Swift 5.9 because that is what it was written in. The code below type-checks against the iOS 27.1 SDK in both the Swift 5 and Swift 6 language modes. The repository itself needs two small changes for Swift 6 mode: `private (set)` with a space is now an error, and its page protocol needs `@MainActor` because `UIView` subclasses are main-actor isolated.
+
+---
+
+## A page turns around its spine
+
+Hold a card by its middle and spin it: that is a card flip. Hold it by one edge and swing the other edge over: that is a page turn. The difference is only the pivot.
+
+In Core Animation the pivot is the layer's `anchorPoint`, in unit coordinates of its bounds. The default is `(0.5, 0.5)`, the centre, and every transform (rotation, scale, translation) is applied around it. So a page-sized view rotated about the y-axis flips like a card. The obvious fix is `anchorPoint = (0, 0.5)`, the leading edge. `UIView` has exposed `anchorPoint` directly since iOS 16; before that you set it on the layer.
+
+The catch is the rule that ties the anchor to the frame. A layer's `position` is where its anchor point sits in the superview, so `frame.origin = position − anchorPoint × size`. Move the anchor from 0.5 to 0 without touching `position`, and the anchor stays where it was while the page moves: a 200-point page jumps 100 points to the right, and now turns around a point 100 points right of the spine. You can move `position` back by half the width, but from then on every piece of code that sets that view's `center`, including Auto Layout, has to know the anchor is not in the middle, and a scale animation on the same view now grows from the edge instead of the centre.
+
+Airbnb's post describes a way around it, and `BookViewXK` uses it: keep the default anchor and make the view **twice as wide as the page**. The left half is empty and transparent; the page's content sits in the right half. The view's centre, its untouched anchor point, is now exactly on the spine, so an ordinary rotation about the centre swings the visible half around its left edge. Nothing about the view's geometry is unusual, so layout and other transforms keep working.
+
+<PageHingeAnchor />
+
+In `BookViewXK` every page view gets the book's full bounds, and lays out its faces in its own right half:
+
+```swift
+override func layoutSubviews() {
+    super.layoutSubviews()
+    // bounds and center, not frame: frame is undefined once a view has a 3D transform.
+    for face in [frontFace, backFace] {
+        face.bounds = CGRect(x: 0, y: 0, width: bounds.width / 2, height: bounds.height)
+        face.center = CGPoint(x: bounds.width * 0.75, y: bounds.midY)
+    }
+}
+```
+
+The original set the faces' `frame`. `UIView.frame`'s documentation is explicit that once a view's transform is not the identity, `frame` is undefined and should not be set; use `bounds` and `center`. The faces get a transform in a moment, so this matters.
+
+> **In plain words:** the anchor point is the pivot, and moving it moves the view. Making the view twice as wide as the page, with the page in the right half, puts the default pivot on the spine for free.
+
+---
+
+## `m34` is where the eye is
+
+Rotate a page about the y-axis with no perspective and it just gets narrower: the free edge slides towards the spine and comes back mirrored. What makes it look like it is lifting off the screen is that the edge coming towards you is drawn larger. That needs a camera, a point the scene is projected towards.
+
+`CATransform3D` is a 4×4 matrix, and Core Animation multiplies a point as a row vector: `[x y z 1] × M`. The fourth column produces `w`, and after the multiplication x and y are divided by `w`. In the identity matrix that column is `(0, 0, 0, 1)`, so `w` is always 1 and nothing changes size. Setting `m34`, the third row of the fourth column, to `−1/d` makes it:
+
+```text
+w = 1 + z · m34 = 1 − z / d
+scale = 1 / w = d / (d − z)
+```
+
+That is a pinhole camera `d` points in front of the screen. A point on the screen plane (z = 0) keeps its size. A point that has come `z` points towards you is scaled by `d / (d − z)`. With the original's `m34 = −1/500`, the eye is 500 points away; the free edge of a 200-point page at 90° is 200 points closer, so it is drawn 500 / 300 = 1.67 times taller. `m34` does not change z. It changes what x and y are divided by.
+
+A smaller `d` is a closer eye and a stronger effect, which is the original's "more negative `m34`, stronger perspective". It has a limit the original did not mention: the value is in points, not relative to the page. On a 400-point iPad page the same `−1/500` puts the edge at 90° only 100 points from the eye, a scale of 5. When `d` is not more than the page width, the edge reaches the eye and the projection breaks.
+
+<PerspectiveM34Lab />
+
+Where the `m34` lives matters as well. The original built it into each page's own transform:
+
+```swift
+var transform = CATransform3DIdentity
+transform.m34 = -1.0 / 500.0
+transform = CATransform3DRotate(transform, activePageSide.angle, 0, 1, 0)
+```
+
+`CATransform3DRotate(t, …)` returns `rotation × t`, so a point is rotated first and projected second, which is the right order. But the perspective is now part of the value being animated. The page starts at the identity, which has no `m34`, and the first turn animates from the identity to this matrix. Core Animation interpolates a matrix by decomposing both ends into translation, scale, rotation and perspective, and interpolating each part. The perspective part goes from nothing to `−1/500` along with the angle. In the render probe, a quarter of the way into a linear turn, the free edge was 108 pixels tall for a 100-pixel page, where full perspective at that angle gives 140: the camera dollies in during the first turn.
+
+The fix is to give the book one camera and leave the pages with plain rotations. `sublayerTransform` is the property for exactly that; Apple's documentation describes it as the usual place to add perspective to sublayers:
+
+```swift
+var perspective = CATransform3DIdentity
+perspective.m34 = -1.0 / 500.0
+bookView.layer.sublayerTransform = perspective
+```
+
+The vanishing point is the book layer's anchor point, its centre, which is the spine, because every page has the book's bounds.
+
+> **In plain words:** `m34 = −1/d` puts the eye `d` points in front of the screen, and things that come towards it are drawn `d / (d − z)` times larger. Put it on the container once, not into each animated page.
+
+---
+
+## Which way the page turns
+
+The original turned the page with `UIViewPropertyAnimator` and an angle of `-.pi`. It is tempting to read the minus sign as the direction. For a half turn, it cannot be. A rotation of −180° and one of +180° are the same matrix; `CATransform3DEqualToTransform` returns `true` for the two. The animator only ever sees the matrix, so the direction is whatever Core Animation's decomposition picks for a 180° difference. In the render probe it picked the free edge towards the viewer, which is what a page should do, but nothing in the code asked for it.
+
+To choose the direction, animate the angle instead of the matrix. Core Animation's `transform.rotation.y` key path interpolates a number and builds the matrix from it on every frame, the same mechanism `CAValueFunction`'s documentation uses to rotate a layer by 180°. In the probe, `0 → −π` lifted the edge towards the viewer and `0 → +π` swung it away into the screen.
+
+The same trap shows up in reverse when you read an angle back. `layer.value(forKeyPath: "transform.rotation.y")` decomposes the matrix, and for a page at −180° it returned **+180°**. Start a turn back from that value and the page swings the long way round, through the screen. The code below keeps its own copy of the angle and only reads the presentation layer while a turn is in flight.
+
+> **In plain words:** for a half turn, the matrix does not know which way you meant. Animate `transform.rotation.y` with the sign you want, and do not trust an angle read back from a matrix at ±180°.
+
+---
+
+## A view has no back
+
+A sheet of paper has two sides. A `UIView` has one: rotated past 90°, Core Animation draws the same content from behind, mirrored. So a page is two views, a front face and a back face, and something has to show the right one at the right time, the right way round.
+
+The original stacked both faces in the page's right half, hid the back one, and toggled `isHidden` on both with `DispatchQueue.main.asyncAfter` at half the flip duration. That has three problems.
+
+**The back is mirrored.** When the page has turned 180°, everything on it is mirrored, the back face included. The render probe shows it plainly: a marker on the back face's leading edge ended up next to the spine instead of at the outer edge. The demo looks right because its back-page images are themselves mirrored files; the rear page's text reads right to left in the PNG. A `UILabel` on the back would read backwards. The fix is to draw the back face already turned over, rotated 180° about its own centre, so the page's turn brings it back the right way round.
+
+**The timer is not the angle.** Half the time is half the angle only when angle is linear in time. The original used `curve: .linear`, so it worked, but a page turning at constant speed looks mechanical, and the first thing anyone changes is the curve. A critically damped spring with a 0.6 second duration crosses 90° at 161 ms. A timer at 300 ms leaves 139 ms in which the front face is on the left, seen from behind. And an interrupted turn leaves its timer pending, so the next turn's toggle can land on the wrong face.
+
+**Hidden is not the same as facing away.** `isHidden` also took the hidden face out of hit testing, which is good, but only by accident of the timer.
+
+The better rule is the physical one: each face is visible only while it faces the viewer. `CALayer.isDoubleSided = false` says exactly that, but there is a trap. A normal `CALayer` flattens its sublayers into its own plane before its transform is applied, so a sublayer never faces away from its parent, however far the parent rotates. In the probe, with the faces in a plain layer, `isDoubleSided = false` on both changed nothing: at −150° the front face was still drawn, from behind, and the back never appeared. `CATransformLayer` is the layer that does not flatten; its documentation describes it as the way to build "true 3D layer hierarchies". With the page backed by a transform layer, the probe showed the front until 90°, then the back, readable.
+
+<PassportFlipScrubber />
+
+Here is the page with all of that applied. `PageSide` is the original's enum, minus the `nextSide` helper:
+
+```swift
+import UIKit
+
+enum PageSide {
+    case right
+    case left
+
+    /// Rotation about the spine, in radians. Negative lifts the free edge toward the reader.
+    var angle: CGFloat {
+        switch self {
+        case .right: 0
+        case .left: -.pi
+        }
+    }
+}
+
+@MainActor
+protocol FlippablePage: AnyObject {
+    var side: PageSide { get }
+    func setAngle(_ angle: CGFloat)
+    func turn(to side: PageSide, velocity: CGFloat)
+}
+
+/// A page twice as wide as it looks. The left half is empty, so the view's
+/// centre, its default anchor point, sits on the spine.
+final class FlippablePageView: UIView, FlippablePage {
+    // A transform layer keeps both faces in 3D, so the one facing away is culled.
+    override class var layerClass: AnyClass { CATransformLayer.self }
+
+    let frontFace = UIView()
+    let backFace = UIView()
+    private(set) var side: PageSide = .right
+    private var angle: CGFloat = 0
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setUpFaces()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setUpFaces()
+    }
+
+    private func setUpFaces() {
+        for face in [backFace, frontFace] {
+            face.layer.isDoubleSided = false
+            face.clipsToBounds = true
+            addSubview(face)
+        }
+        // Drawn already turned over, so it reads correctly once the page has turned.
+        backFace.transform3D = CATransform3DMakeRotation(.pi, 0, 1, 0)
+        updateFaces()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // bounds and center, not frame: frame is undefined once a view has a 3D transform.
+        for face in [frontFace, backFace] {
+            face.bounds = CGRect(x: 0, y: 0, width: bounds.width / 2, height: bounds.height)
+            face.center = CGPoint(x: bounds.width * 0.75, y: bounds.midY)
+        }
+    }
+
+    /// Follows a finger: the angle is set directly, with no animation.
+    func setAngle(_ newAngle: CGFloat) {
+        layer.removeAnimation(forKey: "turn")
+        angle = min(0, max(-.pi, newAngle))
+        layer.transform = CATransform3DMakeRotation(angle, 0, 1, 0)
+        updateFaces()
+    }
+
+    /// Settles on a side. `velocity` is the finger's angular speed in radians per second.
+    func turn(to target: PageSide, velocity: CGFloat = 0) {
+        let from = presentedAngle
+        side = target
+        angle = target.angle
+        layer.transform = CATransform3DMakeRotation(angle, 0, 1, 0)
+        updateFaces()
+
+        guard !UIAccessibility.isReduceMotionEnabled else {
+            let fade = CATransition()
+            fade.type = .fade
+            fade.duration = 0.2
+            (superview?.layer ?? layer).add(fade, forKey: "turn")
+            return
+        }
+        let distance = angle - from
+        guard abs(distance) > 0.001 else { return }
+
+        // Animate the angle, not the matrix: the sign of the angle picks the direction.
+        let spring = CASpringAnimation(perceptualDuration: 0.6, bounce: 0)
+        spring.keyPath = "transform.rotation.y"
+        spring.fromValue = from
+        spring.toValue = angle
+        spring.initialVelocity = velocity / distance
+        spring.duration = spring.settlingDuration
+        layer.add(spring, forKey: "turn")
+    }
+
+    /// Where the page is on screen right now, mid-turn included.
+    private var presentedAngle: CGFloat {
+        guard layer.animation(forKey: "turn") != nil,
+              let value = layer.presentation()?.value(forKeyPath: "transform.rotation.y") as? CGFloat
+        else { return angle }
+        // The matrix reads back -180° as +180°; keep angles on the reader's side.
+        return value > .pi / 2 ? value - 2 * .pi : value
+    }
+
+    private func updateFaces() {
+        let showsBack = side == .left
+        frontFace.isUserInteractionEnabled = !showsBack
+        backFace.isUserInteractionEnabled = showsBack
+        frontFace.accessibilityElementsHidden = showsBack
+        backFace.accessibilityElementsHidden = !showsBack
+    }
+}
+```
+
+A few lines need a reason.
+
+- **The model value is set before the animation is added.** `layer.transform` is set to the final rotation and the spring animates only what is drawn, so when the animation is removed the page stays where it landed. `UIView`'s backing layer does not animate implicitly outside an animation block, so setting the model value does not start a second animation.
+- **`initialVelocity` is a fraction of the distance per second.** `CASpringAnimation`'s documentation does not give the unit. In the probe, a turn with `initialVelocity = 5` reached 43.9° after 50 ms, and one with 0 reached 17.3°. A critically damped spring with an initial velocity of five full distances per second predicts 44.2° and 17.5°. So a finger's angular speed is divided by the remaining angle.
+- **`bounce: 0`.** A critically damped spring settles without overshooting. A page that bounced past 180° would dip through the page under it: with `bounce: 0.3`, the overshoot is 8.3°.
+- **Interaction follows the face.** `UIView.hitTest(_:with:)` skips views that are hidden, have user interaction disabled or have an alpha below 0.01. It says nothing about which face the GPU culled, so a culled face is still a candidate for touches until you switch it off. The same goes for VoiceOver, which is why the hidden face also gets `accessibilityElementsHidden`.
+- **Reduce Motion.** With the setting on, the page jumps to its side and the book cross-fades, instead of rotating through space.
+
+A transform layer has a cost: it draws none of its own properties. Its documentation lists background colour, contents, borders, `mask`, `masksToBounds` and shadows among the things it ignores, and says `hitTest(_:)` should never be called on it because it has no 2D plane. That is why rounding, clipping and colour live on the two faces, and why I put the gestures that turn pages on the book view rather than on the turning page. UIKit may also log that changing a property "in transform-only layer" has no effect if something sets, say, the page's background colour.
+
+> **In plain words:** give each face its own side. Draw the back already turned over, back the page with a `CATransformLayer` so the face pointing away is culled, and switch off touches and VoiceOver on the face that is not showing.
+
+---
+
+## Stacking pages into a book
+
+A book is the page view repeated. The original `BookViewXK` added the pages in reverse so the first one is on top, gave each the book's bounds, and after every turn hid the page two behind the current one, 50 ms before the turn ended. That hiding step looked like an optimisation. It is load-bearing, and the render probe showed why.
+
+While a page is in the air, Core Animation sorts the pages by depth: in the probe, a page at −100°, −135° and −170° was drawn over a page already lying on the left, although it came first in the sibling order. When the turning page lands at exactly −180°, the two pages are in the same plane and there is no depth to sort by. Then sibling order decides: the page added later is drawn on top. `BookViewXK` adds pages in reverse, so that is the page turned before it, and without the timer the page you just turned would vanish under the previous one as it landed.
+
+The direct fix is to make the turning page the last sibling when its turn starts. It then wins the tie wherever it lands, in either direction, with no timer:
+
+```swift
+@MainActor
+protocol Book: AnyObject {
+    var currentIndex: Int { get }
+    func setPages(_ pages: [FlippablePageView])
+    func turnToNextPage()
+    func turnToPreviousPage()
+}
+
+final class BookView: UIView, Book {
+    private var pages: [FlippablePageView] = []
+    private(set) var currentIndex = 0
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setUpPerspective()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setUpPerspective()
+    }
+
+    private func setUpPerspective() {
+        // One camera for every page, 500 points in front of the screen, looking at the spine.
+        var perspective = CATransform3DIdentity
+        perspective.m34 = -1.0 / 500.0
+        layer.sublayerTransform = perspective
+    }
+
+    func setPages(_ newPages: [FlippablePageView]) {
+        pages.forEach { $0.removeFromSuperview() }
+        pages = newPages
+        currentIndex = 0
+        newPages.reversed().forEach(addSubview) // the first page on top
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        for page in pages {
+            page.bounds = bounds
+            page.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        }
+    }
+
+    func turnToNextPage() {
+        guard pages.indices.contains(currentIndex) else { return }
+        turn(pages[currentIndex], to: .left)
+        currentIndex += 1
+    }
+
+    func turnToPreviousPage() {
+        guard currentIndex > 0 else { return }
+        currentIndex -= 1
+        turn(pages[currentIndex], to: .right)
+    }
+
+    private func turn(_ page: FlippablePageView, to side: PageSide) {
+        // Last in the sibling order wins the tie when it lands flat on another page.
+        bringSubviewToFront(page)
+        page.turn(to: side, velocity: 0)
+    }
+}
+```
+
+Two differences from the original besides the ordering. The original's `layoutSubviews` removed every page from the view and added it back on each layout pass, which resets the order the turns depend on; this one only sets geometry. And the subviews are added once, in `setPages`.
+
+Setting it up looks like this. The original snippet passed a single page to `setPages`, which takes an array, and declared a `private let` inside a function body, so it did not compile:
+
+```swift
+let page = FlippablePageView()
+page.frontFace.addSubview(coverArtwork)
+page.backFace.addSubview(hostDetails)
+
+let bookView = BookView()
+bookView.setPages([page])
+bookView.turnToNextPage()
+```
+
+> **In plain words:** in the air, Core Animation sorts pages by depth. Lying flat on each other, they tie, and the later sibling wins. Bring a page to the front when its turn starts.
+
+---
+
+## Measured, not assumed
+
+These are the numbers from the probes behind the sections above. The spring values come from SwiftUI's and Core Animation's own spring types (`Spring(duration: 0.6, bounce: 0)` and `CASpringAnimation(perceptualDuration: 0.6, bounce: 0)` agree: stiffness 109.7, damping 20.9, settling after 0.9 s). The rest come from rendering the layer trees with `CARenderer` and reading the pixels.
+
+<StatTiles
+  tiles={[
+    {
+      label: 'spring crosses 90°',
+      value: 161,
+      suffix: ' ms',
+      sub: 'duration 0.6, bounce 0; a half-duration timer fires at 300 ms',
+    },
+    {
+      label: 'front seen from behind',
+      value: 139,
+      suffix: ' ms',
+      sub: 'between the 90° crossing and the timer swap',
+    },
+    {
+      label: 'overshoot at bounce 0.3',
+      value: 8.3,
+      decimals: 1,
+      suffix: '°',
+      sub: 'past 180°, into the page underneath',
+    },
+    {
+      label: 'edge height at 45°',
+      value: 108,
+      suffix: ' px',
+      sub: 'for a 100 px page, first linear turn; 140 px with full perspective',
+    },
+  ]}
+/>
+
+What I did not check: everything here ran on macOS's Core Animation and SwiftUI. `UIViewPropertyAnimator`, UIKit hit testing through a transform layer and VoiceOver are UIKit-only and were not exercised on a device for this version.
+
+---
+
+## Writing it today in SwiftUI
+
+`BookViewXK` is UIKit wrapped in a `UIViewRepresentable`, which is how I wrote it in 2024. For a single cover like the Host Passport, SwiftUI now does all of this in one modifier, and the anchor problem from the first section disappears: `rotation3DEffect` takes the anchor as a parameter of the effect, and an effect does not change layout.
+
+Two things are worth knowing about it, and I measured both from `rotation3DEffect`'s projection on macOS. First, its `perspective` parameter is not a distance. The eye sits `max(width, height) / perspective` points away, at the anchor. The default of 1 puts the eye one view length away: for a 200 × 250 page turning about its leading edge, the edge at 90° is drawn five times larger, and for a page wider than it is tall the edge reaches the eye. To match the UIKit page, divide the page's longer side by 500. Second, SwiftUI draws the view flat and projects it, so there is no back-face culling. The face is chosen from the angle, which only works if the modifier sees every in-between angle. A plain modifier computes `body` once with the final value, so the faces would swap at the start of the animation. Conforming to `Animatable` makes SwiftUI call it on every frame:
+
+```swift
+import SwiftUI
+
+/// Turns a page about its leading edge. Because it is Animatable, SwiftUI calls
+/// body on every frame with the in-between angle, so the faces swap at 90°.
+struct PageTurn<Back: View>: ViewModifier, Animatable {
+    var angle: Double // degrees: 0 lies on the right, -180 on the left
+    let pageSize: CGSize
+    let flat: Bool // Reduce Motion: cross-fade instead of turning
+    let back: Back
+
+    nonisolated var animatableData: Double {
+        get { angle }
+        set { angle = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        let progress = -angle / 180
+        let showsBack = progress > 0.5
+        if flat {
+            ZStack {
+                content.opacity(1 - progress)
+                back.opacity(progress).offset(x: -pageSize.width)
+            }
+        } else {
+            ZStack {
+                content
+                    .opacity(showsBack ? 0 : 1)
+                    .allowsHitTesting(!showsBack)
+                    .accessibilityHidden(showsBack)
+                back
+                    .scaleEffect(x: -1, y: 1) // pre-mirrored: reads correctly after half a turn
+                    .opacity(showsBack ? 1 : 0)
+                    .allowsHitTesting(showsBack)
+                    .accessibilityHidden(!showsBack)
+            }
+            .rotation3DEffect(
+                .degrees(angle),
+                axis: (x: 0, y: 1, z: 0),
+                anchor: .leading,
+                // SwiftUI puts the eye at max(width, height) / perspective: 500 pt, as in UIKit.
+                perspective: max(pageSize.width, pageSize.height) / 500
+            )
+        }
+    }
+}
+```
+
+`animatableData` is `nonisolated` because `ViewModifier` is main-actor isolated and `Animatable` is not; without it, Swift 6 rejects the conformance. Since Xcode 26, SwiftUI's `@Animatable` macro can write the property for you; it is expanded at compile time, and it type-checked here with an iOS 17 deployment target. I rendered this modifier with `ImageRenderer` at 0°, −60°, −89°, −91°, −120° and −180°: the front up to 89°, the back from 91°, and with the `scaleEffect` removed, the back came out mirrored, as in UIKit.
+
+The passport itself is the inside page with the cover laid over it. A drag follows the finger, and on release the page settles with a spring that carries the finger's speed:
+
+```swift
+struct PassportView<Cover: View, InsideLeft: View, InsideRight: View>: View {
+    let cover: Cover
+    let insideLeft: InsideLeft
+    let insideRight: InsideRight
+    var pageSize = CGSize(width: 200, height: 250)
+
+    @State private var angle: Double = 0
+    @State private var isOpen = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        insideRight
+            .frame(width: pageSize.width, height: pageSize.height)
+            .overlay {
+                cover
+                    .frame(width: pageSize.width, height: pageSize.height)
+                    .modifier(PageTurn(
+                        angle: angle,
+                        pageSize: pageSize,
+                        flat: reduceMotion,
+                        back: insideLeft.frame(width: pageSize.width, height: pageSize.height)
+                    ))
+            }
+            .frame(width: pageSize.width * 2, alignment: .trailing) // room for the open cover
+            .contentShape(Rectangle())
+            .onTapGesture { settle(open: !isOpen, velocity: 0) }
+            .gesture(drag)
+            .accessibilityElement(children: .contain)
+            .accessibilityAction(named: isOpen ? "Close" : "Open") {
+                settle(open: !isOpen, velocity: 0)
+            }
+    }
+
+    private var drag: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                let start: Double = isOpen ? -180 : 0
+                let delta = value.translation.width / pageSize.width * 180
+                angle = min(0, max(-180, start + delta))
+            }
+            .onEnded { value in
+                let start: Double = isOpen ? -180 : 0
+                let projected = start + value.predictedEndTranslation.width / pageSize.width * 180
+                let speed = value.velocity.width / pageSize.width * 180 // degrees per second
+                settle(open: projected < -90, velocity: speed)
+            }
+    }
+
+    private func settle(open: Bool, velocity: Double) {
+        let target: Double = open ? -180 : 0
+        let distance = target - angle
+        isOpen = open
+        let spring = Animation.interpolatingSpring(
+            duration: 0.6,
+            bounce: 0,
+            initialVelocity: distance == 0 ? 0 : velocity / distance
+        )
+        withAnimation(reduceMotion ? .easeInOut(duration: 0.2) : spring) {
+            angle = target
+        }
+    }
+}
+```
+
+The decision on release uses `predictedEndTranslation`, where the drag would end if the finger's momentum carried on, so a short flick opens the cover as readily as a long drag. `interpolatingSpring` takes its velocity as a fraction of the animated distance per second, the same unit as `CASpringAnimation`, hence the division. Its `duration` and `bounce` describe a spring the way the `Spring` type from iOS 17 does; the older `response` and `dampingFraction` map onto them, with `response` equal to the duration and the damping fraction equal to 1 − bounce for a non-negative bounce.
+
+> **In plain words:** in SwiftUI, the anchor is a parameter and the perspective is relative to the view's size. Make the modifier `Animatable` so it sees every angle, mirror the back face, and pick the face from the angle.
+
+---
+
+## Takeaways
+
+> **The pivot is the anchor point, and moving it moves the view.** A view twice as wide as the page, with the page in the right half, puts the default pivot on the spine without touching the anchor.
+
+> **`m34 = −1/d` is a camera `d` points away.** Points that come towards it are drawn `d / (d − z)` times larger. It is in points, so the same value is stronger on a bigger page. Put it on the container's `sublayerTransform`, not into the animated transform.
+
+> **A half turn has no direction in a matrix.** −180° and +180° are the same matrix. Animate `transform.rotation.y` with the sign you want, and do not read an angle back from a matrix at ±180°.
+
+> **The back face is drawn mirrored.** Pre-rotate it by 180°, or ship mirrored images and remember that is what you did.
+
+> **Choose the face by the angle, not by the clock.** A timer at half the duration matches 90° only for a linear curve. `isDoubleSided = false` only works inside a `CATransformLayer`, because a normal layer flattens its sublayers.
+
+> **Culled is not hidden.** Hit testing and VoiceOver do not know which face the GPU dropped. Switch off the face that is not showing.
+
+> **Flat pages tie.** In the air, Core Animation sorts by depth; lying flat, sibling order decides. Bring a page to the front when its turn starts.
+
+> **Springs for pages need `bounce: 0`.** Anything bouncier swings the page through the one underneath.
+
+---
+
+## References
+
+**Airbnb** — Anne Lu, [Animations: Bringing the Host Passport to Life on iOS](https://medium.com/airbnb-engineering/animations-bringing-the-host-passport-to-life-on-ios-72856aea68a7), Airbnb Tech Blog, May 2024
+
+**Core Animation** — [`CALayer.anchorPoint`](https://developer.apple.com/documentation/quartzcore/calayer/anchorpoint) · [`CALayer.sublayerTransform`](https://developer.apple.com/documentation/quartzcore/calayer/sublayertransform) · [`CALayer.isDoubleSided`](https://developer.apple.com/documentation/quartzcore/calayer/isdoublesided) · [`CATransformLayer`](https://developer.apple.com/documentation/quartzcore/catransformlayer) · [`CATransform3D`](https://developer.apple.com/documentation/quartzcore/catransform3d) · [`CAValueFunction`](https://developer.apple.com/documentation/quartzcore/cavaluefunction) · [`CASpringAnimation`](https://developer.apple.com/documentation/quartzcore/caspringanimation) · [`CARenderer`](https://developer.apple.com/documentation/quartzcore/carenderer) · [Core Animation Programming Guide](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/CoreAnimation_guide/Introduction/Introduction.html)
+
+**UIKit** — [`UIView.anchorPoint`](https://developer.apple.com/documentation/uikit/uiview/anchorpoint) · [`UIView.frame`](https://developer.apple.com/documentation/uikit/uiview/frame) · [`UIView.transform3D`](https://developer.apple.com/documentation/uikit/uiview/transform3d) · [`UIView.hitTest(_:with:)`](<https://developer.apple.com/documentation/uikit/uiview/hittest(_:with:)>) · [`UIAccessibility.isReduceMotionEnabled`](https://developer.apple.com/documentation/uikit/uiaccessibility/isreducemotionenabled)
+
+**SwiftUI** — [`rotation3DEffect`](<https://developer.apple.com/documentation/swiftui/view/rotation3deffect(_:axis:anchor:anchorz:perspective:)>) · [`Animatable`](https://developer.apple.com/documentation/swiftui/animatable) · [`Spring`](https://developer.apple.com/documentation/swiftui/spring) · [`interpolatingSpring`](<https://developer.apple.com/documentation/swiftui/animation/interpolatingspring(duration:bounce:initialvelocity:)>) · [`accessibilityReduceMotion`](https://developer.apple.com/documentation/swiftui/environmentvalues/accessibilityreducemotion)
+
+**Background** — [Transformation matrix](https://en.wikipedia.org/wiki/Transformation_matrix) and [Homogeneous coordinates](https://en.wikipedia.org/wiki/Homogeneous_coordinates) on Wikipedia

@@ -1,0 +1,620 @@
+---
+/**
+ * What m34 does, seen twice. Left: the page on screen, rotated about the spine
+ * with perspective m34 = -1/d (CSS perspective(d px) about the spine, which is
+ * the same projection). Right: the same moment from above, in points: the
+ * screen line, the page, the eye d points in front of the screen, and the ray
+ * from the eye through the free edge to the screen, which is where the edge is
+ * drawn.
+ *
+ * The numbers are the article's model: a 200 x 250 pt page. The free edge at
+ * angle a is z = 200 sin a points in front of the screen; Core Animation
+ * multiplies [x y z 1] by the matrix, so w = 1 + z * m34 = 1 - z/d and x, y are
+ * divided by w. The matrix shown is CATransform3DRotate(P, -a, 0, 1, 0), the
+ * original's spelling, whose m14 = sin(-a)/d and m34 = -cos(-a)/d; that is why
+ * the matrix of a page at -180 degrees reads m34 = +1/d.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '02',
+  caption = 'm34 = −1/d places the eye d points in front of the screen. A point that comes z points towards it is divided by w = 1 − z/d, so it is drawn d/(d − z) times larger. At the original’s −1/500, the free edge of a 200 pt page at 90° is 200 pt closer and 1.67 times taller. Bring the eye closer than the page is wide and the edge passes the eye: the projection breaks. SwiftUI’s rotation3DEffect expresses the same distance as perspective = max(width, height) / d.',
+} = Astro.props;
+
+const PAGE_W = 200;
+const PAGE_H = 250;
+const DEFAULT_D = 500;
+const DEFAULT_ANGLE = 60;
+const CELLS = [
+  'm11',
+  'm12',
+  'm13',
+  'm14',
+  'm21',
+  'm22',
+  'm23',
+  'm24',
+  'm31',
+  'm32',
+  'm33',
+  'm34',
+  'm41',
+  'm42',
+  'm43',
+  'm44',
+];
+---
+
+<VizFrame
+  fig={fig}
+  title="m34 is where the eye is"
+  caption={caption}
+  class="pml"
+  data-pml
+>
+  <div class="pml__controls">
+    <label class="pml__slider">
+      <span class="viz-label">eye distance d</span>
+      <input
+        type="range"
+        min="150"
+        max="2000"
+        step="10"
+        value={DEFAULT_D}
+        data-d
+        aria-label="Perspective distance in points"
+      />
+      <span class="viz-chip viz-chip--level" data-d-out>{DEFAULT_D} pt</span>
+    </label>
+    <label class="pml__slider">
+      <span class="viz-label">rotation about y</span>
+      <input
+        type="range"
+        min="0"
+        max="180"
+        step="1"
+        value={DEFAULT_ANGLE}
+        data-a
+        aria-label="Rotation angle in degrees"
+      />
+      <span class="viz-chip viz-chip--level" data-a-out>−{DEFAULT_ANGLE}°</span>
+    </label>
+    <div class="pml__toggle">
+      <span class="viz-label">perspective</span>
+      <div class="viz-seg" role="group" aria-label="Perspective">
+        <button type="button" aria-pressed="false" data-persp="off"
+          >m34 = 0</button
+        >
+        <button type="button" aria-pressed="true" data-persp="on"
+          >m34 = −1/d</button
+        >
+      </div>
+    </div>
+  </div>
+
+  <div class="pml__views">
+    <div class="pml__view">
+      <span class="viz-label">on screen</span>
+      <div
+        class="pml__stage viz-panel"
+        data-stage
+        role="img"
+        aria-label="The page rotated about the spine with the chosen perspective."
+      >
+        <div class="pml__world" data-world>
+          <span class="pml__slot"></span>
+          <div class="pml__page" data-page>
+            <i></i><i></i><i></i><i></i>
+          </div>
+          <span class="pml__spine"></span>
+        </div>
+      </div>
+    </div>
+    <div class="pml__view">
+      <span class="viz-label">from above</span>
+      <div class="pml__top viz-panel">
+        <svg
+          viewBox="-240 -40 480 535"
+          preserveAspectRatio="xMidYMid meet"
+          role="img"
+          aria-label="Top view: the screen line, the page rotated off it, the eye in front of the screen, and the ray from the eye through the free edge of the page."
+          data-svg
+        >
+          <line class="pml__screen" x1="-230" y1="0" x2="230" y2="0"></line>
+          <line class="pml__flat" data-flat x1="0" y1="0" x2="0" y2="0"></line>
+          <line class="pml__ray" data-ray x1="0" y1="0" x2="0" y2="0"></line>
+          <line class="pml__page-line" data-pline x1="0" y1="0" x2="200" y2="0"
+          ></line>
+          <circle class="pml__spine-dot" cx="0" cy="0" r="7"></circle>
+          <circle class="pml__edge" data-edge cx="200" cy="0" r="8"></circle>
+          <circle class="pml__proj" data-proj cx="200" cy="0" r="8"></circle>
+          <g data-eye>
+            <circle class="pml__eye" cx="0" cy="0" r="12"></circle>
+            <circle class="pml__pupil" cx="0" cy="0" r="4"></circle>
+          </g>
+          <path class="pml__more" data-more d="M -12 0 L 0 14 L 12 0"></path>
+        </svg>
+        <div class="viz-legend pml__top-legend" aria-hidden="true">
+          <span><i style="--c:var(--viz-meta)"></i>screen, z = 0</span>
+          <span><i style="--c:var(--viz-sound)"></i>page</span>
+          <span><i style="--c:var(--viz-level)"></i>ray to the eye</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="pml__read viz-panel" aria-live="polite">
+    <div>
+      <span class="viz-label">m34</span>
+      <span class="viz-chip viz-chip--level" data-out-m34></span>
+    </div>
+    <div>
+      <span class="viz-label">free edge z</span>
+      <span class="viz-chip viz-chip--level" data-out-z></span>
+    </div>
+    <div>
+      <span class="viz-label">w = 1 − z/d</span>
+      <span class="viz-chip viz-chip--level" data-out-w></span>
+    </div>
+    <div>
+      <span class="viz-label">edge drawn</span>
+      <span class="viz-chip" data-out-scale></span>
+    </div>
+    <div>
+      <span class="viz-label">SwiftUI perspective</span>
+      <span class="viz-chip viz-chip--meta" data-out-swiftui></span>
+    </div>
+  </div>
+
+  <div class="pml__matrix viz-panel">
+    <span class="viz-label"
+      >CATransform3DRotate(P, angle, 0, 1, 0), P.m34 = −1/d</span
+    >
+    <div class="pml__grid" role="table" aria-label="Transform matrix">
+      {
+        CELLS.map((c) => (
+          <span
+            class:list={[
+              'pml__cell',
+              { 'pml__cell--hot': c === 'm34' || c === 'm14' },
+            ]}
+            role="cell"
+          >
+            <b>{c}</b>
+            <span data-cell={c}>0</span>
+          </span>
+        ))
+      }
+    </div>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-pml-data
+    set:html={JSON.stringify({ pageW: PAGE_W, pageH: PAGE_H })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    // On-screen world in points: spine at x = 210, page 200 x 250, top at 75.
+    const WORLD_W = 420;
+    const WORLD_H = 400;
+    // Top view: anything nearer than this is drawn at the bottom edge.
+    const EYE_MAX = 460;
+
+    const fmt = (n, digits) => {
+      const v = Math.abs(n) < 5e-6 ? 0 : n;
+      return v.toFixed(digits).replace('-', '−');
+    };
+
+    function initLab(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-pml-data]').textContent,
+      );
+      const stage = root.querySelector('[data-stage]');
+      const world = root.querySelector('[data-world]');
+      const page = root.querySelector('[data-page]');
+      const dIn = root.querySelector('[data-d]');
+      const aIn = root.querySelector('[data-a]');
+      const dOut = root.querySelector('[data-d-out]');
+      const aOut = root.querySelector('[data-a-out]');
+      const perspBtns = [...root.querySelectorAll('[data-persp]')];
+      const pline = root.querySelector('[data-pline]');
+      const edge = root.querySelector('[data-edge]');
+      const proj = root.querySelector('[data-proj]');
+      const ray = root.querySelector('[data-ray]');
+      const flat = root.querySelector('[data-flat]');
+      const eye = root.querySelector('[data-eye]');
+      const more = root.querySelector('[data-more]');
+      const cells = {};
+      root.querySelectorAll('[data-cell]').forEach((el) => {
+        cells[el.dataset.cell] = el;
+      });
+      const out = {
+        m34: root.querySelector('[data-out-m34]'),
+        z: root.querySelector('[data-out-z]'),
+        w: root.querySelector('[data-out-w]'),
+        scale: root.querySelector('[data-out-scale]'),
+        swiftui: root.querySelector('[data-out-swiftui]'),
+      };
+      let perspective = true;
+
+      function fit() {
+        const s = Math.min(1, stage.clientWidth / WORLD_W);
+        world.style.setProperty('--s', String(s));
+        stage.style.height = `${WORLD_H * s}px`;
+      }
+
+      function setLine(el, x1, y1, x2, y2) {
+        el.setAttribute('x1', String(x1));
+        el.setAttribute('y1', String(y1));
+        el.setAttribute('x2', String(x2));
+        el.setAttribute('y2', String(y2));
+      }
+
+      function render() {
+        const d = Number(dIn.value);
+        const deg = Number(aIn.value);
+        const a = (-deg * Math.PI) / 180; // the angle as the code passes it
+        const m34 = perspective ? -1 / d : 0;
+
+        dOut.textContent = `${d} pt`;
+        aOut.textContent = deg === 0 ? '0°' : `−${deg}°`;
+        root.classList.toggle('is-flat', !perspective);
+
+        // On screen: perspective about the spine, as sublayerTransform does it.
+        page.style.transform = perspective
+          ? `perspective(${d}px) rotateY(${-deg}deg)`
+          : `rotateY(${-deg}deg)`;
+
+        // Free edge in points; z towards the viewer.
+        const ex = data.pageW * Math.cos(a);
+        const ez = -data.pageW * Math.sin(a);
+        const w = 1 + ez * m34;
+        const broken = w <= 0.02;
+        const scale = broken ? Infinity : 1 / w;
+
+        // Top view: z grows downwards, towards the viewer.
+        setLine(pline, 0, 0, ex, ez);
+        edge.setAttribute('cx', String(ex));
+        edge.setAttribute('cy', String(ez));
+        const eyeY = Math.min(d, EYE_MAX);
+        eye.setAttribute('transform', `translate(0 ${eyeY})`);
+        eye.style.display = perspective ? '' : 'none';
+        more.setAttribute('transform', `translate(0 ${EYE_MAX + 14})`);
+        more.style.display = perspective && d > EYE_MAX ? '' : 'none';
+        if (perspective && !broken) {
+          const px = ex * scale;
+          proj.setAttribute('cx', String(Math.max(-235, Math.min(235, px))));
+          proj.style.display = '';
+          // From the projected point, through the edge, towards the real eye.
+          const dirX = 0 - ex;
+          const dirZ = d - ez;
+          const t = (Math.min(d, EYE_MAX) - ez) / dirZ;
+          setLine(ray, px, 0, ex + dirX * t, ez + dirZ * t);
+          ray.style.display = '';
+          setLine(flat, ex, ez, ex, 0);
+        } else {
+          proj.setAttribute('cx', String(ex));
+          proj.style.display = perspective ? 'none' : '';
+          ray.style.display = 'none';
+          setLine(flat, ex, ez, ex, 0);
+        }
+        flat.style.display = Math.abs(ez) > 1 ? '' : 'none';
+
+        // Readouts.
+        out.m34.textContent = perspective
+          ? `−1/${d} = ${fmt(m34, 5)}`
+          : '0, no perspective';
+        out.z.textContent = `${fmt(ez, 0)} pt`;
+        out.w.textContent = perspective ? fmt(w, 3) : '1';
+        if (broken) {
+          out.scale.textContent = 'edge passed the eye';
+          out.scale.className = 'viz-chip viz-chip--bad';
+        } else {
+          out.scale.textContent = `× ${scale.toFixed(2)}, ${Math.round(data.pageH * scale)} pt tall`;
+          out.scale.className = `viz-chip ${scale > 3 ? 'viz-chip--bad' : 'viz-chip--level'}`;
+        }
+        out.swiftui.textContent = perspective
+          ? `${(Math.max(data.pageW, data.pageH) / d).toFixed(2)} for 200 × 250`
+          : '0';
+
+        // R(a) x P, Core Animation's row-vector convention.
+        const c = Math.cos(a);
+        const s = Math.sin(a);
+        const m = {
+          m11: c,
+          m12: 0,
+          m13: -s,
+          m14: -s * m34,
+          m21: 0,
+          m22: 1,
+          m23: 0,
+          m24: 0,
+          m31: s,
+          m32: 0,
+          m33: c,
+          m34: c * m34,
+          m41: 0,
+          m42: 0,
+          m43: 0,
+          m44: 1,
+        };
+        Object.entries(m).forEach(([k, v]) => {
+          const hot = k === 'm14' || k === 'm34';
+          cells[k].textContent = fmt(v, hot ? 5 : 3);
+        });
+      }
+
+      dIn.addEventListener('input', render);
+      aIn.addEventListener('input', render);
+      perspBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          perspective = btn.dataset.persp === 'on';
+          perspBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+
+      if ('ResizeObserver' in window) new ResizeObserver(fit).observe(stage);
+      fit();
+      render();
+    }
+
+    const boot = () => document.querySelectorAll('[data-pml]').forEach(initLab);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .pml__controls {
+    display: grid;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .pml__slider {
+    display: grid;
+    grid-template-columns: 9.5rem minmax(0, 1fr) 5.5em;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+  .pml__slider .viz-chip {
+    justify-content: center;
+  }
+  .pml.is-flat .pml__slider:first-child {
+    opacity: 0.45;
+  }
+  .pml__toggle {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+  }
+
+  .pml__views {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-3);
+  }
+  .pml__view {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .pml__stage {
+    position: relative;
+    overflow: hidden;
+    height: 400px;
+  }
+  .pml__world {
+    --s: 1;
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 420px;
+    height: 400px;
+    margin-left: -210px;
+    transform: scale(var(--s));
+    transform-origin: 50% 0;
+  }
+  .pml__slot {
+    position: absolute;
+    top: 75px;
+    left: 210px;
+    width: 200px;
+    height: 250px;
+    border: 2px dashed var(--border-strong);
+    border-radius: 6px;
+  }
+  .pml__spine {
+    position: absolute;
+    top: 55px;
+    left: 209px;
+    width: 2px;
+    height: 290px;
+    background: var(--viz-meta);
+  }
+  .pml__page {
+    position: absolute;
+    top: 75px;
+    left: 210px;
+    width: 200px;
+    height: 250px;
+    display: grid;
+    align-content: start;
+    gap: 14px;
+    padding: 24px 20px;
+    border: 2px solid var(--viz-sound);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--viz-sound) 14%, var(--viz-panel));
+    transform-origin: 0 50%;
+  }
+  .pml__page i {
+    display: block;
+    height: 12px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--viz-sound) 35%, transparent);
+  }
+  .pml__page i:nth-child(2) {
+    width: 70%;
+  }
+  .pml__page i:nth-child(4) {
+    width: 50%;
+  }
+
+  .pml__top {
+    display: grid;
+    gap: 6px;
+    padding: var(--sp-2);
+  }
+  .pml__top svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 360px;
+  }
+  .pml__screen {
+    stroke: var(--viz-meta);
+    stroke-width: 4;
+  }
+  .pml__page-line {
+    stroke: var(--viz-sound);
+    stroke-width: 10;
+    stroke-linecap: round;
+  }
+  .pml__spine-dot {
+    fill: var(--viz-meta);
+  }
+  .pml__edge {
+    fill: var(--viz-sound);
+    stroke: var(--viz-panel);
+    stroke-width: 3;
+  }
+  .pml__proj {
+    fill: var(--viz-level);
+    stroke: var(--viz-panel);
+    stroke-width: 3;
+  }
+  .pml__ray {
+    stroke: var(--viz-level);
+    stroke-width: 3;
+    stroke-dasharray: 10 8;
+  }
+  .pml__flat {
+    stroke: var(--fg-faint);
+    stroke-width: 2;
+    stroke-dasharray: 4 6;
+  }
+  .pml__eye {
+    fill: var(--viz-panel);
+    stroke: var(--fg-muted);
+    stroke-width: 3;
+  }
+  .pml__pupil {
+    fill: var(--fg);
+  }
+  .pml__more {
+    fill: none;
+    stroke: var(--fg-muted);
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .pml__top-legend {
+    padding: 0 4px 2px;
+  }
+
+  .pml__read {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .pml__read div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .pml__read .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .pml__matrix {
+    display: grid;
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .pml__grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .pml__cell {
+    display: grid;
+    gap: 1px;
+    padding: 5px 8px;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow-wrap: anywhere;
+  }
+  .pml__cell b {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--fg-faint);
+  }
+  .pml__cell--hot {
+    border-color: color-mix(in srgb, var(--viz-level) 60%, transparent);
+    background: color-mix(in srgb, var(--viz-level) 10%, transparent);
+  }
+  .pml__cell--hot b {
+    color: var(--viz-level);
+  }
+
+  @media (max-width: 720px) {
+    .pml__read {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .pml__read div:last-child {
+      grid-column: 1 / -1;
+    }
+  }
+  @media (max-width: 560px) {
+    .pml__views {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .pml__slider {
+      grid-template-columns: minmax(0, 1fr) 5.5em;
+      gap: 4px var(--sp-3);
+    }
+    .pml__slider .viz-label {
+      grid-column: 1 / -1;
+    }
+    .pml__cell {
+      padding: 4px 5px;
+      font-size: 10.5px;
+    }
+  }
+</style>

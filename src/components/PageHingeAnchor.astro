@@ -1,0 +1,456 @@
+---
+/**
+ * Three ways to make a page turn, side by side on the same spread. The reader
+ * picks one and drags the angle:
+ *   - a page-sized view with the default anchor point (0.5, 0.5): it rotates
+ *     about its own middle, like a card;
+ *   - the same view with anchorPoint = (0, 0.5) and position untouched: the
+ *     anchor stays put and the frame moves 100 pt right, because
+ *     frame.origin = position - anchorPoint * size;
+ *   - BookViewXK's view, twice the page's width with the left half empty: the
+ *     default anchor, its centre, sits on the spine.
+ * Geometry is in points of the article's model page, 200 x 250 pt, drawn with
+ * the same perspective as the UIKit code (m34 = -1/500, i.e. CSS
+ * perspective(500px) inside the transform, about the anchor point). The world
+ * is scaled to fit, so the proportions stay exact at any width.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '01',
+  caption = 'The page is 200 × 250 pt and the perspective is m34 = −1/500, as in the UIKit code. With the default anchor the page flips about its own middle. Moving the anchor to the leading edge moves the page: its position stays where the old centre was, so the frame jumps 100 pt right and the page turns around a point 100 pt from the spine. The double-width view keeps the default anchor and still turns about the spine, because its centre is the spine.',
+} = Astro.props;
+
+const MODES = [
+  {
+    id: 'card',
+    label: 'default anchor',
+    anchor: '(0.5, 0.5)',
+    width: '200 pt',
+    pivot: '100 pt right of the spine',
+    pivotBad: true,
+    frame: 'frame unchanged',
+    frameBad: false,
+    note: 'A page-sized view rotates about its own centre. The free edge comes forward while the spine edge goes back: a card flip, not a page turn.',
+  },
+  {
+    id: 'anchor',
+    label: 'anchorPoint (0, 0.5)',
+    anchor: '(0, 0.5)',
+    width: '200 pt',
+    pivot: '100 pt right of the spine',
+    pivotBad: true,
+    frame: 'frame moved +100 pt',
+    frameBad: true,
+    note: 'The anchor point is now the leading edge, but position still holds the old centre, so the page moved half its width to the right. It hinges correctly, around the wrong place, until you also move position or center back by 100 pt.',
+  },
+  {
+    id: 'double',
+    label: 'double-width view',
+    anchor: '(0.5, 0.5)',
+    width: '400 pt, left half empty',
+    pivot: 'on the spine',
+    pivotBad: false,
+    frame: 'frame unchanged',
+    frameBad: false,
+    note: 'BookViewXK’s page: twice as wide, transparent on the left. The untouched anchor point is the spine, so a plain rotation swings the visible half around its left edge.',
+  },
+];
+const DEFAULT_MODE = 'card';
+const DEFAULT_ANGLE = 70;
+---
+
+<VizFrame
+  fig={fig}
+  title="Where the page turns: the anchor point"
+  caption={caption}
+  class="phg"
+  data-phg
+>
+  <div class="phg__bar">
+    <span class="viz-label">the view</span>
+    <div class="viz-seg" role="group" aria-label="How the page is built">
+      {
+        MODES.map((m) => (
+          <button
+            type="button"
+            aria-pressed={m.id === DEFAULT_MODE ? 'true' : 'false'}
+            data-mode={m.id}
+          >
+            {m.label}
+          </button>
+        ))
+      }
+    </div>
+  </div>
+
+  <div
+    class="phg__stage viz-panel"
+    data-stage
+    role="img"
+    aria-label="A page on an open spread, rotated about the chosen anchor point. The spine is marked in the middle; the anchor point is a dot."
+  >
+    <div class="phg__world" data-world data-mode={DEFAULT_MODE}>
+      <span class="phg__slot phg__slot--left"></span>
+      <span class="phg__slot phg__slot--right"></span>
+      <span class="phg__ghost" aria-hidden="true"></span>
+      <div class="phg__mover" data-mover>
+        <span class="phg__empty" aria-hidden="true"></span>
+        <div class="phg__page">
+          <div class="phg__face phg__face--front">
+            <span class="phg__face-tag">front</span>
+            <i></i><i></i><i></i><i></i>
+          </div>
+          <div class="phg__face phg__face--back">
+            <span class="phg__face-tag">back</span>
+          </div>
+        </div>
+      </div>
+      <span class="phg__spine" aria-hidden="true"></span>
+      <span class="phg__anchor" data-anchor aria-hidden="true"></span>
+    </div>
+  </div>
+
+  <label class="phg__slider">
+    <span class="viz-label">rotation about y</span>
+    <input
+      type="range"
+      min="0"
+      max="180"
+      step="1"
+      value={DEFAULT_ANGLE}
+      data-angle
+      aria-label="Rotation angle in degrees"
+    />
+    <span class="viz-chip viz-chip--level" data-angle-out
+      >−{DEFAULT_ANGLE}°</span
+    >
+  </label>
+
+  <div class="phg__read viz-panel" aria-live="polite">
+    <div>
+      <span class="viz-label">anchorPoint</span>
+      <span class="viz-chip viz-chip--meta" data-out-anchor></span>
+    </div>
+    <div>
+      <span class="viz-label">view width</span>
+      <span class="viz-chip viz-chip--meta" data-out-width></span>
+    </div>
+    <div>
+      <span class="viz-label">pivot</span>
+      <span class="viz-chip" data-out-pivot></span>
+    </div>
+    <div>
+      <span class="viz-label">frame</span>
+      <span class="viz-chip" data-out-frame></span>
+    </div>
+    <p class="phg__note" data-out-note></p>
+  </div>
+
+  <div class="viz-legend phg__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>the page</span>
+    <span
+      ><i style="--c:var(--viz-meta)"></i>spine, anchor point, empty half</span
+    >
+    <span><i style="--c:var(--viz-bad)"></i>where the frame was</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-phg-data
+    set:html={JSON.stringify({ modes: MODES })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    // World geometry in points: spine at x = 210, page 200 x 250, top at 75.
+    const WORLD_W = 520;
+    const WORLD_H = 400;
+
+    function initHinge(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-phg-data]').textContent,
+      );
+      const stage = root.querySelector('[data-stage]');
+      const world = root.querySelector('[data-world]');
+      const mover = root.querySelector('[data-mover]');
+      const slider = root.querySelector('[data-angle]');
+      const angleOut = root.querySelector('[data-angle-out]');
+      const btns = [...root.querySelectorAll('[data-mode]')];
+      const out = {
+        anchor: root.querySelector('[data-out-anchor]'),
+        width: root.querySelector('[data-out-width]'),
+        pivot: root.querySelector('[data-out-pivot]'),
+        frame: root.querySelector('[data-out-frame]'),
+        note: root.querySelector('[data-out-note]'),
+      };
+      let mode = data.modes.find((m) => m.id === world.dataset.mode);
+
+      function fit() {
+        const s = Math.min(1, stage.clientWidth / WORLD_W);
+        world.style.setProperty('--s', String(s));
+        stage.style.height = `${WORLD_H * s}px`;
+      }
+
+      function render() {
+        const deg = Number(slider.value);
+        world.dataset.mode = mode.id;
+        mover.style.transform = `perspective(500px) rotateY(${-deg}deg)`;
+        angleOut.textContent = deg === 0 ? '0°' : `−${deg}°`;
+        out.anchor.textContent = mode.anchor;
+        out.width.textContent = mode.width;
+        out.pivot.textContent = mode.pivot;
+        out.pivot.className = `viz-chip ${mode.pivotBad ? 'viz-chip--bad' : 'viz-chip--sound'}`;
+        out.frame.textContent = mode.frame;
+        out.frame.className = `viz-chip ${mode.frameBad ? 'viz-chip--bad' : 'viz-chip--meta'}`;
+        out.note.textContent = mode.note;
+      }
+
+      btns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          btns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          mode = data.modes.find((m) => m.id === btn.dataset.mode);
+          render();
+        }),
+      );
+      slider.addEventListener('input', render);
+
+      if ('ResizeObserver' in window) new ResizeObserver(fit).observe(stage);
+      fit();
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-phg]').forEach(initHinge);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .phg__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .phg__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+
+  .phg__stage {
+    position: relative;
+    overflow: hidden;
+    height: 400px;
+  }
+  .phg__world {
+    --s: 1;
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 520px;
+    height: 400px;
+    margin-left: -260px;
+    transform: scale(var(--s));
+    transform-origin: 50% 0;
+  }
+
+  .phg__slot {
+    position: absolute;
+    top: 75px;
+    width: 200px;
+    height: 250px;
+    border: 2px dashed var(--border-strong);
+    border-radius: 6px;
+  }
+  .phg__slot--left {
+    left: 10px;
+  }
+  .phg__slot--right {
+    left: 210px;
+  }
+  .phg__spine {
+    position: absolute;
+    top: 55px;
+    left: 209px;
+    width: 2px;
+    height: 290px;
+    background: var(--viz-meta);
+    pointer-events: none;
+  }
+
+  .phg__ghost {
+    position: absolute;
+    top: 75px;
+    left: 210px;
+    width: 200px;
+    height: 250px;
+    border: 2px dashed var(--viz-bad);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--viz-bad) 7%, transparent);
+    display: none;
+  }
+  .phg__world[data-mode='anchor'] .phg__ghost {
+    display: block;
+  }
+
+  /* The rotating view. Its box, origin and contents depend on the mode. */
+  .phg__mover {
+    position: absolute;
+    top: 75px;
+    left: 210px;
+    width: 200px;
+    height: 250px;
+    display: flex;
+    transform-style: preserve-3d;
+    transform-origin: 50% 50%;
+  }
+  .phg__world[data-mode='anchor'] .phg__mover {
+    left: 310px;
+    transform-origin: 0 50%;
+  }
+  .phg__world[data-mode='double'] .phg__mover {
+    left: 10px;
+    width: 400px;
+    transform-origin: 50% 50%;
+  }
+  .phg__empty {
+    display: none;
+    flex: 0 0 200px;
+    border: 2px dashed var(--viz-meta);
+    border-radius: 6px;
+    background: repeating-linear-gradient(
+      -45deg,
+      color-mix(in srgb, var(--viz-meta) 14%, transparent) 0 6px,
+      transparent 6px 14px
+    );
+    transform: translateZ(0);
+  }
+  .phg__world[data-mode='double'] .phg__empty {
+    display: block;
+  }
+
+  .phg__page {
+    position: relative;
+    flex: 0 0 200px;
+    height: 250px;
+    transform-style: preserve-3d;
+  }
+  .phg__face {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    align-content: start;
+    gap: 14px;
+    padding: 22px 20px;
+    border-radius: 6px;
+    -webkit-backface-visibility: hidden;
+    backface-visibility: hidden;
+  }
+  .phg__face--front {
+    background: color-mix(in srgb, var(--viz-sound) 14%, var(--viz-panel));
+    border: 2px solid var(--viz-sound);
+  }
+  .phg__face--front i {
+    display: block;
+    height: 12px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--viz-sound) 35%, transparent);
+  }
+  .phg__face--front i:nth-of-type(2) {
+    width: 70%;
+  }
+  .phg__face--front i:nth-of-type(4) {
+    width: 50%;
+  }
+  .phg__face--back {
+    transform: rotateY(180deg);
+    background: var(--viz-panel);
+    border: 2px solid color-mix(in srgb, var(--viz-sound) 45%, transparent);
+  }
+  .phg__face-tag {
+    font-family: var(--font-mono);
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--viz-sound-text);
+  }
+
+  .phg__anchor {
+    position: absolute;
+    top: 192px;
+    left: 302px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--viz-meta);
+    border: 3px solid var(--viz-panel);
+    box-shadow: 0 0 0 2px var(--viz-meta);
+    pointer-events: none;
+  }
+  .phg__world[data-mode='double'] .phg__anchor {
+    left: 202px;
+  }
+
+  .phg__slider {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 4.5em;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-top: var(--sp-3);
+  }
+  .phg__slider .viz-chip {
+    justify-content: center;
+  }
+
+  .phg__read {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .phg__read div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .phg__read .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+  }
+  .phg__note {
+    grid-column: 1 / -1;
+    margin: 0;
+    font-size: var(--fs-xs);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+  .phg__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 560px) {
+    .phg__read {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .phg__slider {
+      grid-template-columns: minmax(0, 1fr) 4.5em;
+    }
+    .phg__slider .viz-label {
+      grid-column: 1 / -1;
+    }
+  }
+</style>
