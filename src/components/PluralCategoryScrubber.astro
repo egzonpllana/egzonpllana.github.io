@@ -13,7 +13,7 @@ interface Props {
   caption?: string;
 }
 const {
-  caption = 'Integer rules from the CLDR plural tables. “With locale” is String(format:locale:) given that language’s Locale; “no locale” is String(format:) with the same .stringsdict template, which is what the package’s localized(count:) calls. Fractions, which Russian and Polish send to “other”, are left out.',
+  caption = 'Integer rules from the CLDR plural tables. “With locale” is String(format:locale:) given that language’s Locale; “no locale” is String(format:) with the same .stringsdict template, which is what the package’s localized(count:) calls. Fractions, which Romanian sends to “few”, are left out.',
 } = Astro.props;
 
 type Cat = 'zero' | 'one' | 'two' | 'few' | 'many' | 'other';
@@ -38,25 +38,19 @@ const langs: Lang[] = [
     forms: { one: '# rappel', many: '# de rappels', other: '# rappels' },
   },
   {
-    id: 'ru',
-    name: 'Russian',
-    cats: ['one', 'few', 'many', 'other'],
-    forms: {
-      one: '# напоминание',
-      few: '# напоминания',
-      many: '# напоминаний',
-      other: '# напоминания',
-    },
+    id: 'sq',
+    name: 'Albanian',
+    cats: ['one', 'other'],
+    forms: { one: '# kujtesë', other: '# kujtesa' },
   },
   {
-    id: 'pl',
-    name: 'Polish',
-    cats: ['one', 'few', 'many', 'other'],
+    id: 'ro',
+    name: 'Romanian',
+    cats: ['one', 'few', 'other'],
     forms: {
-      one: '# przypomnienie',
-      few: '# przypomnienia',
-      many: '# przypomnień',
-      other: '# przypomnienia',
+      one: '# memento',
+      few: '# mementouri',
+      other: '# de mementouri',
     },
   },
   {
@@ -160,19 +154,12 @@ const MAX = 200;
           : n !== 0 && n % 1000000 === 0
             ? 'many'
             : 'other',
-      ru: (n) => {
-        const d = n % 10;
-        const h = n % 100;
-        if (d === 1 && h !== 11) return 'one';
-        if (d >= 2 && d <= 4 && !(h >= 12 && h <= 14)) return 'few';
-        return 'many';
-      },
-      pl: (n) => {
-        const d = n % 10;
+      sq: (n) => (n === 1 ? 'one' : 'other'),
+      ro: (n) => {
         const h = n % 100;
         if (n === 1) return 'one';
-        if (d >= 2 && d <= 4 && !(h >= 12 && h <= 14)) return 'few';
-        return 'many';
+        if (n === 0 || (h >= 1 && h <= 19)) return 'few';
+        return 'other';
       },
       ar: (n) => {
         const h = n % 100;
