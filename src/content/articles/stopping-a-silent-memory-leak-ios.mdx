@@ -1,8 +1,8 @@
 ---
 title: 'How I Stopped a Silent Memory Leak in My iOS App'
-description: 'Every tab switch in one of my apps left 10 to 15 MB behind. The causes were timers, Combine sinks and tasks holding their view models, multiplied by .id(UUID()). Re-checked in Swift 6: what ARC frees, why leak detection stays silent for most of these, which captures actually help, and what the memory profiler I built does and does not measure.'
+description: 'Every tab switch in one of my apps left 10 to 15 MB behind. The causes were timers, Combine sinks and tasks holding their view models, multiplied by .id(UUID()). Re-checked in Swift 6: what ARC frees, why leak detection stays silent for most of these, which captures actually help, and how the memory profiler I built now reports every object that outlives its screen.'
 date: 2025-07-27
-updated: 2026-10-30
+updated: 2026-10-31
 tags:
   [
     'Swift',
@@ -27,7 +27,7 @@ With automatic reference counting, you do not leak memory by forgetting to free 
 
 That is what I found in one of my iOS apps. It started at 196 MB on a cold launch, and every tab switch added 10 to 15 MB that never came back. After ten minutes of ordinary use it was past 310 MB and still climbing. The causes were four ordinary things: views given a new identity on every render with `.id(UUID())`, Combine subscriptions that were never torn down, tasks that held on to their view models, and timers that were never invalidated. I also wanted to watch memory while I used the app, not only in a separate profiling session, so I wrote a small memory profiler and later open-sourced it.
 
-The first version of this article listed those fixes. Re-reading it in October 2026 against Swift 6 and Apple's tools, I found the explanations were weaker than the result. Two of its code samples do not compile in Swift 6 language mode. One of its `[weak self]` fixes does not do what it appears to. It had the `.id` mechanism backwards. And the profiler's default warning threshold is not "a common best practice". This version keeps the story and the measurements and corrects the rest. Swift and SwiftUI are the worked example. The reference-counting rules are the same in Objective-C, and the question every section comes back to, "what still points at this object?", applies to any managed runtime.
+The first version of this article listed those fixes. Re-reading it in October 2026 against Swift 6 and Apple's tools, I found the explanations were weaker than the result. Two of its code samples do not compile in Swift 6 language mode. One of its `[weak self]` fixes does not do what it appears to. It had the `.id` mechanism backwards. And the profiler's default warning threshold is not "a common best practice". This version keeps the story and the measurements and corrects the rest. The audit also turned into a rewrite of the profiler: version 3.0 reports the objects this article is about on its own, and the profiler section shows what it prints. Swift and SwiftUI are the worked example. The reference-counting rules are the same in Objective-C, and the question every section comes back to, "what still points at this object?", applies to any managed runtime.
 
 <StatTiles
   tiles={[
@@ -65,7 +65,7 @@ A leak looks like a staircase. Every time the action repeats, memory falls back 
 
 Watch the floor between actions, not the peak. A peak is the cost of building a screen. The floor is what the screen leaves behind. Ten switches at 10 to 15 MB each is the whole gap between 196 and 310 MB.
 
-There is a second question: which number. Xcode's memory gauge shows the app's **footprint**, which is dirty memory (anything the app has written, including every heap allocation) plus compressed memory. Clean memory, such as mapped code and read-only files, does not count, because the system can drop it and read it back later. Footprint is the number iOS uses when it decides to terminate an app, and it is the number to compare between builds. The profiler later in this article reads a different number, and that matters.
+There is a second question: which number. Xcode's memory gauge shows the app's **footprint**, which is dirty memory (anything the app has written, including every heap allocation) plus compressed memory. Clean memory, such as mapped code and read-only files, does not count, because the system can drop it and read it back later. Footprint is the number iOS uses when it decides to terminate an app, and it is the number to compare between builds. The first versions of my profiler read a different number, which the profiler section comes back to.
 
 > **In plain words:** repeat the action and look at where memory settles. If it settles a little higher every time, something created by the action outlives it.
 
@@ -144,6 +144,7 @@ No single tool sees both kinds of survivor, so it is worth knowing what each one
 | Memory Graph Debugger | Every allocation and the references between them, leaks marked | cycles marked; abandoned if you count instances |
 | `leaks`, `heap`, `vmmap` | The same snapshot on the command line; `heap -diffFrom` compares two | cycles and abandoned |
 | `deinit` print, weak check | Whether one object died when it should have | both, one object at a time |
+| MemoryProfiler 3.0 | Objects still alive after their screen, view or scope ended; live instances per class | both, while you use the app |
 
 What I do now when memory climbs:
 
@@ -406,68 +407,94 @@ NotificationCenter's block-based observers follow the same rule. The center "str
 
 ---
 
-## The profiler: what it measures, and what it can't
+## The profiler: from a gauge to a leak detector
 
-Instruments answers why memory is held, but only during a profiling session. I wanted to see memory move while I used the app, so I could tell which action raised the floor. That is what [MemoryProfiler](https://github.com/egzonpllana/memory-profiler-ios) does. Version 2.1 is a Foundation-only Swift package, with no UIKit dependency, and it is debug-only by default:
+Instruments answers why memory is held, but only during a profiling session. I wanted to see memory move while I used the app, so I could tell which action raised the floor. That is why I wrote [MemoryProfiler](https://github.com/egzonpllana/memory-profiler-ios). In version 2.1, the one I used at the time, the call that mattered was `logMemoryUsage(context:)`:
 
 ```swift
-import MemoryProfiler
-
-let profiler: any MemoryProfilerServicing = MemoryProfilerService()
-profiler.startMonitoring() // a reading every 60 seconds
 profiler.logMemoryUsage(context: "tab switch: home -> settings")
 ```
 
-`logMemoryUsage(context:)` is the call that mattered. Logged after each tab switch, it put every step of the staircase next to the action that caused it, which is the "at each switch" view in Fig 01. The 60-second readings show the trend but cannot attribute it. The profiler told me which action leaked. The memory graph told me what was holding the memory.
+Logged after each tab switch, it put every step of the staircase next to the action that caused it, which is the "at each switch" view in Fig 01. The profiler told me which action leaked. The memory graph told me what was holding the memory.
 
-Version 2.0 added two checks aimed at the question this article keeps asking, "did this object die when it should have?":
-
-```swift
-func dismiss() {
-    DeinitTracker.expectDeinit(of: viewModel) // checks a weak reference after 2 s
-    navigationController?.popViewController(animated: true)
-}
-```
-
-If the view model is still alive two seconds later, it logs the type and the call site:
-
-```
-[MemoryProfiler] Potential leak: DetailViewModel was not deallocated after 2.0s (<file>:<line>)
-```
-
-`trackObject(_:expectedLifetime:)` does the same through the service, and `detectMemoryLeaks()` reports every tracked object that outlived its grace period. Both hold only a weak reference, so tracking an object never keeps it alive.
-
-Re-reading the profiler for this article, I found four things in it that are wrong or weaker than they look:
+Re-reading version 2.1 for this article, I found four things in it that were wrong or weaker than they looked. Its leak checks also caught nothing on their own: `detectMemoryLeaks()` reported only when the app called it.
 
 <PhaseRail
   phases={[
     {
-      title: 'It reads resident size, not footprint',
-      body: 'SystemMemoryMonitor reports the resident_size field of mach_task_basic_info: pages that are in RAM right now. That includes clean pages, such as mapped code and frameworks, and leaves out compressed pages. Footprint is dirty plus compressed, and it is what Xcode shows and what the system limits. The staircase still shows up in resident size, but the numbers do not match the gauge.',
+      title: 'It read resident size, not footprint',
+      body: 'SystemMemoryMonitor reported the resident_size field of mach_task_basic_info: pages that are in RAM right now. That includes clean pages, such as mapped code and frameworks, and leaves out compressed pages. Footprint is dirty plus compressed, and it is what Xcode shows and what the system limits. The staircase still showed up in resident size, but the numbers did not match the gauge.',
       params: [
-        { name: 'reads', value: 'resident_size' },
-        { name: 'should read', value: 'phys_footprint' },
+        { name: '2.1 read', value: 'resident_size' },
+        { name: '3.0 reads', value: 'phys_footprint' },
       ],
     },
     {
-      title: 'The 70% threshold is not a best practice',
-      body: 'The default warning fires at 70% of physical RAM. Apple publishes no such rule, and an app’s limit is not a fraction of physical memory: limits “can change during the app life cycle and don’t necessarily correspond to the amount of physical memory available on the device”. The system tells you the remaining headroom directly: os_proc_available_memory() returns the current limit minus the footprint.',
-      params: [{ name: 'use', value: 'os_proc_available_memory()' }],
+      title: 'The 70% threshold was not a best practice',
+      body: 'The default warning fired at 70% of physical RAM. Apple publishes no such rule, and an app’s limit is not a fraction of physical memory: limits “can change during the app life cycle and don’t necessarily correspond to the amount of physical memory available on the device”. The system reports the remaining headroom directly, and the limit is the footprint plus that headroom.',
+      params: [{ name: '3.0 default', value: '80% of footprint + headroom' }],
     },
     {
-      title: '“available” is physical RAM minus usage',
-      body: 'MemoryStats.availableMemory is total physical memory minus resident size. That is not memory available to the app. On a 16 GB Mac, a 5 MB test process logged “available: 16378MB”.',
-      params: [{ name: 'replace with', value: 'the headroom above' }],
+      title: '“available” was physical RAM minus usage',
+      body: 'MemoryStats.availableMemory was total physical memory minus resident size. That is not memory available to the app. On a 16 GB Mac, a 5 MB test process logged “available: 16378MB”.',
+      params: [{ name: '3.0 reports', value: 'limit_bytes_remaining' }],
     },
     {
-      title: 'Grace periods start at trackObject',
-      body: 'A .scopeBound object counts as leaked 3 seconds after it was tracked, not 3 seconds after its screen closed. Track at dismissal, as DeinitTracker does, or a screen that stays open longer than the grace period is reported while it is still in use.',
-      params: [{ name: 'track', value: 'when the screen closes' }],
+      title: 'Grace periods started at trackObject',
+      body: 'A .scopeBound object counted as leaked 3 seconds after it was tracked, not 3 seconds after its screen closed. A screen that stayed open longer than the grace period was reported while it was still in use.',
+      params: [{ name: '3.0 starts the clock', value: 'when the scope ends' }],
     },
   ]}
 />
 
-Reading the footprint takes one more Mach call, and the headroom is a single function:
+Version 3.0 fixes all four. More importantly, it asks the question this article keeps coming back to, "did this object die when it should have?", without a call at every dismissal:
+
+```swift
+import MemoryProfiler
+
+MemoryProfilerService.shared.start() // debug builds only, by default
+```
+
+From then on, every view controller that is popped, dismissed or removed from its parent is expected to deallocate within two seconds, together with its view. SwiftUI view models opt in with one modifier, and any other object with one call:
+
+```swift
+Text(viewModel.title)
+    .detectLeaks(of: viewModel) // checked when the view leaves the hierarchy
+
+MemoryProfilerService.shared.expectDeallocation(of: coordinator)
+```
+
+Because it checks whether an object died, not whether it is still reachable, it reports abandoned memory as well as cycles. These are log lines from the package's showcase app, wrapped to fit. The app reproduces the cycle from Fig 02 and a SwiftUI model held by a global registry:
+
+```
+Leak: MemoryProfilerShowcase.LeakyDetailViewController 0x1021bb200 (1280 bytes) is still alive 2.1s
+after its view controller was removed. Filter the Debug Memory Graph by 0x1021bb200.
+Possible retain cycle (conservative scan): MemoryProfilerShowcase.LeakyDetailViewController.viewModel
+-> MemoryProfilerShowcase.DetailViewModel.onChange -> heap block (32 bytes)
+-> MemoryProfilerShowcase.LeakyDetailViewController.
+
+Leak: MemoryProfilerShowcase.ProfileModel 0x10cf0dd70 (48 bytes) is still alive 2.1s after its
+SwiftUI view left the hierarchy. Expected at MemoryProfilerShowcase/ProfileScreen.swift:36 in body.
+Filter the Debug Memory Graph by 0x10cf0dd70.
+Referenced by (conservative scan): Swift._ContiguousArrayStorage<Swift.AnyObject>+32.
+```
+
+The first is the textbook cycle. The heap block is the closure's context: it holds the controller, the view model holds the closure, and the controller holds the view model. The second is abandoned memory. Leak detection would never mark it, because the registry's array still reaches the model, but it is exactly the kind of survivor that turned tab switches into a staircase.
+
+For the `.id(UUID())` multiplier the symptom is a count, not one object, so 3.0 counts too. `trackInstance(self, budget: 1)` in an initializer reports a type with more live instances than it should have. In debug builds, a heap census samples live instances per class and flags a class whose count rises in every sample, which is the memory graph's "five instances after five closed screens" check, done for you:
+
+```
+Allocation growth: MemoryProfilerShowcase.ThumbnailCacheEntry instances 10 -> 30 -> 50 -> 70, holding 2 kB.
+```
+
+It still has limits, and they are worth knowing:
+
+- **The cycle is a lead, not a proof.** The chain comes from a conservative heap scan: any word that equals an object's address counts as a pointer, so Objective-C `weak` and Swift `unowned` references can show up as edges. Swift `weak` references are recognized and skipped. The report's address is what to paste into the memory graph's filter to confirm it.
+- **The heap features are debug-only.** The census, the growth check and the scan walk the malloc zones in-process and pause allocating threads for a moment, so they are compiled into debug builds only.
+- **Generic classes are invisible to the census**, because the runtime creates their metadata on demand and does not list it. They can still be checked with an expectation.
+- **A screen cached on purpose looks like a leak** until it is marked `LeakDetectionExempt`.
+
+Footprint now means the same thing as in Xcode. The profiler reads `phys_footprint`, and the warning threshold is a fraction of the real limit instead of physical RAM. If you only need the two numbers in your own code, they take one Mach call and one function:
 
 ```swift
 import Darwin
@@ -490,9 +517,9 @@ func memoryFootprint() -> UInt64? {
 let headroom = os_proc_available_memory() // bytes left before the limit, iOS 13+
 ```
 
-Two smaller notes. The package declares `swift-tools-version: 5.9`, so it builds in Swift 5 language mode, and an app in Swift 6 mode can depend on it without trouble. Built in Swift 6 mode, it fails on one line in `DeinitTracker`, where a captured `weak var` is sent to the main queue (`sending 'weakRef' risks causing data races`). And the scheduler's documentation says its timer runs on the main run loop, but `Timer.scheduledTimer` uses the current thread's run loop. Started from a background thread with no running run loop, the 60-second readings never fire.
+Version 3.0 also builds in Swift 6 language mode, and its readings come from a dispatch timer rather than the current thread's run loop, so they fire no matter which thread starts monitoring.
 
-> **In plain words:** the profiler is good at telling you which action makes memory grow, while you use the app. It reads a different number than Xcode, its default threshold is arbitrary, and finding the cause is still the memory graph's job.
+> **In plain words:** the profiler now tells you, while you use the app, which object outlived its screen and, when it can, the chain that holds it. Unlike leak detection, it also sees objects that are still reachable but should be gone. The memory graph is still where you confirm the cause.
 
 ---
 
@@ -511,8 +538,7 @@ The remaining 1 to 2 MB per switch is the next thing I would look at. Ten switch
 ## What I would change next
 
 - **Make the leak a failing test.** A UI test with `XCTMemoryMetric` that switches tabs ten times, with a baseline set, fails when the average grows past it. WWDC21's "Detect and diagnose memory issues" shows this setup, and it can collect memory graphs from before and after the measured run.
-- **Check every pushed screen's view model in debug builds.** One `DeinitTracker.expectDeinit(of:)` per dismissal catches the next cycle the day it is written, not after ten minutes of tab switching.
-- **Fix the profiler's measurement.** Report `phys_footprint` and `os_proc_available_memory()`, drop the 70% default and the "available" field, start grace periods at dismissal, and build in Swift 6 language mode.
+- **Keep the profiler running in debug builds.** Popped and dismissed screens are checked automatically, and `.detectLeaks(of:)` covers SwiftUI view models, so the next cycle is reported the day it is written, not after ten minutes of tab switching.
 - **Prefer owners that cancel for you.** SwiftUI's `.task` and `assign(to:)` tie work to a lifetime that already exists. Every hand-written `cancel()` and `invalidate()` is one more thing to forget.
 
 ---
@@ -521,7 +547,7 @@ The remaining 1 to 2 MB per switch is the next thing I would look at. Ten switch
 
 > **A leak under ARC is a reference, not a missing free.** Ask what still points at the object, and why.
 
-> **Leaked and abandoned are different problems.** Leak detection finds cycles that nothing reaches. Objects held by the run loop, NotificationCenter or a running task are still reachable, so only an instance count shows them.
+> **Leaked and abandoned are different problems.** Leak detection finds cycles that nothing reaches. Objects held by the run loop, NotificationCenter or a running task are still reachable, so only an instance count, or a check that the object died when its scope ended, shows them.
 
 > **Watch the floor, not the peak.** Repeat the action and check where memory settles.
 
@@ -541,7 +567,7 @@ The profiler is open source: [MemoryProfiler on GitHub](https://github.com/egzon
 
 ## References
 
-**MemoryProfiler** — [Repository](https://github.com/egzonpllana/memory-profiler-ios) · [`SystemMemoryMonitor.swift`](https://github.com/egzonpllana/memory-profiler-ios/blob/main/Sources/MemoryProfiler/Monitoring/SystemMemoryMonitor.swift) · [`DeinitTracker.swift`](https://github.com/egzonpllana/memory-profiler-ios/blob/main/Sources/MemoryProfiler/LeakDetection/DeinitTracker.swift) · [`WeakReferenceTracker.swift`](https://github.com/egzonpllana/memory-profiler-ios/blob/main/Sources/MemoryProfiler/LeakDetection/WeakReferenceTracker.swift)
+**MemoryProfiler** — [Repository](https://github.com/egzonpllana/memory-profiler-ios) · [3.0.0 release notes](https://github.com/egzonpllana/memory-profiler-ios/releases/tag/3.0.0) · [`LeakDetectionEngine.swift`](https://github.com/egzonpllana/memory-profiler-ios/blob/3.0.0/Sources/MemoryProfiler/Domain/Engine/LeakDetectionEngine.swift) · [`HeapReferrerScan.c`](https://github.com/egzonpllana/memory-profiler-ios/blob/3.0.0/Sources/MemoryProfilerNative/HeapReferrerScan.c) · [`TaskMemoryInfo.c`](https://github.com/egzonpllana/memory-profiler-ios/blob/3.0.0/Sources/MemoryProfilerNative/TaskMemoryInfo.c) · [Showcase app](https://github.com/egzonpllana/memory-profiler-ios/tree/3.0.0/Example) · 2.1, as audited: [`SystemMemoryMonitor.swift`](https://github.com/egzonpllana/memory-profiler-ios/blob/2.1.0/Sources/MemoryProfiler/Monitoring/SystemMemoryMonitor.swift), [`WeakReferenceTracker.swift`](https://github.com/egzonpllana/memory-profiler-ios/blob/2.1.0/Sources/MemoryProfiler/LeakDetection/WeakReferenceTracker.swift)
 
 **Apple, memory tools** — [WWDC21: Detect and diagnose memory issues](https://developer.apple.com/videos/play/wwdc2021/10180/) · [WWDC24: Analyze heap memory](https://developer.apple.com/videos/play/wwdc2024/10173/) · [Gathering information about memory use](https://developer.apple.com/documentation/xcode/gathering-information-about-memory-use) · [`os_proc_available_memory()`](https://developer.apple.com/documentation/os/os_proc_available_memory)
 
