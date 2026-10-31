@@ -1,0 +1,537 @@
+---
+/**
+ * The cache drill as a decision table. Set the constraints the interviewer
+ * confirms (is the protocol fixed, are the readers synchronous, may a write
+ * block its caller, the deployment target, the module's default isolation)
+ * and the figure picks the isolation model, the declaration it needs and the
+ * sentence that justifies it. The three-row menu underneath is the guide's
+ * own table, with the chosen row lit.
+ *
+ * Every declaration was compiled in Swift 6 language mode on Swift 6.4
+ * (Xcode 27.1), with default isolation nonisolated and MainActor. Under
+ * MainActor default isolation an unannotated lock or queue class compiled and
+ * became a main-actor class: a write from a detached task ran on the main
+ * thread, and the barrier closure warned that main actor-isolated 'entries'
+ * cannot be mutated from a Sendable closure. Marking the class nonisolated
+ * removed both.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '03',
+  caption = 'Only a sketch lets you take the actor: a synchronous requirement has no legal actor spelling. Synchronous readers or a writer that must never wait move the answer to a queue or a lock, and the deployment target picks the lock. In an app target with main-actor default isolation, the class versions need one more word, nonisolated, or they quietly become main-actor classes.',
+} = Astro.props;
+
+interface Option {
+  key: 'actor' | 'lock' | 'gcd';
+  name: string;
+  buys: string;
+  costs: string;
+}
+
+const MENU: Option[] = [
+  {
+    key: 'actor',
+    name: 'Actor',
+    buys: 'The compiler owns the isolation. No lock to forget, no queue to name, Sendable for free.',
+    costs:
+      'setValue must become async, and reentrancy is now yours to reason about.',
+  },
+  {
+    key: 'lock',
+    name: 'Lock: NSLock, OSAllocatedUnfairLock, Mutex',
+    buys: 'Satisfies every signature as written. Nothing suspends, so there is no ordering question at all.',
+    costs:
+      'The discipline is yours. Every access must go through the lock and only review enforces that.',
+  },
+  {
+    key: 'gcd',
+    name: 'GCD: concurrent queue, .barrier writes',
+    buys: 'Multiple readers, one writer. FIFO, so write ordering survives, and the completion-handler style is native to it.',
+    costs:
+      '@unchecked Sendable, a promise the compiler cannot check, and a sync read blocks its caller for the length of a barrier write.',
+  },
+];
+
+interface Question {
+  key: string;
+  label: string;
+  options: { value: string; label: string }[];
+}
+
+const QUESTIONS: Question[] = [
+  {
+    key: 'contract',
+    label: 'the protocol is',
+    options: [
+      { value: 'sketch', label: 'a sketch' },
+      { value: 'fixed', label: 'fixed: live call sites' },
+    ],
+  },
+  {
+    key: 'readers',
+    label: 'readers are',
+    options: [
+      { value: 'async', label: 'able to await' },
+      { value: 'sync', label: 'synchronous' },
+    ],
+  },
+  {
+    key: 'writes',
+    label: 'a write',
+    options: [
+      { value: 'wait', label: 'may wait' },
+      { value: 'never', label: 'must never block' },
+    ],
+  },
+  {
+    key: 'target',
+    label: 'deployment target',
+    options: [
+      { value: '18', label: 'iOS 18+' },
+      { value: '16', label: 'iOS 16–17' },
+    ],
+  },
+  {
+    key: 'module',
+    label: 'default isolation',
+    options: [
+      { value: 'none', label: 'nonisolated' },
+      { value: 'main', label: 'MainActor' },
+    ],
+  },
+];
+---
+
+<VizFrame
+  fig={fig}
+  title="The cache drill: pick the constraints, get the isolation"
+  caption={caption}
+  class="idp"
+  data-idp
+  label="Decision table for the cache isolation drill. Choose whether the protocol is fixed, whether readers are synchronous, whether writes may block, the deployment target and the module's default isolation; the figure names the isolation model, its declaration and its justification."
+>
+  <div class="idp__qs">
+    {
+      QUESTIONS.map((q) => (
+        <div class="idp__q" data-q-row={q.key}>
+          <span class="viz-label">{q.label}</span>
+          <div class="viz-seg idp__seg" role="group" aria-label={q.label}>
+            {q.options.map((o, i) => (
+              <button
+                type="button"
+                aria-pressed={i === 0 ? 'true' : 'false'}
+                data-q={q.key}
+                data-value={o.value}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <span class="idp__moot viz-mono" data-moot hidden>
+            does not change the answer
+          </span>
+        </div>
+      ))
+    }
+  </div>
+
+  <div class="idp__out viz-panel" aria-live="polite">
+    <div class="idp__verdict">
+      <span class="viz-label">take</span>
+      <span class="idp__pick" data-pick></span>
+    </div>
+    <p class="idp__say" data-say></p>
+    <code class="idp__code viz-mono" data-code></code>
+    <p class="idp__note" data-note hidden></p>
+  </div>
+
+  <table class="idp__menu">
+    <caption class="viz-label">the menu, named before you commit</caption>
+    <thead>
+      <tr>
+        <th scope="col">Option</th>
+        <th scope="col">What it buys</th>
+        <th scope="col">What it costs</th>
+      </tr>
+    </thead>
+    <tbody>
+      {
+        MENU.map((m) => (
+          <tr data-row={m.key}>
+            <th scope="row">{m.name}</th>
+            <td>{m.buys}</td>
+            <td>{m.costs}</td>
+          </tr>
+        ))
+      }
+    </tbody>
+  </table>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    // The declaration each answer needs, as it compiles in Swift 6 mode.
+    const PROTOCOL_ASYNC = [
+      'protocol CacheProtocol<Value>: Sendable {',
+      '    associatedtype Value: Sendable',
+      '    func setValue(_ value: Value?, forKey key: String) async',
+      '    func getValue(forKey key: String) async -> Value?',
+      '}',
+    ];
+
+    function decide(s) {
+      const prefix = s.module === 'main' ? 'nonisolated ' : '';
+      const lockDecl =
+        s.target === '18'
+          ? [
+              `${prefix}final class LockedCache<Value: Sendable>: CacheProtocol {`,
+              '    private let entries = Mutex<[String: Value]>([:])',
+            ]
+          : [
+              `${prefix}final class LockedCache<Value: Sendable>: CacheProtocol {`,
+              '    private let entries =',
+              '        OSAllocatedUnfairLock<[String: Value]>(initialState: [:])',
+            ];
+
+      if (s.contract === 'fixed') {
+        return {
+          pick: 'lock',
+          label:
+            s.target === '18'
+              ? 'a lock: Mutex'
+              : 'a lock: OSAllocatedUnfairLock',
+          say: 'The protocol stays as handed over, so setValue stays synchronous and an actor is off the table: an actor-isolated method cannot satisfy a synchronous requirement. A lock satisfies all three signatures, fetchValue included: copy the value out, then call the completion outside the lock.',
+          code: [
+            ...lockDecl,
+            '    // setValue, getValue and fetchValue exactly as written',
+          ],
+          moot: ['readers', 'writes'],
+          note: 'GCD is the other synchronous option, but the fixed fetchValue takes a completion that is not @Sendable, and Swift 6 flags capturing it in the queue’s closure.',
+        };
+      }
+      if (s.readers === 'async' && s.writes === 'wait') {
+        return {
+          pick: 'actor',
+          label: 'an actor',
+          say: 'Every caller can await, so let the compiler own the isolation. setValue becomes async, which widens the contract rather than narrowing it, and fetchValue comes out because getValue already does its job.',
+          code: [
+            ...PROTOCOL_ASYNC,
+            '',
+            'actor CacheRepository<Value: Sendable>: CacheProtocol { … }',
+          ],
+          moot: ['target'],
+          note:
+            s.module === 'main'
+              ? 'Main-actor default isolation does not touch it: an actor is its own isolation domain.'
+              : '',
+        };
+      }
+      if (s.writes === 'never') {
+        return {
+          pick: 'gcd',
+          label: 'GCD: concurrent queue, barrier writes',
+          say: 'Writes go in with queue.async(flags: .barrier), so the socket thread never waits, and because the queue is FIFO a read submitted after a write still sees it. The same fire-and-forget write on an actor is an unstructured Task, and two of those can land in either order.',
+          code: [
+            ...PROTOCOL_ASYNC,
+            '',
+            `${prefix}final class QueuedCache<Value: Sendable>: CacheProtocol,`,
+            '    @unchecked Sendable { … }',
+          ],
+          moot: ['target'],
+          note: '',
+        };
+      }
+      return {
+        pick: 'lock',
+        label:
+          s.target === '18' ? 'a lock: Mutex' : 'a lock: OSAllocatedUnfairLock',
+        say:
+          s.target === '18'
+            ? 'The readers are synchronous, so the read must not suspend. Mutex holds the state inside the lock, so no path can touch the dictionary without it, and the class is Sendable without @unchecked.'
+            : 'The readers are synchronous, so the read must not suspend. Below iOS 18 there is no Mutex; OSAllocatedUnfairLock(initialState:) holds the state inside the lock the same way, so the class is still Sendable without @unchecked. NSLock beside the state needs @unchecked Sendable.',
+        code: [...PROTOCOL_ASYNC, '', ...lockDecl, '    …', '}'],
+        moot: [],
+        note: '',
+      };
+    }
+
+    function initDrill(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const state = {
+        contract: 'sketch',
+        readers: 'async',
+        writes: 'wait',
+        target: '18',
+        module: 'none',
+      };
+      const buttons = [...root.querySelectorAll('[data-q]')];
+      const pickEl = root.querySelector('[data-pick]');
+      const sayEl = root.querySelector('[data-say]');
+      const codeEl = root.querySelector('[data-code]');
+      const noteEl = root.querySelector('[data-note]');
+      const rows = [...root.querySelectorAll('[data-row]')];
+      const qRows = [...root.querySelectorAll('[data-q-row]')];
+
+      function render() {
+        const d = decide(state);
+        buttons.forEach((b) =>
+          b.setAttribute(
+            'aria-pressed',
+            String(state[b.dataset.q] === b.dataset.value),
+          ),
+        );
+        qRows.forEach((r) => {
+          const moot = d.moot.includes(r.dataset.qRow);
+          r.classList.toggle('is-moot', moot);
+          r.querySelector('[data-moot]').hidden = !moot;
+        });
+        pickEl.textContent = d.label;
+        pickEl.dataset.pick = d.pick;
+        sayEl.textContent = d.say;
+        codeEl.textContent = d.code.join('\n');
+
+        let note = d.note;
+        if (state.module === 'main' && d.pick !== 'actor') {
+          note =
+            (note ? `${note} ` : '') +
+            'With main-actor default isolation, an unannotated class is a main-actor class. It still compiles and conforms, and every write from a background task then runs on the main thread. Write nonisolated on the class.';
+        }
+        noteEl.textContent = note;
+        noteEl.hidden = !note;
+        rows.forEach((r) =>
+          r.classList.toggle('is-picked', r.dataset.row === d.pick),
+        );
+      }
+
+      buttons.forEach((b) =>
+        b.addEventListener('click', () => {
+          state[b.dataset.q] = b.dataset.value;
+          render();
+        }),
+      );
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-idp]').forEach(initDrill);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .idp__qs {
+    display: grid;
+    gap: var(--sp-2);
+  }
+  .idp__q {
+    display: grid;
+    grid-template-columns: 8.5rem minmax(0, 1fr);
+    align-items: center;
+    gap: var(--sp-1) var(--sp-3);
+    transition: opacity 0.2s var(--ease);
+  }
+  .idp__seg {
+    justify-self: start;
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+  .idp__q.is-moot .idp__seg {
+    opacity: 0.45;
+  }
+  .idp__moot {
+    grid-column: 2;
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+
+  .idp__out {
+    display: grid;
+    gap: var(--sp-3);
+    margin-top: var(--sp-4);
+    padding: var(--sp-4);
+  }
+  .idp__verdict {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .idp__pick {
+    font-size: var(--fs-md);
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    --c: var(--viz-sound-text);
+    color: var(--c);
+  }
+  .idp__pick[data-pick='lock'] {
+    --c: var(--viz-meta);
+  }
+  .idp__pick[data-pick='gcd'] {
+    --c: var(--viz-net);
+  }
+  .idp__say {
+    margin: 0;
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg);
+  }
+  .idp__code {
+    display: block;
+    margin: 0;
+    padding: 8px 10px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--fg-muted);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .idp__note {
+    margin: 0;
+    padding-left: var(--sp-3);
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg-muted);
+    border-left: 3px solid var(--viz-level);
+  }
+
+  /* Undo the article's table frame; each row draws its own. */
+  .idp__menu {
+    width: 100%;
+    margin: var(--sp-4) 0 0;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+    border-collapse: separate;
+    border-spacing: 0 4px;
+    font-size: var(--fs-xs);
+    line-height: 1.5;
+    table-layout: fixed;
+  }
+  .idp__menu caption {
+    margin-bottom: var(--sp-1);
+    text-align: left;
+  }
+  .idp__menu th,
+  .idp__menu td {
+    padding: 8px 10px;
+    vertical-align: top;
+    text-align: left;
+    color: var(--fg-muted);
+    background: var(--viz-panel);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    overflow-wrap: anywhere;
+    transition:
+      background 0.2s var(--ease),
+      color 0.2s var(--ease);
+  }
+  .idp__menu thead th {
+    padding-block: 4px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    white-space: normal;
+    background: transparent;
+    border: 0;
+  }
+  .idp__menu tbody th {
+    width: 26%;
+    font-weight: 600;
+    color: var(--fg);
+    border-left: 1px solid var(--border);
+    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  }
+  .idp__menu tbody td:last-child {
+    border-right: 1px solid var(--border);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+  .idp__menu tr.is-picked th,
+  .idp__menu tr.is-picked td {
+    color: var(--fg);
+    background: color-mix(in srgb, var(--accent) 9%, var(--viz-panel));
+    border-color: var(--accent-line);
+  }
+
+  @media (max-width: 560px) {
+    .idp__q {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .idp__moot {
+      grid-column: 1;
+    }
+    .idp__menu,
+    .idp__menu thead,
+    .idp__menu tbody,
+    .idp__menu tr,
+    .idp__menu th,
+    .idp__menu td {
+      display: block;
+      width: auto;
+    }
+    .idp__menu thead {
+      display: none;
+    }
+    .idp__menu caption {
+      display: block;
+    }
+    .idp__menu tbody th {
+      width: auto;
+    }
+    .idp__menu tr {
+      margin-bottom: 6px;
+    }
+    .idp__menu tbody th,
+    .idp__menu tbody td,
+    .idp__menu tbody td:last-child {
+      border: 1px solid var(--border);
+      border-radius: 0;
+    }
+    .idp__menu tbody th {
+      border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+      border-bottom: 0;
+    }
+    .idp__menu tbody td:last-child {
+      border-top: 0;
+      border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    }
+    .idp__menu tbody td:nth-child(2) {
+      border-top: 0;
+      border-bottom: 0;
+    }
+    .idp__menu tbody td::before {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--fg-faint);
+    }
+    .idp__menu tbody td:nth-child(2)::before {
+      content: 'buys';
+    }
+    .idp__menu tbody td:nth-child(3)::before {
+      content: 'costs';
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .idp__q,
+    .idp__menu th,
+    .idp__menu td {
+      transition: none;
+    }
+  }
+</style>

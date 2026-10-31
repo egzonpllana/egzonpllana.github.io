@@ -1,0 +1,608 @@
+---
+/**
+ * The thirty-minute screen, played at speed. A playhead runs through the six
+ * blocks of the half hour, then the technical block (minutes 13 to 22) opens
+ * out to its 540 seconds: one STAR story, then the scenario questions. Pick
+ * how many questions come and how long a rehearsed answer runs, and see how
+ * many of them fit before minute 22.
+ *
+ * The minute boundaries and the 90-second story are the guide's own table.
+ * The arithmetic is exact; the number of questions is the guide's range of
+ * three to five.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '02',
+  caption = 'Nine of the thirty minutes are technical, and one story takes the first ninety seconds of them. The 450 seconds left, shared by three to five questions, come to 150 down to 90 seconds per question, with the asking included. A rehearsed four-minute answer fits once; every question after it is cut at minute 22 or never asked.',
+} = Astro.props;
+
+interface Block {
+  from: number;
+  to: number;
+  short: string;
+  what: string;
+  win: string;
+  tech?: boolean;
+}
+
+const BLOCKS: Block[] = [
+  {
+    from: 0,
+    to: 3,
+    short: 'intro',
+    what: 'Intro; they pitch the company',
+    win: 'Nothing. Listen.',
+  },
+  {
+    from: 3,
+    to: 8,
+    short: 'about you',
+    what: '“Tell me about yourself”',
+    win: 'Your positioning line. 15 seconds, then stop.',
+  },
+  {
+    from: 8,
+    to: 13,
+    short: 'why us',
+    what: '“Why us?”',
+    win: 'The tension answer, plus one observation about their app.',
+  },
+  {
+    from: 13,
+    to: 22,
+    short: 'technical',
+    what: 'Hardest project, plus light technical scenarios',
+    win: 'One STAR story, then 60 to 90 second answers.',
+    tech: true,
+  },
+  {
+    from: 22,
+    to: 28,
+    short: 'your questions',
+    what: 'Your questions',
+    win: 'Five of them, tiered. Trade-offs, not perks.',
+  },
+  {
+    from: 28,
+    to: 30,
+    short: 'next',
+    what: 'Next steps',
+    win: 'Ask for the stage list. Say you want the role.',
+  },
+];
+const TOTAL_MIN = 30;
+---
+
+<VizFrame
+  fig={fig}
+  title="Thirty minutes, nine of them technical"
+  caption={caption}
+  class="smb"
+  data-smb
+  label="Timeline of a thirty-minute recruiter screen. The technical block from minute 13 to 22 is expanded to show how many answers of a given length fit in it."
+>
+  <div slot="tools">
+    <AnimControls label="Screen" />
+  </div>
+
+  <div class="smb__lane">
+    <div class="smb__lane-head">
+      <span class="viz-label">the half hour</span>
+      <span class="viz-mono smb__clock" data-clock>00:00</span>
+    </div>
+    <div class="smb__track" data-track>
+      {
+        BLOCKS.map((b) => (
+          <span
+            class:list={['smb__seg', { 'is-tech': b.tech }]}
+            style={`left:${(b.from / TOTAL_MIN) * 100}%;width:calc(${((b.to - b.from) / TOTAL_MIN) * 100}% - 2px)`}
+            data-seg={b.from}
+          >
+            <span class="smb__seg-label">{b.short}</span>
+          </span>
+        ))
+      }
+      <span class="smb__head" data-head aria-hidden="true"></span>
+    </div>
+    <div class="smb__ticks viz-mono" aria-hidden="true">
+      {
+        [0, 3, 8, 13, 22, 28, 30].map((m) => (
+          <span style={`left:${(m / TOTAL_MIN) * 100}%`}>{m}</span>
+        ))
+      }
+    </div>
+    <p class="smb__now" aria-live="polite">
+      <b data-what></b>
+      <span data-win></span>
+    </p>
+  </div>
+
+  <div class="smb__zoom" data-zoom>
+    <div class="smb__lane-head">
+      <span class="viz-label">minutes 13–22, opened out: 540 s</span>
+      <span class="viz-mono smb__clock" data-zclock>0 s</span>
+    </div>
+    <div class="smb__controls">
+      <div class="smb__ctl">
+        <span class="viz-label">questions</span>
+        <div class="viz-seg" role="group" aria-label="Number of questions">
+          <button type="button" aria-pressed="false" data-q="3">3</button>
+          <button type="button" aria-pressed="false" data-q="4">4</button>
+          <button type="button" aria-pressed="true" data-q="5">5</button>
+        </div>
+      </div>
+      <div class="smb__ctl">
+        <span class="viz-label">rehearsed answer</span>
+        <div class="viz-seg" role="group" aria-label="Answer length">
+          <button type="button" aria-pressed="true" data-len="90">90 s</button>
+          <button type="button" aria-pressed="false" data-len="240"
+            >4 min</button
+          >
+        </div>
+      </div>
+    </div>
+    <div class="smb__ztrack" data-ztrack></div>
+    <div class="smb__zticks viz-mono" aria-hidden="true">
+      <span style="left:0%">0</span>
+      <span style="left:16.667%">90</span>
+      <span style="left:50%">270</span>
+      <span style="left:100%">540 s</span>
+    </div>
+    <dl class="smb__read">
+      <div>
+        <dt class="viz-label">per question</dt>
+        <dd class="viz-mono" data-per></dd>
+      </div>
+      <div>
+        <dt class="viz-label">answered in full</dt>
+        <dd class="viz-mono" data-fit></dd>
+      </div>
+      <div>
+        <dt class="viz-label">never asked</dt>
+        <dd class="viz-mono" data-unasked></dd>
+      </div>
+    </dl>
+  </div>
+
+  <div class="viz-legend smb__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-meta)"></i>STAR story</span>
+    <span><i style="--c:var(--viz-sound)"></i>answer</span>
+    <span><i style="--c:var(--viz-bad)"></i>cut at minute 22</span>
+    <span
+      ><i style="--c:var(--border-strong)"></i>slot: asking and follow-up</span
+    >
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-smb-data
+    set:html={JSON.stringify(BLOCKS)}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const PHASE_ONE = 7000;
+    const PHASE_TWO = 5000;
+    const TOTAL = PHASE_ONE + PHASE_TWO;
+    const WINDOW = 540;
+    const STORY = 90;
+
+    function initScreenBudget(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const blocks = JSON.parse(
+        root.querySelector('[data-smb-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const head = root.querySelector('[data-head]');
+      const segs = [...root.querySelectorAll('[data-seg]')];
+      const clock = root.querySelector('[data-clock]');
+      const zclock = root.querySelector('[data-zclock]');
+      const whatEl = root.querySelector('[data-what]');
+      const winEl = root.querySelector('[data-win]');
+      const ztrack = root.querySelector('[data-ztrack]');
+      const perEl = root.querySelector('[data-per]');
+      const fitEl = root.querySelector('[data-fit]');
+      const unaskedEl = root.querySelector('[data-unasked]');
+      const qBtns = [...root.querySelectorAll('[data-q]')];
+      const lenBtns = [...root.querySelectorAll('[data-len]')];
+
+      let questions = 5;
+      let answer = 90;
+      let elapsed = reduce ? TOTAL : 0;
+      let since = null;
+      let raf = 0;
+      let pieces = [];
+
+      // One piece per block in the opened-out window, in seconds. Each
+      // question owns an equal slot of what the story leaves; an answer starts
+      // at its slot, or later if the previous answer overran into it.
+      function layout() {
+        const slot = (WINDOW - STORY) / questions;
+        pieces = [{ kind: 'story', label: 'STAR', from: 0, to: STORY }];
+        let cursor = STORY;
+        let unasked = 0;
+        for (let q = 1; q <= questions; q += 1) {
+          const from = Math.max(cursor, STORY + (q - 1) * slot);
+          if (from >= WINDOW) {
+            unasked += 1;
+            continue;
+          }
+          const end = from + answer;
+          pieces.push({
+            kind: end > WINDOW ? 'cut' : 'answer',
+            label: `Q${q}`,
+            from,
+            to: Math.min(end, WINDOW),
+          });
+          cursor = end;
+        }
+        ztrack.textContent = '';
+        for (let q = 1; q < questions; q += 1) {
+          const tick = document.createElement('span');
+          tick.className = 'smb__slot';
+          tick.style.left = `${((STORY + q * slot) / WINDOW) * 100}%`;
+          ztrack.appendChild(tick);
+        }
+        pieces.forEach((p) => {
+          const el = document.createElement('span');
+          el.className = `smb__piece is-${p.kind}`;
+          el.textContent = p.label;
+          el.style.left = `${(p.from / WINDOW) * 100}%`;
+          p.el = el;
+          ztrack.appendChild(el);
+        });
+        unaskedEl.textContent = String(unasked);
+        unaskedEl.classList.toggle('is-bad', unasked > 0);
+
+        perEl.textContent = `${WINDOW - STORY} s ÷ ${questions} = ${Math.round(slot)} s`;
+        const full = pieces.filter((p) => p.kind === 'answer').length;
+        fitEl.textContent = `${full} of ${questions}`;
+        fitEl.classList.toggle('is-bad', full < questions);
+      }
+
+      const fmt = (min) => {
+        const total = Math.round(min * 60);
+        const m = String(Math.floor(total / 60)).padStart(2, '0');
+        const s = String(total % 60).padStart(2, '0');
+        return `${m}:${s}`;
+      };
+
+      function paint() {
+        const p1 = Math.min(1, elapsed / PHASE_ONE);
+        const minute = p1 * 30;
+        head.style.left = `${p1 * 100}%`;
+        clock.textContent = fmt(minute);
+        const active =
+          blocks.find((b) => minute >= b.from && minute < b.to) ||
+          blocks[blocks.length - 1];
+        segs.forEach((s) => {
+          const from = Number(s.dataset.seg);
+          s.classList.toggle('is-now', from === active.from && p1 < 1);
+          s.classList.toggle('is-past', minute >= from);
+        });
+        const shown = p1 < 1 ? active : blocks.find((b) => b.tech);
+        whatEl.textContent = `${shown.from}–${shown.to} min · ${shown.what}.`;
+        winEl.textContent = ` ${shown.win}`;
+
+        const p2 = Math.max(0, Math.min(1, (elapsed - PHASE_ONE) / PHASE_TWO));
+        const second = p2 * WINDOW;
+        root.classList.toggle('is-zooming', elapsed >= PHASE_ONE);
+        zclock.textContent = `${Math.round(second)} s`;
+        pieces.forEach((p) => {
+          const grown = Math.max(0, Math.min(p.to, second) - p.from);
+          p.el.style.width = `${(grown / WINDOW) * 100}%`;
+          p.el.classList.toggle('is-shown', grown > 0);
+        });
+      }
+
+      function frame(ts) {
+        if (since === null) since = ts - elapsed;
+        elapsed = Math.min(TOTAL, ts - since);
+        paint();
+        if (elapsed < TOTAL) {
+          raf = requestAnimationFrame(frame);
+          return;
+        }
+        raf = 0;
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
+      function stop() {
+        cancelAnimationFrame(raf);
+        raf = 0;
+        since = null;
+      }
+
+      function play() {
+        if (raf) return;
+        if (reduce) elapsed = TOTAL;
+        if (elapsed >= TOTAL) {
+          paint();
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        raf = requestAnimationFrame(frame);
+      }
+
+      function reset() {
+        stop();
+        elapsed = 0;
+        paint();
+      }
+
+      // A control change replays only the opened-out window.
+      function changed() {
+        layout();
+        stop();
+        if (reduce) {
+          elapsed = TOTAL;
+          paint();
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        elapsed = PHASE_ONE;
+        paint();
+        root.dispatchEvent(new CustomEvent('anim:started'));
+        play();
+      }
+
+      qBtns.forEach((b) =>
+        b.addEventListener('click', () => {
+          questions = Number(b.dataset.q);
+          qBtns.forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+          changed();
+        }),
+      );
+      lenBtns.forEach((b) =>
+        b.addEventListener('click', () => {
+          answer = Number(b.dataset.len);
+          lenBtns.forEach((x) =>
+            x.setAttribute('aria-pressed', String(x === b)),
+          );
+          changed();
+        }),
+      );
+
+      layout();
+      paint();
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-smb]').forEach(initScreenBudget);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .smb__lane,
+  .smb__zoom {
+    display: grid;
+    gap: var(--sp-2);
+  }
+  .smb__zoom {
+    margin-top: var(--sp-5);
+    padding-top: var(--sp-4);
+    border-top: 1px dashed var(--border-strong);
+    opacity: 0.55;
+    transition: opacity 0.3s var(--ease);
+  }
+  .smb.is-zooming .smb__zoom {
+    opacity: 1;
+  }
+  .smb__lane-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--sp-2);
+  }
+  .smb__clock {
+    font-size: 12px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+  }
+
+  .smb__track,
+  .smb__ztrack {
+    position: relative;
+    height: 38px;
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .smb__seg {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    padding: 0 4px;
+    --c: var(--fg-faint);
+    background: color-mix(in srgb, var(--c) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--c) 30%, transparent);
+    border-radius: 6px;
+    transition:
+      background 0.2s var(--ease),
+      border-color 0.2s var(--ease);
+  }
+  .smb__seg.is-tech {
+    --c: var(--viz-level);
+  }
+  .smb__seg.is-past {
+    background: color-mix(in srgb, var(--c) 18%, transparent);
+  }
+  .smb__seg.is-now {
+    border-color: var(--c);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--c) 35%, transparent);
+  }
+  .smb__seg-label {
+    max-width: 100%;
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--fg-muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .smb__seg.is-tech .smb__seg-label {
+    color: var(--viz-level);
+  }
+  .smb__head {
+    position: absolute;
+    top: -4px;
+    bottom: -4px;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--fg);
+    border-radius: 2px;
+    pointer-events: none;
+  }
+
+  .smb__ticks,
+  .smb__zticks {
+    position: relative;
+    height: 14px;
+    font-size: 10px;
+    color: var(--fg-faint);
+  }
+  .smb__ticks span,
+  .smb__zticks span {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+  .smb__ticks span:first-child,
+  .smb__zticks span:first-child {
+    transform: none;
+  }
+  .smb__ticks span:last-child,
+  .smb__zticks span:last-child {
+    transform: translateX(-100%);
+  }
+
+  .smb__now {
+    min-height: 3em;
+    margin: var(--sp-1) 0 0;
+    padding-left: var(--sp-3);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg-muted);
+    border-left: 3px solid var(--viz-level);
+  }
+  .smb__now b {
+    color: var(--fg);
+    font-weight: 600;
+  }
+
+  .smb__controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-4);
+  }
+  .smb__ctl {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+
+  .smb__ztrack :global(.smb__piece) {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    display: grid;
+    place-items: center;
+    width: 0;
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--fg);
+    white-space: nowrap;
+    --c: var(--viz-sound);
+    background: color-mix(in srgb, var(--c) 18%, var(--viz-panel));
+    border: 1px solid var(--c);
+    border-radius: 6px;
+    opacity: 0;
+  }
+  .smb__ztrack :global(.smb__piece.is-shown) {
+    opacity: 1;
+  }
+  .smb__ztrack :global(.smb__slot) {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed var(--border-strong);
+  }
+  .smb__ztrack :global(.smb__piece.is-story) {
+    --c: var(--viz-meta);
+  }
+  .smb__ztrack :global(.smb__piece.is-cut) {
+    --c: var(--viz-bad);
+    border-right-style: dashed;
+  }
+
+  .smb__read {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-5);
+    margin: var(--sp-4) 0 0;
+  }
+  .smb__read div {
+    display: grid;
+    gap: 2px;
+  }
+  .smb__read dd {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .smb__read dd.is-bad {
+    color: var(--viz-bad);
+  }
+  .smb__legend {
+    margin-top: var(--sp-4);
+  }
+
+  @media (max-width: 560px) {
+    .smb__seg-label {
+      font-size: 0;
+    }
+    .smb__seg.is-tech .smb__seg-label {
+      font-size: 10px;
+    }
+    .smb__ztrack :global(.smb__piece) {
+      font-size: 9.5px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .smb__zoom,
+    .smb__seg {
+      transition: none;
+    }
+  }
+</style>

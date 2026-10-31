@@ -1,0 +1,503 @@
+---
+/**
+ * The nine-step system design framework against the five dimensions a
+ * whiteboard round grades. Choose how far through the steps an answer gets
+ * and see which dimensions are on the board and which of the three senior
+ * steps (6, 8 and 9) were reached. Each step's line is the live-rates answer
+ * from the guide, put on the board in that order.
+ *
+ * The step-to-dimension mapping is a reading of the two lists side by side:
+ * components put the boxes up, data flow sets the arrows' direction, the
+ * concurrency model says what runs where, persistence and cache policy say
+ * who owns the truth, and failure modes say what breaks.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '05',
+  caption = 'Stopping after step three puts two of the five graded dimensions on the board, below the three that count as competent. Steps four to six bring the other three; the dimensions that differentiate are concurrency, failure and authority. Steps eight and nine add nothing to the whiteboard score and are where seniority shows anyway: what you would log, and what you would cut.',
+} = Astro.props;
+
+type Dim = 'boxes' | 'direction' | 'concurrency' | 'failure' | 'authority';
+interface Step {
+  title: string;
+  line: string;
+  dim?: Dim;
+  senior?: boolean;
+}
+
+const STEPS: Step[] = [
+  {
+    title: 'Requirements and constraints',
+    line: 'Who reads the rates, how often they change, how stale a shown value may be.',
+  },
+  {
+    title: 'Data flow',
+    line: 'Transport to repository to actor-owned state to the screen. Every arrow is a dependency.',
+    dim: 'direction',
+  },
+  {
+    title: 'Components and protocols',
+    line: 'A repository protocol owning the stream, an actor owning mutable state, a MainDelivering seam.',
+    dim: 'boxes',
+  },
+  {
+    title: 'Concurrency model',
+    line: 'AsyncStream from the transport, one task per screen stored so it cancels on disappear, coalescing on the producer side.',
+    dim: 'concurrency',
+  },
+  {
+    title: 'Persistence and cache policy',
+    line: 'The last known value stays on screen as stale while a refresh is in flight. One owner of the truth.',
+    dim: 'authority',
+  },
+  {
+    title: 'Failure modes',
+    line: 'The socket drops mid-transaction: what the user sees, and a request token so a late response cannot overwrite a newer one.',
+    dim: 'failure',
+    senior: true,
+  },
+  {
+    title: 'Testing',
+    line: 'Clock, transport and main-thread delivery injected, so no test needs a sleep or a run loop.',
+  },
+  {
+    title: 'Observability',
+    line: 'What you would log to know the drop happened, and how often.',
+    senior: true,
+  },
+  {
+    title: 'Trade-offs, and what you would cut',
+    line: 'What ships without it if the deadline halves.',
+    senior: true,
+  },
+];
+
+const DIMS: { key: Dim; name: string; asks: string; diff?: boolean }[] = [
+  { key: 'boxes', name: 'boxes', asks: 'are the components right' },
+  {
+    key: 'direction',
+    name: 'direction',
+    asks: 'do the arrows encode real dependencies',
+  },
+  {
+    key: 'concurrency',
+    name: 'concurrency',
+    asks: 'what runs where, on which isolation',
+    diff: true,
+  },
+  {
+    key: 'failure',
+    name: 'failure',
+    asks: 'what breaks, and what the user sees',
+    diff: true,
+  },
+  {
+    key: 'authority',
+    name: 'authority',
+    asks: 'who owns the truth',
+    diff: true,
+  },
+];
+const START = 3;
+const rangeId = `dsc-range-${Math.random().toString(36).slice(2, 8)}`;
+const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
+---
+
+<VizFrame
+  fig={fig}
+  title="Nine steps, five graded dimensions: where an answer stops"
+  caption={caption}
+  class="dsc"
+  data-dsc
+  label="The nine steps of a system design answer. Choose the last step reached to see how many of the five whiteboard dimensions it covers and whether the senior steps six, eight and nine were reached."
+>
+  <div class="dsc__bar">
+    <label class="viz-label" for={rangeId}>answer stops after step</label>
+    <div class="dsc__range">
+      <button
+        type="button"
+        class="viz-btn"
+        data-prev
+        aria-label="One step fewer">−</button
+      >
+      <input
+        id={rangeId}
+        type="range"
+        min="1"
+        max="9"
+        step="1"
+        value={START}
+        data-range
+      />
+      <button
+        type="button"
+        class="viz-btn"
+        data-nextstep
+        aria-label="One step more">+</button
+      >
+      <output class="viz-mono dsc__out" data-out for={rangeId}>{START}</output>
+    </div>
+  </div>
+
+  <div class="dsc__grid">
+    <ol class="dsc__steps">
+      {
+        STEPS.map((s, i) => (
+          <li
+            class:list={['dsc__step', { 'is-senior': s.senior }]}
+            data-step={i + 1}
+          >
+            <button type="button" class="dsc__row" data-pick={i + 1}>
+              <span class="dsc__num viz-mono">{pad(i + 1)}</span>
+              <span class="dsc__body">
+                <span class="dsc__title">
+                  {s.title}
+                  {s.dim && (
+                    <span class="viz-chip viz-chip--meta dsc__tag">
+                      {s.dim}
+                    </span>
+                  )}
+                  {s.senior && (
+                    <span class="viz-chip viz-chip--level dsc__tag">
+                      senior
+                    </span>
+                  )}
+                </span>
+                <span class="dsc__line">{s.line}</span>
+              </span>
+            </button>
+            {i === 2 && (
+              <span class="dsc__stop viz-mono" aria-hidden="true">
+                most candidates stop here
+              </span>
+            )}
+          </li>
+        ))
+      }
+    </ol>
+
+    <div class="dsc__panel viz-panel" aria-live="polite">
+      <div class="dsc__score">
+        <span class="viz-label">on the whiteboard</span>
+        <span class="dsc__big"><b data-dims>0</b> / 5</span>
+        <span class="dsc__verdict" data-verdict></span>
+      </div>
+      <ul class="dsc__dims">
+        {
+          DIMS.map((d) => (
+            <li class="dsc__dim" data-dim={d.key}>
+              <span class="dsc__dot" aria-hidden="true" />
+              <span>
+                <b>{d.name}</b>
+                {d.diff && <small class="viz-mono"> differentiates</small>}
+                <span class="dsc__asks">{d.asks}</span>
+              </span>
+            </li>
+          ))
+        }
+      </ul>
+      <div class="dsc__score dsc__score--senior">
+        <span class="viz-label">senior steps reached</span>
+        <span class="dsc__big"><b data-senior>0</b> / 3</span>
+      </div>
+    </div>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-dsc-data
+    set:html={JSON.stringify(
+      STEPS.map((s) => ({ dim: s.dim, senior: !!s.senior })),
+    )}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initCoverage(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const steps = JSON.parse(
+        root.querySelector('[data-dsc-data]').textContent,
+      );
+      const range = root.querySelector('[data-range]');
+      const out = root.querySelector('[data-out]');
+      const items = [...root.querySelectorAll('[data-step]')];
+      const dims = [...root.querySelectorAll('[data-dim]')];
+      const dimsEl = root.querySelector('[data-dims]');
+      const seniorEl = root.querySelector('[data-senior]');
+      const verdictEl = root.querySelector('[data-verdict]');
+
+      function verdict(n) {
+        if (n >= 5) return 'Five out of five gets the offer.';
+        if (n >= 3) return 'Competent. Three out of five.';
+        return 'Below competent: boxes and arrows only.';
+      }
+
+      function render(k) {
+        range.value = String(k);
+        out.textContent = String(k);
+        const reached = steps.slice(0, k);
+        const covered = new Set(reached.map((s) => s.dim).filter(Boolean));
+        items.forEach((li, i) => {
+          li.classList.toggle('is-done', i < k);
+          li.classList.toggle('is-last', i === k - 1);
+          li.querySelector('[data-pick]').setAttribute(
+            'aria-pressed',
+            String(i === k - 1),
+          );
+        });
+        dims.forEach((d) =>
+          d.classList.toggle('is-on', covered.has(d.dataset.dim)),
+        );
+        dimsEl.textContent = String(covered.size);
+        verdictEl.textContent = verdict(covered.size);
+        verdictEl.dataset.level =
+          covered.size >= 5 ? 'top' : covered.size >= 3 ? 'mid' : 'low';
+        seniorEl.textContent = String(reached.filter((s) => s.senior).length);
+      }
+
+      range.addEventListener('input', () => render(Number(range.value)));
+      root
+        .querySelector('[data-prev]')
+        .addEventListener('click', () =>
+          render(Math.max(1, Number(range.value) - 1)),
+        );
+      root
+        .querySelector('[data-nextstep]')
+        .addEventListener('click', () =>
+          render(Math.min(9, Number(range.value) + 1)),
+        );
+      root
+        .querySelectorAll('[data-pick]')
+        .forEach((b) =>
+          b.addEventListener('click', () => render(Number(b.dataset.pick))),
+        );
+
+      render(Number(range.value));
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-dsc]').forEach(initCoverage);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .dsc__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-4);
+  }
+  .dsc__range {
+    display: flex;
+    flex: 1 1 14rem;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  .dsc__range .viz-btn {
+    min-width: 30px;
+    padding-inline: 8px;
+  }
+  .dsc__out {
+    min-width: 1.5em;
+    font-size: 14px;
+    font-weight: 700;
+    text-align: center;
+    color: var(--fg);
+  }
+
+  .dsc__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+    gap: var(--sp-4);
+    align-items: start;
+  }
+  .dsc__steps {
+    display: grid;
+    gap: 4px;
+  }
+  .dsc__step {
+    position: relative;
+  }
+  .dsc__row {
+    display: grid;
+    grid-template-columns: 2rem minmax(0, 1fr);
+    gap: var(--sp-2);
+    width: 100%;
+    padding: 7px 10px;
+    text-align: left;
+    color: var(--fg-faint);
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition:
+      background 0.2s var(--ease),
+      border-color 0.2s var(--ease),
+      color 0.2s var(--ease);
+  }
+  .dsc__row:hover {
+    border-color: var(--border-strong);
+  }
+  .dsc__row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .dsc__step.is-done .dsc__row {
+    color: var(--fg-muted);
+    background: var(--viz-panel);
+    border-style: solid;
+  }
+  .dsc__step.is-last .dsc__row {
+    border-color: var(--accent-line);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  .dsc__num {
+    padding-top: 1px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .dsc__step.is-done .dsc__num {
+    color: var(--accent-text);
+  }
+  .dsc__body {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .dsc__title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+  }
+  .dsc__step.is-done .dsc__title {
+    color: var(--fg);
+  }
+  .dsc__tag {
+    padding: 1px 7px;
+    font-size: 10px;
+  }
+  .dsc__step:not(.is-done) .dsc__tag {
+    opacity: 0.55;
+  }
+  .dsc__line {
+    font-size: var(--fs-xs);
+    line-height: 1.5;
+  }
+  .dsc__stop {
+    display: block;
+    margin: 4px 0 2px;
+    padding-top: 4px;
+    font-size: 10.5px;
+    text-align: right;
+    color: var(--viz-bad);
+    border-top: 1.5px dashed var(--viz-bad);
+  }
+
+  .dsc__panel {
+    display: grid;
+    gap: var(--sp-3);
+    padding: var(--sp-4);
+  }
+  .dsc__score {
+    display: grid;
+    gap: 2px;
+  }
+  .dsc__score--senior {
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--border);
+  }
+  .dsc__big {
+    font-size: var(--fs-lg);
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-muted);
+  }
+  .dsc__big b {
+    color: var(--fg);
+  }
+  .dsc__verdict {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--viz-bad);
+  }
+  .dsc__verdict[data-level='mid'] {
+    color: var(--viz-level);
+  }
+  .dsc__verdict[data-level='top'] {
+    color: var(--viz-sound-text);
+  }
+  .dsc__dims {
+    display: grid;
+    gap: 6px;
+  }
+  .dsc__dim {
+    display: grid;
+    grid-template-columns: 12px minmax(0, 1fr);
+    gap: var(--sp-2);
+    align-items: start;
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+    color: var(--fg-faint);
+  }
+  .dsc__dim b {
+    font-weight: 600;
+  }
+  .dsc__dim small {
+    font-size: 10px;
+    color: var(--viz-level);
+  }
+  .dsc__asks {
+    display: block;
+  }
+  .dsc__dot {
+    width: 10px;
+    height: 10px;
+    margin-top: 3px;
+    border: 1.5px solid var(--border-strong);
+    border-radius: 50%;
+    transition:
+      background 0.2s var(--ease),
+      border-color 0.2s var(--ease);
+  }
+  .dsc__dim.is-on {
+    color: var(--fg-muted);
+  }
+  .dsc__dim.is-on b {
+    color: var(--fg);
+  }
+  .dsc__dim.is-on .dsc__dot {
+    background: var(--viz-meta);
+    border-color: var(--viz-meta);
+  }
+
+  @media (max-width: 720px) {
+    .dsc__grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .dsc__panel {
+      order: -1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dsc__row,
+    .dsc__dot {
+      transition: none;
+    }
+  }
+</style>

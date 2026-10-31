@@ -1,0 +1,436 @@
+---
+/**
+ * The three preparation routes, by the time left before the call. Each is
+ * drawn to scale on its own clock (hours, days or weeks) with the bands
+ * coloured by subject, so switching routes shows what grows and what is left
+ * out. The plans are the guide's own.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '06',
+  caption = 'With forty-eight hours the whole window is delivery, because there is no live coding at a recruiter screen. With two weeks or six, delivery still comes first and shrinks to the opening days, concurrency takes the largest share, and system design and timed drills close the route. Every route ends on rehearsal, not new material.',
+} = Astro.props;
+
+type Band = 'delivery' | 'foundations' | 'concurrency' | 'design' | 'drills';
+interface Block {
+  from: number;
+  to: number;
+  band: Band;
+  short: string;
+  text: string;
+}
+interface Route {
+  key: string;
+  label: string;
+  unit: string;
+  total: number;
+  goal: string;
+  blocks: Block[];
+  rule: string;
+  skip?: string;
+}
+
+const ROUTES: Route[] = [
+  {
+    key: 'h48',
+    label: '48 hours',
+    unit: 'h',
+    total: 48,
+    goal: 'Survive the screen.',
+    blocks: [
+      {
+        from: 0,
+        to: 46,
+        band: 'delivery',
+        short: 'delivery only',
+        text: 'Positioning line, three STAR stories, five questions to ask, the ninety-second version of the financial-data answer. Sleep is non-negotiable: delivery degrades faster than recall.',
+      },
+      {
+        from: 46,
+        to: 48,
+        band: 'drills',
+        short: 'no new',
+        text: 'The last two hours are not for new material.',
+      },
+    ],
+    rule: 'Delivery only.',
+    skip: 'A concurrency lab or a problem set. There is no live coding at a recruiter screen, and re-reading actor reentrancy does not help you answer “tell me about your hardest project”.',
+  },
+  {
+    key: 'w2',
+    label: 'two weeks',
+    unit: 'day',
+    total: 14,
+    goal: 'Pass the technical round.',
+    blocks: [
+      {
+        from: 0,
+        to: 2,
+        band: 'delivery',
+        short: 'behavioural',
+        text: 'The behavioural material, out loud.',
+      },
+      {
+        from: 2,
+        to: 6,
+        band: 'foundations',
+        short: 'foundations · GCD',
+        text: 'Foundations and GCD.',
+      },
+      {
+        from: 6,
+        to: 11,
+        band: 'concurrency',
+        short: 'Swift concurrency',
+        text: 'Swift concurrency, cancellation and staleness.',
+      },
+      {
+        from: 11,
+        to: 12,
+        band: 'design',
+        short: 'design',
+        text: 'System design, and diagnosing a main-thread freeze.',
+      },
+      {
+        from: 12,
+        to: 14,
+        band: 'drills',
+        short: 'drills',
+        text: 'Recall drills and three timed exercises.',
+      },
+    ],
+    rule: 'Behaviour first, out loud, before any technical material.',
+  },
+  {
+    key: 'w6',
+    label: 'six weeks',
+    unit: 'week',
+    total: 6,
+    goal: 'Interview at the top of your level.',
+    blocks: [
+      {
+        from: 0,
+        to: 1,
+        band: 'delivery',
+        short: 'behavioural',
+        text: 'The behavioural material in full. Treat this week as the call, not preparation for it.',
+      },
+      {
+        from: 1,
+        to: 3,
+        band: 'foundations',
+        short: 'foundations',
+        text: 'Foundations, with a concurrency lab green.',
+      },
+      {
+        from: 3,
+        to: 5,
+        band: 'concurrency',
+        short: 'Swift concurrency',
+        text: 'Swift concurrency, plus building the workshops.',
+      },
+      {
+        from: 5,
+        to: 6,
+        band: 'design',
+        short: 'design · drills',
+        text: 'System design, and every timed drill, twice.',
+      },
+    ],
+    rule: 'Week one is the call, rehearsed.',
+  },
+];
+
+const BANDS: { key: Band; name: string }[] = [
+  { key: 'delivery', name: 'delivery and behaviour' },
+  { key: 'foundations', name: 'foundations and GCD' },
+  { key: 'concurrency', name: 'Swift concurrency' },
+  { key: 'design', name: 'system design' },
+  { key: 'drills', name: 'drills and rehearsal' },
+];
+
+const span = (r: Route, b: Block) => {
+  const name = (n: number) => (r.unit === 'h' ? `${n} h` : `${r.unit} ${n}`);
+  if (r.unit === 'h') return `${b.from}–${b.to} h`;
+  return b.to - b.from === 1 ? name(b.to) : `${r.unit}s ${b.from + 1}–${b.to}`;
+};
+---
+
+<VizFrame
+  fig={fig}
+  title="Three routes, depending on your clock"
+  caption={caption}
+  class="prp"
+  data-prp
+  label="Preparation plans for forty-eight hours, two weeks and six weeks, drawn to scale and coloured by subject."
+>
+  <div class="prp__bar">
+    <span class="viz-label">time before the call</span>
+    <div class="viz-seg" role="group" aria-label="Time before the call">
+      {
+        ROUTES.map((r, i) => (
+          <button
+            type="button"
+            aria-pressed={i === 0 ? 'true' : 'false'}
+            data-route={r.key}
+          >
+            {r.label}
+          </button>
+        ))
+      }
+    </div>
+  </div>
+
+  {
+    ROUTES.map((r, i) => (
+      <div class="prp__route" data-panel={r.key} hidden={i !== 0}>
+        <p class="prp__goal">
+          <span class="viz-label">goal</span>
+          <b>{r.goal}</b>
+          <span class="prp__rule">{r.rule}</span>
+        </p>
+        <div class="prp__track" aria-hidden="true">
+          {r.blocks.map((b) => (
+            <span
+              class="prp__block"
+              data-band={b.band}
+              style={`left:${(b.from / r.total) * 100}%;width:calc(${((b.to - b.from) / r.total) * 100}% - 2px)`}
+            >
+              <span class="prp__block-label">{b.short}</span>
+            </span>
+          ))}
+        </div>
+        <div class="prp__ticks viz-mono" aria-hidden="true">
+          <span style="left:0%">0</span>
+          <span style="left:100%">
+            {r.total} {r.unit === 'h' ? 'h' : `${r.unit}s`}
+          </span>
+        </div>
+        <ol class="prp__list">
+          {r.blocks.map((b) => (
+            <li class="prp__item" data-band={b.band}>
+              <span class="prp__when viz-mono">{span(r, b)}</span>
+              <span class="prp__what">{b.text}</span>
+            </li>
+          ))}
+        </ol>
+        {r.skip && (
+          <p class="prp__skip">
+            <span class="viz-label">do not open</span>
+            {r.skip}
+          </p>
+        )}
+      </div>
+    ))
+  }
+
+  <div class="viz-legend prp__legend" aria-hidden="true">
+    {
+      BANDS.map((b) => (
+        <span data-band={b.key}>
+          <i />
+          {b.name}
+        </span>
+      ))
+    }
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initRoutes(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const buttons = [...root.querySelectorAll('[data-route]')];
+      const panels = [...root.querySelectorAll('[data-panel]')];
+
+      buttons.forEach((b) =>
+        b.addEventListener('click', () => {
+          buttons.forEach((x) =>
+            x.setAttribute('aria-pressed', String(x === b)),
+          );
+          panels.forEach(
+            (p) => (p.hidden = p.dataset.panel !== b.dataset.route),
+          );
+        }),
+      );
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-prp]').forEach(initRoutes);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .prp {
+    --band-delivery: var(--viz-sound);
+    --band-foundations: var(--viz-meta);
+    --band-concurrency: var(--viz-net);
+    --band-design: var(--viz-level);
+    --band-drills: var(--fg-faint);
+  }
+  [data-band='delivery'] {
+    --c: var(--band-delivery);
+  }
+  [data-band='foundations'] {
+    --c: var(--band-foundations);
+  }
+  [data-band='concurrency'] {
+    --c: var(--band-concurrency);
+  }
+  [data-band='design'] {
+    --c: var(--band-design);
+  }
+  [data-band='drills'] {
+    --c: var(--band-drills);
+  }
+
+  .prp__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-4);
+  }
+  .prp__route {
+    display: grid;
+    gap: var(--sp-2);
+  }
+  .prp__route[hidden] {
+    display: none;
+  }
+  .prp__goal {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px var(--sp-2);
+    margin: 0 0 var(--sp-1);
+    font-size: var(--fs-sm);
+  }
+  .prp__goal b {
+    font-size: var(--fs-base);
+    color: var(--fg);
+  }
+  .prp__rule {
+    color: var(--fg-muted);
+  }
+
+  .prp__track {
+    position: relative;
+    height: 40px;
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .prp__block {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    padding: 0 4px;
+    background: color-mix(in srgb, var(--c) 18%, var(--viz-panel));
+    border: 1px solid var(--c);
+    border-radius: 6px;
+    animation: prp-grow 0.45s var(--ease) both;
+    transform-origin: left center;
+  }
+  .prp__block-label {
+    max-width: 100%;
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--fg);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  @keyframes prp-grow {
+    from {
+      transform: scaleX(0.2);
+      opacity: 0;
+    }
+  }
+
+  .prp__ticks {
+    position: relative;
+    height: 14px;
+    font-size: 10px;
+    color: var(--fg-faint);
+  }
+  .prp__ticks span {
+    position: absolute;
+    top: 0;
+    white-space: nowrap;
+  }
+  .prp__ticks span:last-child {
+    transform: translateX(-100%);
+  }
+
+  .prp__list {
+    display: grid;
+    gap: 6px;
+    margin-top: var(--sp-2) !important;
+  }
+  .prp__item {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    gap: var(--sp-3);
+    padding: 8px 10px;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--c);
+    border-radius: var(--radius-sm);
+  }
+  .prp__when {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--fg-muted);
+    padding-top: 1px;
+  }
+  .prp__what {
+    color: var(--fg);
+  }
+  .prp__skip {
+    display: grid;
+    gap: 2px;
+    margin: var(--sp-2) 0 0;
+    padding-left: var(--sp-3);
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg-muted);
+    border-left: 3px solid var(--viz-bad);
+  }
+  .prp__legend {
+    margin-top: var(--sp-4);
+  }
+  .prp__legend i {
+    background: var(--c);
+  }
+
+  @media (max-width: 560px) {
+    .prp__item {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2px;
+    }
+    .prp__block-label {
+      font-size: 9.5px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .prp__block {
+      animation: none;
+    }
+  }
+</style>

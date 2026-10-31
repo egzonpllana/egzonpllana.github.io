@@ -2,15 +2,54 @@
 title: 'The 2026 senior iOS interview: Swift 6, concurrency, and ninety seconds per answer'
 description: 'The senior iOS hiring loop as it is actually run in 2026 at large consumer and fintech apps in the EU and US - the five stages, what each one scores, the Swift 6 concurrency that fills half the bar, and where candidates lose it.'
 date: 2026-09-03
+updated: 2026-11-01
 tags: ['iOS', 'Swift', 'Concurrency', 'Interviews', 'Career']
 heroImage: '../../assets/covers/senior-ios-interview-2026.png'
 ---
+
+import StatTiles from '../../components/StatTiles.astro';
+import PhaseRail from '../../components/PhaseRail.astro';
+import InterviewLoopRail from '../../components/InterviewLoopRail.astro';
+import ScreenMinuteBudget from '../../components/ScreenMinuteBudget.astro';
+import IsolationDrillPicker from '../../components/IsolationDrillPicker.astro';
+import CancellationLeakTimeline from '../../components/CancellationLeakTimeline.astro';
+import DesignStepCoverage from '../../components/DesignStepCoverage.astro';
+import PrepRoutePicker from '../../components/PrepRoutePicker.astro';
 
 I spent three and a half weeks building a private preparation course for myself: 54 sections, two Swift packages, 130 tests, a custom reader to run drills against a clock. It was reconstructed from real senior iOS loops at large consumer and fintech apps in the EU and the US - the stage lists recruiters actually send, the scoring criteria interviewers actually read from, the failure accounts candidates actually write up afterwards. Nothing employer-specific went into it, and nothing employer-specific goes into this.
 
 What follows is that course compressed to the parts that changed my answers. Not a topic list - you can get one of those anywhere. The load-bearing numbers, the timings, and the specific places the loop is lost.
 
-One thing has shifted since the last time I did this. Swift 6 language mode is now the default assumption in these rounds rather than a migration story, which means `Sendable`, isolation and cancellation are no longer bonus depth - they are the bar. Every snippet below typechecks under `-swift-version 6` on Swift 6.3.
+One thing has shifted since the last time I did this. Swift 6 language mode is now the default assumption in these rounds rather than a migration story, which means `Sendable`, isolation and cancellation are no longer bonus depth - they are the bar. Every snippet below compiles under `-swift-version 6`. They were first checked on Swift 6.3 and re-checked for this version on Swift 6.4 (Xcode 27.1), under both default-isolation settings a module can have, which turned up one thing about app targets worth knowing before you walk in.
+
+<StatTiles
+  tiles={[
+    {
+      label: 'technical minutes',
+      value: 9,
+      suffix: ' of 30',
+      sub: 'in the whole recruiter screen',
+    },
+    {
+      label: 'per answer',
+      value: 90,
+      suffix: ' s',
+      sub: 'not four minutes',
+    },
+    {
+      label: 'live build',
+      value: 45,
+      suffix: ' min',
+      sub: 'one task, graded four ways',
+    },
+    {
+      label: 'longest silence',
+      value: 8,
+      suffix: ' s',
+      sub: 'have a sentence for every moment',
+    },
+  ]}
+/>
 
 ## The loop
 
@@ -24,11 +63,15 @@ Five stages, in this order, with variations:
 
 Stages get merged and skipped depending on headcount pressure. It does not matter. The preparation for each is the same either way, and the ordering above is the one to prepare against.
 
-## Stage one: the thirty minutes
+<InterviewLoopRail />
+
+## Stage one: the thirty-minute screen
 
 One interviewer, video, English. Usually a recruiter or a technically literate colleague of theirs - **not** the two senior engineers you meet later. That distinction sets the register: they are checking whether it is worth spending two senior engineers' afternoon on you.
 
 Here is where the half hour goes.
+
+<div style={{ overflowX: 'auto' }}>
 
 | Minutes | What happens                                    | Where you win or lose                                    |
 | ------- | ----------------------------------------------- | -------------------------------------------------------- |
@@ -39,7 +82,11 @@ Here is where the half hour goes.
 | 22-28   | Your questions                                  | Five of them, tiered. Trade-offs, not perks              |
 | 28-30   | Next steps                                      | Ask for the stage list. Say you want the role            |
 
+</div>
+
 Now count the technical minutes in that table. Roughly **nine**, spread across three to five questions. That is **ninety seconds per answer**, not four minutes.
+
+<ScreenMinuteBudget />
 
 That single number reframed my entire preparation. I had been rehearsing depth I would never be allowed to reach. The screen does not reward the engineer with the most to say; it rewards the one who can compress a hard thing into ninety seconds and stop talking. Rehearse with a timer or you will not believe how long ninety seconds is not.
 
@@ -49,6 +96,8 @@ Four things are being scored, and only one of them is technical:
 - **Impact, with numbers.** "Reduced crashes" is noise. "Crash-free sessions from 99.1% to 99.8% over two releases" is signal.
 - **Product ownership.** Did you own an outcome, or complete tickets?
 - **Whether you actually want it.** They can hear the difference.
+
+> **In plain words:** the screen is a filter, usually run by someone who is not an engineer, and only nine of its minutes are technical. Rehearse short answers with a number in them, and stop talking when the answer is done.
 
 ## Stage two: the test, or the take-home
 
@@ -83,13 +132,15 @@ struct Money: Equatable, Sendable {
 
 If it is a **take-home** instead - typically an iOS app, "production ready", with about three hours suggested - the rule is: do exactly the brief, at production quality, and document everything you deliberately did not do. One account described spending twelve hours on a take-home and still failing. Scope inflation reads as poor judgement, not enthusiasm.
 
-A budget that works for the stated three hours: 30 minutes plan and skeleton, 90 minutes feature, 45 minutes tests, 30 minutes README and polish.
+A budget that works for the stated three hours, give or take a quarter of an hour: 30 minutes plan and skeleton, 90 minutes feature, 45 minutes tests, 30 minutes README and polish.
 
 > **The README is the highest-return file in the submission.** It is where architecture decisions, trade-offs, and the things you consciously cut get scored - which is to say, it is where product ownership is scored. Code alone cannot express "I chose not to".
 
 ## Stage three: the live-coding hour
 
 This is the round that decides it, and the round most people misunderstand. Here is the shape of the sixty minutes:
+
+<div style={{ overflowX: 'auto' }}>
 
 | #   | Stage                         | Budget |
 | --- | ----------------------------- | ------ |
@@ -99,6 +150,8 @@ This is the round that decides it, and the round most people misunderstand. Here
 | 4   | iOS concurrency and memory    | -      |
 | 5   | Architecture                  | -      |
 | 6   | Wrap-up and questions         | ~5 min |
+
+</div>
 
 Stages 3 to 5 are **one continuous coding task**, not three exercises. Around 45 minutes of building, graded on four criteria:
 
@@ -111,7 +164,35 @@ Breadth first, then depth where they push. A candidate who covers all four crite
 
 The beat order that works, for any brief:
 
-> **brief → clarify → make it testable → build → prove it → defend**
+<PhaseRail
+  phases={[
+    {
+      title: 'Brief',
+      body: 'Read what you are handed as a starting point, not a specification. The comment at the top of the file is the question.',
+    },
+    {
+      title: 'Clarify',
+      body: 'Ask what is fixed and what is a sketch, then say the assumption you are working under out loud. It takes eight seconds.',
+    },
+    {
+      title: 'Make it testable',
+      body: 'Name the seams before the feature: the clock, the transport, the delivery onto the main thread. Then build against those protocols.',
+      params: [{ name: 'lands', value: 'third, not sixth' }],
+    },
+    {
+      title: 'Build',
+      body: 'Breadth first. All four criteria at 7/10 before any one of them at 10/10, and a state model on the board in the first five minutes.',
+    },
+    {
+      title: 'Prove it',
+      body: 'Tests written alongside the feature, async, with no sleep and no timeout to tune. Seed through the API you are proving, not through init.',
+    },
+    {
+      title: 'Defend',
+      body: 'State the trade-off you measured rather than the one you read, and say the counterweight before they do.',
+    },
+  ]}
+/>
 
 Testability lands third, not sixth. _"How would you make this testable?"_ is the question the round actually turns on, and answering it before you write the feature is what separates a senior from a fast mid. Concretely: name your seams first. The clock, the transport, the delivery onto the main thread. Then build against those protocols.
 
@@ -123,6 +204,8 @@ protocol MainDelivering: Sendable {
 
 That is the seam nobody injects, and the one that makes an asynchronous UI test deterministic instead of a `sleep`-and-hope.
 
+> **In plain words:** the hour is one task graded four ways at once. Get all four onto the screen at a seven before polishing any one of them, and name your seams before you write the feature.
+
 ## What is actually probed
 
 Over half the technical surface of a senior iOS loop is concurrency. Not SwiftUI trivia, not Core Data minutiae - concurrency, and the correctness questions hanging off it.
@@ -132,6 +215,8 @@ The bands, in dependency order: language foundations → the threading model and
 And there is one question the whole loop rotates around, in one phrasing or another:
 
 > _"How would you structure and test an iOS feature that updates financial data frequently - architecture, async updates, cancellation, and stale responses?"_
+
+The concurrency band also moved under everyone's feet in 2025. Swift 6.2 let a module make the main actor its default isolation ([SE-0466](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md)), and let a `nonisolated async` function run on its caller's actor, `nonisolated(nonsending)`, with `@concurrent` as the explicit way off it ([SE-0461](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md)). New Xcode app projects turn both on; Swift packages and older projects do not. So "where does this `async` function run?" now has two correct answers depending on the build, and the senior answer names the build setting before giving either. [Understanding concurrency in Swift 6](/articles/understanding-concurrency-swift-6-sendable-mainactor/) has the probes behind that.
 
 Have a ninety-second version ready. Mine goes: a repository protocol owning the stream, an actor owning mutable state, `AsyncStream` from the transport, one task per screen stored so it cancels on disappear, a monotonically increasing request token so a late response cannot overwrite a newer one, coalescing on the producer side so the screen renders at most once per frame, and a `MainDelivering` seam so the test does not need a run loop. Then stop, and let them pick which part to open.
 
@@ -156,11 +241,15 @@ protocol CacheProtocol {
 
 Most candidates start typing an implementation. That is the trap. **The protocol is a starting point, not a specification** - and the three signatures are inconsistent on purpose, because each one is shaped for a different isolation model.
 
+<div style={{ overflowX: 'auto' }}>
+
 | Signature                                 | The isolation it is shaped for                     |
 | ----------------------------------------- | -------------------------------------------------- |
 | `setValue` - synchronous, returns nothing | a lock. Synchronous mutation is what a lock is for |
 | `getValue` - `async`                      | an actor. `await` is the actor hop                 |
 | `fetchValue` - completion handler         | GCD. The queue calls you back                      |
+
+</div>
 
 They are not asking you to satisfy all three at once. They are showing you the menu and asking which one you would order, why, and **what you would change about the protocol to get it**. Adapting the contract is the deliverable. An implementation that silently satisfies the file as handed over answers a question nobody asked.
 
@@ -177,11 +266,9 @@ Assume it is a sketch, and say you are assuming it. That fork is what the whole 
 
 ### Name the menu before you commit
 
-| Option                                                | What it buys                                                                                                     | What it costs                                                                                                                      |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| **Actor**                                             | The compiler owns the isolation. No lock to forget, no queue to name, `Sendable` for free                        | `setValue` must become `async`, and reentrancy is now yours to reason about                                                        |
-| **Lock** - `NSLock`, `OSAllocatedUnfairLock`, `Mutex` | Satisfies every signature as written. Nothing suspends, so there is no ordering question at all                  | The discipline is yours. Every access must go through the lock and only review enforces that                                       |
-| **GCD** - concurrent queue, `.barrier` writes         | Multiple readers, one writer. FIFO, so write ordering survives, and the completion-handler style is native to it | `@unchecked Sendable` - a promise the compiler cannot check, and a `sync` read blocks its caller for the length of a barrier write |
+Three options, each with what it buys and what it costs. Which one you take depends on what the interviewer confirms, so the menu below is wired to those answers: set the constraints and it names the option, the declaration it needs and the sentence that justifies it.
+
+<IsolationDrillPicker />
 
 Then adapt the protocol. Five edits, each with a reason you say out loud as you type it:
 
@@ -242,7 +329,7 @@ extension CacheRepository {
 }
 ```
 
-`nonisolated` is forced - the requirement is synchronous, so no boundary can supply the `async` and the method must hop in itself. That is also why the closure must be `@Sendable`. And it is fire-and-forget: the `Task` gives no ordering against a `setValue` that came before it, which is the second reason to keep it out of the contract.
+`nonisolated` is forced - the legacy signature is synchronous, so no boundary can supply the `async` and the method must hop in itself. That is also why the closure must be `@Sendable`. And it is fire-and-forget: the `Task` gives no ordering against a `setValue` that came before it, which is the second reason to keep it out of the contract.
 
 </details>
 
@@ -338,6 +425,21 @@ Say the counterweight before they do: `@unchecked Sendable` means the guarantee 
 
 </details>
 
+### Ask which build you are in
+
+This is the part the Swift 6.4 re-check added. In a module with main-actor default isolation, which is what Xcode's app template sets, every unannotated declaration is `@MainActor`, and that includes the lock and queue classes above. Nothing fails to compile. `NSLockCache` and `LockedCache` become main-actor classes whose synchronous methods still satisfy the `async` protocol, exactly as the actor's do, so every write from the websocket hops to the main thread before it reaches the lock. Compiled with `-default-isolation MainActor`, a `setValue` called from a detached task ran on the main thread. `QueuedCache` gets a single warning, from inside its barrier block: `main actor-isolated property 'entries' can not be mutated from a Sendable closure`.
+
+The fix is one word on each class:
+
+```swift
+nonisolated final class LockedCache<Value: Sendable>: CacheProtocol {
+    private let entries = Mutex<[String: Value]>([:])
+    // unchanged
+}
+```
+
+The actor needs nothing; it is its own isolation domain. Asking "is this an app target with main-actor default isolation?" before you write the class costs one sentence and shows you know the build changes the answer.
+
 ### Where it breaks
 
 **Keeping `setValue` synchronous.** This is the mistake the drill exists for. Write the actor against the protocol as handed to you and Swift 6 stops you before you reach a test:
@@ -347,13 +449,16 @@ error: conformance of 'CacheRepository<Value>' to protocol 'CacheProtocol' cross
        into actor-isolated code and can cause data races
 note:  actor-isolated instance method 'setValue(_:forKey:)' cannot satisfy
        nonisolated requirement
-note:  mark all declarations used in the conformance 'nonisolated'
+note:  mark instance method 'setValue(_:forKey:)' 'nonisolated'
+note:  actor-isolated instance method 'fetchValue(forKey:completion:)' cannot
+       satisfy nonisolated requirement
+note:  mark instance method 'fetchValue(forKey:completion:)' 'nonisolated'
 note:  turn data races into runtime errors with '@preconcurrency'
 ```
 
-The note names `setValue` and `fetchValue`, never `getValue` - an actor-isolated _synchronous_ method does satisfy an `async` requirement, because every outside caller already has to `await` it. It is the synchronous requirement that has no legal actor spelling.
+That is the Swift 6.4 output. The notes name `setValue` and `fetchValue`, never `getValue` - an actor-isolated _synchronous_ method does satisfy an `async` requirement, because every outside caller already has to `await` it. It is the synchronous requirement that has no legal actor spelling.
 
-Both notes are traps if you follow them literally. `@preconcurrency` compiles by converting the mismatch into a **runtime trap** - a crash in production instead of a build failure. `nonisolated func setValue` compiles by firing an unstructured `Task` into the actor, which **loses write ordering**. Neither is the answer. The answer is the `async` edit, and asking for it first.
+Both fix-its are traps if you follow them literally. `@preconcurrency` compiles by converting the mismatch into a **runtime trap** - a crash in production instead of a build failure. In the probe, calling `setValue` through the protocol from outside the actor stopped the process with `Incorrect actor executor assumption`. `nonisolated func setValue` compiles by firing an unstructured `Task` into the actor, which **loses write ordering**. Neither is the answer. The answer is the `async` edit, and asking for it first.
 
 **Leaving `Sendable` off the protocol.** It looks harmless - the actor compiles, and a local `let cache` even survives a task group. It fails the moment the cache is _stored_, which is the only way a cache is ever used: `stored property 'cache' of 'Sendable'-conforming struct has non-Sendable type`.
 
@@ -405,7 +510,11 @@ Two things I "knew" turned out to be wrong when I measured them.
 
 **"An unfair lock beats a queue" does not transfer.** Under real contention, `Mutex` ran 1.6-1.8x _behind_ both queue-based implementations - roughly 79-92 ms against 44-52 ms.
 
+The reason was in the harness rather than the primitive. The queue versions accept a write with `queue.async` and return before it runs, so concurrent producers never wait for one another; the `Mutex` version does the write before it returns, so they contend. On a synchronous read, where a queue has to `sync` and wait its turn, that advantage disappears. Both results are real; they measure different workloads.
+
 The interview lesson is not the numbers, which are specific to my machine and my workload. It is this: state the trade-off you _measured_, not the one you read. "I would take the actor here, and I would measure before claiming the lock is faster - when I benchmarked this shape, the lock lost under contention" is a materially stronger answer than any confident recitation, and one an interviewer cannot bluff-check you out of.
+
+> **In plain words:** the file is a menu, not a specification. Ask whether you may change it. Take the actor if you may and a lock if you may not, make `setValue` `async` so all three implementations fit one protocol, and check the module's default isolation before trusting a class to stay off the main thread.
 
 ## Cancellation and staleness
 
@@ -427,9 +536,80 @@ try? await Task.sleep(for: .seconds(1))
 try await Task.sleep(for: .seconds(1))
 ```
 
+Both bugs, and the sibling ones they cause, fit in one debounced search with two keystrokes:
+
+<CancellationLeakTimeline />
+
+The continuation needs a cancellation handler that tells the underlying request, here an older callback API called `LegacyRequest`, so its callback fires and the continuation resumes:
+
+```swift
+func value(from request: LegacyRequest) async throws -> Int {
+    try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { continuation in
+            request.start { continuation.resume(with: $0) }
+        }
+    } onCancel: {
+        request.cancel()   // its callback fires with an error; the task resumes
+    }
+}
+```
+
 > **A bounded wait that fails tells you which assertion broke. An unbounded one hangs and tells you nothing.** An unbounded wait in a test is a hang with a delay fuse.
 
 Staleness is the sibling problem. Two useful facts: a cancelled `URLSession` task throws `URLError.cancelled` (-999), _not_ `CancellationError`, so `catch is CancellationError` will not catch it. And out-of-order responses need a token, not a timestamp - responses can arrive milliseconds apart with clock skew between them.
+
+Normalise the first one once, at the networking boundary, so no caller has to know two spellings of the same event:
+
+```swift
+func data(from url: URL) async throws -> Data {
+    do {
+        return try await URLSession.shared.data(from: url).0
+    } catch let error as URLError where error.code == .cancelled {
+        throw CancellationError()
+    }
+}
+```
+
+And put the token next to the cancel. Cancelling stops work that has not finished; the token rejects a response that had already arrived when the cancel did. The `LoadState` enum is in the next section:
+
+```swift
+protocol SearchService: Sendable {
+    func results(for query: String) async throws -> [String]
+}
+
+@MainActor
+final class SearchModel {
+    private(set) var state: LoadState<[String]> = .idle
+    private let service: any SearchService
+    private var task: Task<Void, Never>?
+    private var latest = 0
+
+    init(service: any SearchService) { self.service = service }
+
+    func queryChanged(_ query: String) {
+        task?.cancel()
+        latest += 1
+        let token = latest
+        task = Task {
+            do {
+                try await Task.sleep(for: .milliseconds(300))   // try, not try?
+                let results = try await service.results(for: query)
+                guard token == latest else { return }           // a newer query won
+                state = results.isEmpty ? .empty : .loaded(results)
+            } catch is CancellationError {
+                // Superseded. Not an error, and not the user's problem.
+            } catch {
+                guard token == latest else { return }
+                state = .failed(error)
+            }
+        }
+    }
+}
+```
+
+A token only orders the client's own requests. When the server pushes updates, ordering needs a sequence number the server assigns; the [SDK contracts talk](/talks/sdk-contracts-at-scale/) walks through all three gates.
+
+> **In plain words:** cancelling a task asks it to stop, and it stops only where code checks. Never swallow the error with `try?`, treat `URLError.cancelled` as cancellation, give every continuation a way to hear the cancel, and check a token before a response touches the screen.
 
 ## Resilience is on the scoring sheet
 
@@ -466,6 +646,12 @@ Same framework every time, whether the prompt is a transaction feed, live rates,
 
 On a whiteboard, five dimensions get graded: **boxes** (are the components right), **direction** (do the arrows encode real dependencies), **concurrency** (what runs where, on which isolation), **failure** (what breaks and what the user sees), **authority** (who owns the truth). Three out of five is competent. Five out of five gets the offer. Dimensions three, four and five are where you differentiate.
 
+Put the two lists side by side and the arithmetic is unkind. Stopping after step three puts boxes and direction on the board and nothing else: two out of five, below competent. Here is the live-rates answer from earlier, one step at a time:
+
+<DesignStepCoverage />
+
+> **In plain words:** the same nine steps every time, and the score is decided after step three. Concurrency, persistence and failure put the last three dimensions on the board; observability and what you would cut are where the seniority is heard.
+
 ## The behavioural round
 
 Interviewers ask for four story shapes, in some order:
@@ -485,7 +671,7 @@ Here is what that budget looks like written out. The details are illustrative - 
 >
 > **Task** _(9s)._ "I owned that screen. I had a day before the next phased-release gate, and the decision was mine: roll back or fix forward."
 >
-> **Action** _(46s)._ "The stack trace had no signal, so I stopped reading it and went looking for shared mutable state instead. The screen had a rate cache written by a websocket and read by the table view. A plain dictionary, no synchronisation - copy-on-write is not atomic, so concurrent writes were corrupting the buffer's reference count. I reproduced it in a unit test with a task group hammering reads and writes, ran it under Thread Sanitizer, and got a clean data-race report in ninety seconds. Then I made the choice deliberately rather than reaching for the newest tool: the readers were synchronous on the main thread, so an actor would have made the entire screen `async` for a one-file bug. I put the state behind a concurrent queue with barrier writes, kept the read synchronous, and added the race test to CI so a regression fails the build rather than the release."
+> **Action** _(46s)._ "The stack trace had no signal, so I stopped reading it and went looking for shared mutable state instead. The screen had a rate cache written by a websocket and read by the table view. A plain dictionary, no synchronisation - copy-on-write is not atomic, so concurrent writes were releasing the same storage buffer twice. I reproduced it in a unit test with a task group hammering reads and writes, ran it under Thread Sanitizer, and got a clean data-race report in ninety seconds. Then I made the choice deliberately rather than reaching for the newest tool: the readers were synchronous on the main thread, so an actor would have made the entire screen `async` for a one-file bug. I put the state behind a concurrent queue with barrier writes, kept the read synchronous, and added the race test to CI so a regression fails the build rather than the release."
 >
 > **Result** _(17s)._ "Crash-free sessions went back to 99.8 in the next build and have stayed there. The race test caught the same class of bug twice more in the following quarter, in other people's code. And the thing I would do differently - I had reviewed the original pull request and did not flag the unsynchronised dictionary, which is why I now treat any `var` on a class touched by more than one thread as a review blocker."
 
@@ -495,12 +681,16 @@ Four things that block is doing on purpose: it names a number twice, it justifie
 
 Grade every topic on four rows, one to five:
 
+<div style={{ overflowX: 'auto' }}>
+
 |                 | 1                      | 3                       | 5                                            |
 | --------------- | ---------------------- | ----------------------- | -------------------------------------------- |
 | **Recall**      | Recognise it when read | Explain with notes      | Explain cold, out loud, in 60s               |
 | **Application** | Read code that uses it | Write it with docs open | Write it cold, under time, compiling         |
 | **Trade-offs**  | Know one approach      | Know alternatives       | Recommend one and defend the cost            |
 | **Delivery**    | Rambling, hedging      | Correct but slow        | Answer in 10s, trade-off by 40s, done by 60s |
+
+</div>
 
 Move on at 4 or above across all four rows. For core topics, require a 5 on **trade-offs** and **delivery** specifically. Almost everyone preparing for these loops over-invests in row one and under-invests in row four, and row four is the one being observed continuously for an hour.
 
@@ -514,6 +704,8 @@ Two more things worth knowing about the room. Technical rounds are routinely des
 
 Practical: notifications off, AI completion off. Assume AI use during a live round is an immediate disqualification.
 
+> **In plain words:** the room scores how you sound for the whole hour. Answer in ten seconds, reach the trade-off by forty, finish by sixty, and never leave more than eight seconds of silence unexplained.
+
 ## Three routes, depending on your clock
 
 **Forty-eight hours** - survive the screen. Delivery only. Positioning line, three STAR stories, five questions to ask, the ninety-second version of the financial-data answer. Do _not_ open a concurrency lab or a problem set in this window; there is no live coding at a recruiter screen, and re-reading actor reentrancy does not help you answer "tell me about your hardest project". Sleep is non-negotiable - delivery degrades faster than recall. **The last two hours are not for new material.**
@@ -521,6 +713,8 @@ Practical: notifications off, AI completion off. Assume AI use during a live rou
 **Two weeks** - pass the technical round. Days 1-2 on the behavioural material, out loud. Days 3-6 on foundations and GCD. Days 7-11 on Swift concurrency, cancellation and staleness. Day 12 on system design and diagnosing a main-thread freeze. Days 13-14 on recall drills and three timed exercises.
 
 **Six weeks** - interview at the top of your level. Week 1 on the behavioural material in full - treat that week as the call, not preparation for it. Weeks 2-3 on foundations with a concurrency lab green. Weeks 4-5 on Swift concurrency plus building the workshops. Week 6 on system design and every timed drill, twice.
+
+<PrepRoutePicker />
 
 ## Ready looks like this
 
@@ -535,13 +729,21 @@ Practical: notifications off, AI completion off. Assume AI use during a live rou
 
 The technical bar in these loops is high but knowable. The delivery bar is where most senior candidates, who are entirely capable of the job, quietly lose.
 
+---
+
 ## Resources
 
-- [Swift Concurrency - Apple Developer Documentation](https://developer.apple.com/documentation/swift/concurrency)
-- [SE-0302: Sendable and @Sendable closures](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0302-concurrent-value-and-concurrent-closures.md)
-- [Swift Testing](https://developer.apple.com/documentation/testing)
-- [Diagnosing memory, thread, and crash issues early](https://developer.apple.com/documentation/xcode/diagnosing-memory-thread-and-crash-issues-early)
-- [Improving app responsiveness](https://developer.apple.com/documentation/xcode/improving-app-responsiveness)
+**Concurrency** — [Swift Concurrency](https://developer.apple.com/documentation/swift/concurrency) · [SE-0302: Sendable and @Sendable closures](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0302-concurrent-value-and-concurrent-closures.md) · [SE-0306: Actors](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md) · [SE-0423: Dynamic actor isolation enforcement](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0423-dynamic-actor-isolation.md)
+
+**Where async code runs** — [SE-0461: Run nonisolated async functions on the caller's actor by default](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md) · [SE-0466: Control default actor isolation inference](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md)
+
+**Locks** — [`Mutex`](https://developer.apple.com/documentation/synchronization/mutex) · [SE-0433: Synchronous mutual exclusion lock](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0433-mutex.md) · [`OSAllocatedUnfairLock`](https://developer.apple.com/documentation/os/osallocatedunfairlock)
+
+**Cancellation** — [`CancellationError`](https://developer.apple.com/documentation/swift/cancellationerror) · [`URLError`](https://developer.apple.com/documentation/foundation/urlerror) · [SE-0304: Structured concurrency](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0304-structured-concurrency.md), which defines `withTaskCancellationHandler`
+
+**Testing and diagnosis** — [Swift Testing](https://developer.apple.com/documentation/testing) · [Diagnosing memory, thread, and crash issues early](https://developer.apple.com/documentation/xcode/diagnosing-memory-thread-and-crash-issues-early) · [Improving app responsiveness](https://developer.apple.com/documentation/xcode/improving-app-responsiveness)
+
+**On this site** — [Understanding concurrency in Swift 6](/articles/understanding-concurrency-swift-6-sendable-mainactor/) · [Engineering an SDK at scale: the four contracts](/talks/sdk-contracts-at-scale/)
 
 ## Let's Connect
 
