@@ -1,0 +1,479 @@
+---
+/**
+ * Where a capability gate stops the customer. The reader sets the three
+ * answers the device gives (`ObjectCaptureSession.isSupported`,
+ * `PhotogrammetrySession.isSupported`, camera authorisation) and where the app
+ * asks them: only the capture check, at the camera, or all three on the
+ * landing screen. The journey below walks the five stages and stops at the
+ * first one that runs into a failing answer, so the reader sees how much of
+ * the customer's time was spent before the refusal and whether it can be
+ * recovered.
+ *
+ * The device answers are the API's, not a device list: Apple publishes the
+ * floor (iPhone 12 Pro and iPad Pro 2021 or later), not a table of which
+ * devices pass which check.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '01',
+  caption = 'The same three answers, asked at two different moments. Checked where each one is first needed, a device that captures but cannot reconstruct fails after the two-minute orbit, and the HEIC frames on disk cannot be moved anywhere useful. Checked together before the camera opens, every “no” costs the customer nothing.',
+} = Astro.props;
+
+interface Stage {
+  key: string;
+  name: string;
+  cost: string;
+}
+
+const STAGES: Stage[] = [
+  { key: 'landing', name: 'landing screen', cost: '0 s' },
+  { key: 'camera', name: 'camera opens', cost: 'seconds in' },
+  { key: 'capture', name: 'guided orbit', cost: '~2 min of walking' },
+  { key: 'reconstruct', name: 'reconstruction', cost: 'minutes, on device' },
+  { key: 'upload', name: 'upload and fit', cost: 'the result' },
+];
+---
+
+<VizFrame
+  fig={fig}
+  title="Where each gate stops the customer"
+  caption={caption}
+  class="cgp"
+  data-cgp
+>
+  <div class="cgp__controls">
+    <div class="cgp__row">
+      <span class="viz-label">ObjectCaptureSession.isSupported</span>
+      <div class="viz-seg" role="group" aria-label="Capture supported">
+        <button type="button" aria-pressed="true" data-k="capture" data-v="1"
+          >true</button
+        >
+        <button type="button" aria-pressed="false" data-k="capture" data-v="0"
+          >false</button
+        >
+      </div>
+    </div>
+    <div class="cgp__row">
+      <span class="viz-label">PhotogrammetrySession.isSupported</span>
+      <div class="viz-seg" role="group" aria-label="Reconstruction supported">
+        <button
+          type="button"
+          aria-pressed="true"
+          data-k="reconstruct"
+          data-v="1">true</button
+        >
+        <button
+          type="button"
+          aria-pressed="false"
+          data-k="reconstruct"
+          data-v="0">false</button
+        >
+      </div>
+    </div>
+    <div class="cgp__row">
+      <span class="viz-label">camera authorisation</span>
+      <div class="viz-seg" role="group" aria-label="Camera authorisation">
+        <button
+          type="button"
+          aria-pressed="true"
+          data-k="camera"
+          data-v="authorized">granted</button
+        >
+        <button
+          type="button"
+          aria-pressed="false"
+          data-k="camera"
+          data-v="notDetermined">not asked</button
+        >
+        <button
+          type="button"
+          aria-pressed="false"
+          data-k="camera"
+          data-v="denied">denied</button
+        >
+      </div>
+    </div>
+    <div class="cgp__row cgp__row--mode">
+      <span class="viz-label">the app checks</span>
+      <div class="viz-seg" role="group" aria-label="Where the app checks">
+        <button type="button" aria-pressed="true" data-k="mode" data-v="late"
+          >each where it is needed</button
+        >
+        <button type="button" aria-pressed="false" data-k="mode" data-v="early"
+          >all three, up front</button
+        >
+      </div>
+    </div>
+  </div>
+
+  <ol class="cgp__journey" aria-label="The customer's journey">
+    {
+      STAGES.map((s, i) => (
+        <li class="cgp__stage viz-panel" data-stage={s.key}>
+          <span class="cgp__num viz-mono">{i + 1}</span>
+          <span class="cgp__name">{s.name}</span>
+          <span class="cgp__cost viz-mono">{s.cost}</span>
+          <span class="cgp__gate viz-mono" data-gate />
+        </li>
+      ))
+    }
+  </ol>
+
+  <div class="cgp__read viz-panel" aria-live="polite">
+    <div>
+      <span class="viz-label">stopped at</span>
+      <span class="viz-chip" data-out-stop></span>
+    </div>
+    <div>
+      <span class="viz-label">customer time spent</span>
+      <span class="viz-chip" data-out-spent></span>
+    </div>
+    <div>
+      <span class="viz-label">recoverable</span>
+      <span class="viz-chip" data-out-recover></span>
+    </div>
+    <p class="cgp__note" data-out-note></p>
+  </div>
+
+  <div class="viz-legend cgp__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>stage completed</span>
+    <span><i style="--c:var(--viz-meta)"></i>a check runs here</span>
+    <span><i style="--c:var(--viz-bad)"></i>refused here</span>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const ORDER = ['landing', 'camera', 'capture', 'reconstruct', 'upload'];
+    const SPENT = {
+      landing: 'none',
+      camera: 'a few seconds',
+      reconstruct: 'the whole orbit, ~2 min',
+      upload: '',
+    };
+
+    /**
+     * The checks each stage runs, in this mode. A check returns a refusal
+     * (with the text the customer would meet) or null.
+     */
+    function checksFor(mode, s) {
+      const capture = () =>
+        s.capture
+          ? null
+          : {
+              what: 'capture unsupported',
+              note: 'This device cannot run guided capture. The customer is told the scan needs a recent Pro iPhone or iPad Pro, which is a label on a false return, not a sensor reading.',
+            };
+      const reconstruct = () =>
+        s.reconstruct
+          ? null
+          : {
+              what: 'reconstruction unsupported',
+              note:
+                mode === 'late'
+                  ? 'The orbit worked and the frames are on disk. Only now does the app ask whether this device can turn them into a mesh, and it cannot. The capture cannot be moved to another device mid-purchase; the customer starts again somewhere else, or does not.'
+                  : 'Capture would have worked; reconstruction would not. Asked before the camera opens, that is one sentence on the landing screen instead of a two-minute orbit with nothing at the end.',
+            };
+      const cameraLate = () =>
+        s.camera === 'denied'
+          ? {
+              what: 'camera denied',
+              note: 'The capture screen opens and the session cannot get a camera. The customer is looking at a scanner that will never start, with no path to Settings unless you built one here as well.',
+            }
+          : null;
+      const cameraEarly = () =>
+        s.camera === 'denied'
+          ? {
+              what: 'camera denied',
+              note: 'Known before anything is constructed, so the landing screen can explain it and offer Settings in place of the scan button.',
+            }
+          : null;
+
+      if (mode === 'early') {
+        return { landing: [capture, reconstruct, cameraEarly] };
+      }
+      return { camera: [capture, cameraLate], reconstruct: [reconstruct] };
+    }
+
+    function initGate(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const state = {
+        capture: true,
+        reconstruct: true,
+        camera: 'authorized',
+        mode: 'late',
+      };
+      const buttons = [...root.querySelectorAll('[data-k]')];
+      const stages = Object.fromEntries(
+        [...root.querySelectorAll('[data-stage]')].map((el) => [
+          el.dataset.stage,
+          el,
+        ]),
+      );
+      const out = {
+        stop: root.querySelector('[data-out-stop]'),
+        spent: root.querySelector('[data-out-spent]'),
+        recover: root.querySelector('[data-out-recover]'),
+        note: root.querySelector('[data-out-note]'),
+      };
+
+      function setChip(el, text, kind) {
+        el.textContent = text;
+        el.className = `viz-chip viz-chip--${kind}`;
+      }
+
+      function render() {
+        const checks = checksFor(state.mode, state);
+        let stopAt = null;
+        let refusal = null;
+
+        for (const key of ORDER) {
+          const list = checks[key] || [];
+          for (const check of list) {
+            const r = check();
+            if (r) {
+              refusal = r;
+              break;
+            }
+          }
+          if (refusal) {
+            stopAt = key;
+            break;
+          }
+        }
+
+        const stopIndex = stopAt ? ORDER.indexOf(stopAt) : ORDER.length;
+        ORDER.forEach((key, i) => {
+          const el = stages[key];
+          const gate = el.querySelector('[data-gate]');
+          const list = checks[key] || [];
+          el.dataset.status =
+            i < stopIndex ? 'done' : i === stopIndex ? 'stopped' : 'never';
+          if (key === stopAt) gate.textContent = `refused: ${refusal.what}`;
+          else if (list.length === 3) gate.textContent = 'checks: all three';
+          else if (key === 'camera' && list.length)
+            gate.textContent = 'checks: capture, camera';
+          else if (key === 'reconstruct' && list.length)
+            gate.textContent = 'checks: reconstruction';
+          else gate.textContent = '';
+          el.classList.toggle('has-gate', list.length > 0);
+        });
+
+        // A camera that was never asked gets the system prompt at the first
+        // stage that needs it; that is a question, not a refusal.
+        const prompted = state.camera === 'notDetermined';
+
+        if (!stopAt) {
+          setChip(out.stop, 'nowhere, the scan completes', 'sound');
+          setChip(out.spent, 'all of it, usefully', 'sound');
+          setChip(out.recover, 'nothing to recover', 'sound');
+          out.note.textContent = prompted
+            ? state.mode === 'early'
+              ? 'The landing screen asks for the camera before the scan starts, so the system prompt arrives with your explanation next to it.'
+              : 'The system prompt appears the moment the camera opens, over a screen the customer has not been told about yet. It works; it is just the worst moment to ask.'
+            : 'Every gate passed. This is the path the sample code always takes.';
+          return;
+        }
+
+        const name = stages[stopAt].querySelector('.cgp__name').textContent;
+        setChip(out.stop, name, 'bad');
+        const spent = SPENT[stopAt];
+        setChip(
+          out.spent,
+          spent,
+          stopAt === 'reconstruct'
+            ? 'bad'
+            : stopAt === 'landing'
+              ? 'sound'
+              : 'level',
+        );
+        const lost = stopAt === 'reconstruct';
+        setChip(
+          out.recover,
+          lost ? 'no, the frames are stranded' : 'yes, nothing was done yet',
+          lost ? 'bad' : 'sound',
+        );
+        out.note.textContent = refusal.note;
+      }
+
+      buttons.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const k = btn.dataset.k;
+          const v = btn.dataset.v;
+          state[k] = k === 'capture' || k === 'reconstruct' ? v === '1' : v;
+          buttons
+            .filter((b) => b.dataset.k === k)
+            .forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+          render();
+        }),
+      );
+
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-cgp]').forEach(initGate);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .cgp__controls {
+    display: grid;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-4);
+  }
+  .cgp__row {
+    display: grid;
+    grid-template-columns: 17rem minmax(0, 1fr);
+    align-items: center;
+    gap: var(--sp-3);
+  }
+  .cgp__row .viz-label {
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 11.5px;
+  }
+  .cgp__row .viz-seg {
+    justify-self: start;
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+  .cgp__row--mode {
+    padding-top: var(--sp-2);
+    border-top: 1px dashed var(--border);
+  }
+
+  .cgp__journey {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+    counter-reset: none;
+  }
+  .cgp__stage {
+    position: relative;
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    min-width: 0;
+    padding: 10px 10px 12px;
+    border-width: 1px;
+    transition:
+      background 0.2s var(--ease),
+      border-color 0.2s var(--ease),
+      opacity 0.2s var(--ease);
+  }
+  .cgp__num {
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .cgp__name {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    line-height: 1.25;
+    color: var(--fg);
+  }
+  .cgp__cost {
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .cgp__gate {
+    min-height: 1.3em;
+    font-size: 10.5px;
+    line-height: 1.35;
+    color: var(--viz-meta);
+    overflow-wrap: anywhere;
+  }
+  .cgp__stage.has-gate {
+    border-top: 3px solid var(--viz-meta);
+  }
+  .cgp__stage[data-status='done'] {
+    background: color-mix(in srgb, var(--viz-sound) 10%, var(--viz-panel));
+    border-color: color-mix(in srgb, var(--viz-sound) 45%, transparent);
+  }
+  .cgp__stage[data-status='done'].has-gate {
+    border-top-color: var(--viz-meta);
+  }
+  .cgp__stage[data-status='stopped'] {
+    background: color-mix(in srgb, var(--viz-bad) 12%, var(--viz-panel));
+    border-color: var(--viz-bad);
+  }
+  .cgp__stage[data-status='stopped'] .cgp__gate {
+    color: var(--viz-bad);
+    font-weight: 600;
+  }
+  .cgp__stage[data-status='never'] {
+    opacity: 0.4;
+  }
+
+  .cgp__read {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-2) var(--sp-3);
+    margin-top: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .cgp__read div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .cgp__read .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+  }
+  .cgp__note {
+    grid-column: 1 / -1;
+    margin: 0;
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg-muted);
+  }
+  .cgp__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 720px) {
+    .cgp__row {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 4px;
+    }
+    .cgp__journey {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .cgp__stage {
+      grid-template-columns: 1.4em minmax(0, 1fr) auto;
+      align-items: baseline;
+      column-gap: var(--sp-2);
+      padding: 8px 10px;
+    }
+    .cgp__gate {
+      grid-column: 2 / -1;
+      min-height: 0;
+    }
+    .cgp__gate:empty {
+      display: none;
+    }
+    .cgp__stage.has-gate {
+      border-top-width: 1px;
+      border-left: 3px solid var(--viz-meta);
+    }
+    .cgp__read {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cgp__stage {
+      transition: none;
+    }
+  }
+</style>

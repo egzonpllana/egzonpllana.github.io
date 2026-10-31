@@ -2,6 +2,7 @@
 title: 'LiDAR to 3D Mesh, and Everything After'
 description: 'How an iPhone LiDAR scan of your own armchair becomes a made-to-measure cover: what to gate, what to own, what the API will not decide for you, and the failures that only appear on a real device.'
 date: 2026-08-25
+updated: 2026-10-31
 tags:
   [
     'iOS',
@@ -23,6 +24,9 @@ import CaptureStateMap from '../../components/CaptureStateMap.astro';
 import BridgeSequence from '../../components/BridgeSequence.astro';
 import RetryLadder from '../../components/RetryLadder.astro';
 import PhaseRail from '../../components/PhaseRail.astro';
+import CaptureGatePicker from '../../components/CaptureGatePicker.astro';
+import CoordinateFrameLab from '../../components/CoordinateFrameLab.astro';
+import CancelSettleTimeline from '../../components/CancelSettleTimeline.astro';
 
 A customer is standing in their living room with a phone held out at arm's length, walking sideways around their own armchair. Two minutes of that, and a factory cuts fabric to the shape the phone just measured. The cover that arrives either fits the chair or it does not.
 
@@ -56,20 +60,46 @@ The single most useful thing to know before you start: scanning an object on iOS
 
 [`ObjectCaptureSession`](https://developer.apple.com/documentation/realitykit/objectcapturesession) runs the phone's camera and its LiDAR sensor together. It guides the user around the object and writes HEIC images into a directory you hand it, plus a checkpoint directory for its own intermediate state. It does not produce a model.
 
-[`PhotogrammetrySession`](https://developer.apple.com/documentation/realitykit/photogrammetrysession) takes that images directory — not the checkpoint directory — and reconstructs a textured USDZ from it, on device, with the camera long since shut down.
+[`PhotogrammetrySession`](https://developer.apple.com/documentation/realitykit/photogrammetrysession) takes that images directory as its input and reconstructs a textured USDZ from it, on device, with the camera long since shut down. The checkpoint directory is not an input. It belongs in the reconstruction's configuration, as `checkpointDirectory` on `PhotogrammetrySession.Configuration`, which is where Apple's WWDC23 example passes it so reconstruction can reuse work the capture session already did.
 
 They are separate types, they run at different times, and they are gated separately:
 
 ```swift
-let captureSupported = ObjectCaptureSession.isSupported
-let reconstructionSupported = PhotogrammetrySession.isSupported
+import AVFoundation
+import RealityKit
+import SwiftUI // ObjectCaptureSession is declared in RealityKit's SwiftUI overlay
+
+struct CaptureCapability: Equatable, Sendable {
+    let canCapture: Bool
+    let canReconstruct: Bool
+    let camera: AVAuthorizationStatus
+
+    var canScan: Bool {
+        canCapture && canReconstruct && camera != .denied && camera != .restricted
+    }
+}
+
+@MainActor
+func currentCaptureCapability() -> CaptureCapability {
+    CaptureCapability(
+        canCapture: ObjectCaptureSession.isSupported,
+        canReconstruct: PhotogrammetrySession.isSupported,
+        camera: AVCaptureDevice.authorizationStatus(for: .video)
+    )
+}
 ```
+
+The `@MainActor` is not decoration. `ObjectCaptureSession.isSupported` is main-actor isolated and `PhotogrammetrySession.isSupported` is not, so under Swift 6 a check that runs anywhere else does not compile. A `notDetermined` camera still counts as scannable: it is a question to ask, not a refusal.
 
 **A device can pass the first and fail the second.** Some iPads do exactly that. Check only the capture half and you let a customer spend two minutes orbiting a chair before failing them at the one point in the flow where their work is already done and cannot be moved to another device.
 
 So the capability check answers both halves plus camera permission, up front, before anything is constructed — and the landing screen calls the *same* check the engine calls, rather than reimplementing it. A landing screen that promises a scan the engine will then refuse is worse than no landing screen.
 
-One honesty note, because it is easy to overclaim: **there is no LiDAR query in any of this.** `ObjectCaptureSession.isSupported` is the only authoritative gate Apple publishes. "Requires LiDAR" is a label you put on it returning false. It happens to be true today — the floor is a LiDAR device on an A14 or newer — but you are reporting Apple's opinion, not a sensor's.
+<CaptureGatePicker />
+
+One honesty note, because it is easy to overclaim: **there is no LiDAR query in any of this.** `ObjectCaptureSession.isSupported` is the only authoritative gate Apple publishes. "Requires LiDAR" is a label you put on it returning false. It happens to be true today — Apple's floor is iPhone 12 Pro and iPad Pro 2021 or later, LiDAR devices on an A14 or newer — but you are reporting Apple's opinion, not a sensor's.
+
+Reaching for a real sensor query does not help. ARKit's world-tracking configuration will tell you whether a device produces scene depth, `supportsFrameSemantics(.sceneDepth)`, which in practice means LiDAR. It answers a different question: the 2020 iPad Pro has LiDAR and sits below Object Capture's floor.
 
 > **Check every gate the pipeline depends on before the user does the expensive part.** The one you forgot is the one that fails after the work cannot be repeated.
 
@@ -77,7 +107,7 @@ One honesty note, because it is easy to overclaim: **there is no LiDAR query in 
 
 ## The configuration is trivial. Everything around it is not.
 
-The entire capture setup is two properties: a checkpoint directory, and whether over-capture is enabled. That is the whole surface, and it is exactly why the sample runs first try.
+The entire capture setup is two properties: a checkpoint directory, and whether over-capture is enabled. That is the whole surface, and it is exactly why the sample runs first try. Later releases did not grow it: iOS 18 added haptics and automatic-capture switches on the session itself, and area mode (WWDC24) is not a setting at all — you call `startCapturing()` without detecting an object first.
 
 Two things around that call cost real time before they were understood, and neither is discoverable by reading the API.
 
@@ -105,11 +135,11 @@ There is a broader reason to own this layer rather than observe Apple's types di
 
 ### The count that does not count
 
-The capturing state carries an image count. It is frozen at zero.
+Apple's `.capturing` case carries no payload, so the natural move is to give your own capturing state an image count, filled in when the transition arrives. That count is frozen at zero.
 
 The state stream fires on *state* changes. A user orbiting an object for forty seconds stays in capturing the whole time — one emission, and whatever the payload said on entry is what it says forty shots later. Bind a UI counter to it and the user watches the camera take photographs while the number sits still.
 
-The live figure is `numberOfShotsTaken`, read on demand rather than pushed.
+The live figure is `numberOfShotsTaken`. It has its own stream, `numberOfShotsTakenUpdates`, and like every session property it is observable, so a counter belongs on that and never on the state.
 
 That matters beyond a label. Most apps also watch the images directory to drive progress — and a directory watcher built on `DispatchSource` **coalesces events and misses bursts**, so a genuine thirty-shot scan can look like twelve. Two counters for one quantity is not sloppiness if you are deliberate about it: the watcher is what makes progress visible, and the session's own count is what makes a decision correct. Reconcile them at the decision point, and only there.
 
@@ -117,7 +147,7 @@ That matters beyond a label. Most apps also watch the images directory to drive 
 
 ### Feedback is a set, and sets need diffing
 
-The feedback stream publishes the set of conditions currently true — too far, too close, too dark, moving too fast, out of frame, and five more. It is level-triggered: the same set arrives again and again while nothing changes. Drive a UI straight off it and every badge re-animates on every emission.
+The feedback stream publishes the set of conditions currently true — too far, too close, too dark, moving too fast, out of frame, and four more. One of those, `objectNotDetected`, arrived in iOS 17.4, which is the unknown slot above earning its keep. The stream is level-triggered: the same set arrives again and again while nothing changes. Drive a UI straight off it and every badge re-animates on every emission.
 
 Diff it against the previous set and you get events — appeared, cleared — which is what a UI actually wants.
 
@@ -187,7 +217,7 @@ That is not a wasted machine. It is the reason the flow could be cut to two stat
 
 The second session is smaller in surface and much larger in what goes wrong.
 
-**The detail level is not a choice.** The API declares preview, reduced, medium, full and raw. On iOS only *reduced* is usable — the higher levels are macOS-only and abort at process time. Model that honestly: an internal type with one case beats a configuration value that silently crashes on a device you already shipped to. When Apple exposes a higher level on iOS, it becomes a new case in a minor version.
+**The detail level is not a choice.** On macOS the API declares preview, reduced, medium, full and raw. In the iOS SDK every level except *reduced* is marked unavailable, so `.full` does not even compile. Apple's stated reason is that on-device models are built for viewing on mobile; anything higher means moving the images to a Mac. Model that honestly anyway: an internal type with one case keeps a remote configuration value or a module shared with a Mac target from ever expressing a level the phone cannot run. When Apple exposes a higher level on iOS, it becomes a new case in a minor version.
 
 **Ask for the bounds, and plan for them not arriving.** You want a model file and a bounding box from the same run. On iOS 17.0 through 17.2 that pairing is intermittently rejected. Your fallback is to load the produced USDZ and read its visual bounds — which has its own iOS 17 problem, because the synchronous model loader is disallowed in async contexts and the async initializer only exists from iOS 18.
 
@@ -241,13 +271,15 @@ This is where most of the engineering went, and none of it is about 3D. Treat th
 
 The last one deserves the extra paragraph, because it is the most expensive thing here to have discovered from a crash log.
 
-Nothing in the API suggests cancellation is asynchronous in its effects. It returns, the session reports a terminal state, and every reasonable reading says you may now start another one. Start another one and the crash lands inside RealityKit, on the render thread, with a stack containing none of your code. There is no way to reason your way there from the call site. You get there by noticing the crash only ever happens on a *second* scan, and only when the first one was **cancelled rather than finished**.
+Nothing in the API suggests cancellation is asynchronous in its effects, and the documentation says the opposite. `cancel()` returns, the session moves to `.failed(.cancelled)`, and Apple's own text says that once the session is in the failed state it is safe to tear it down and create a new one. Do that and the crash lands inside RealityKit, on the render thread, with a stack containing none of your code. There is no way to reason your way there from the call site. You get there by noticing the crash only ever happens on a *second* scan, and only when the first one was **cancelled rather than finished**.
+
+<CancelSettleTimeline />
 
 That is the general lesson, and it is worth more than the specific fix: when a framework crash has no path through your code, stop looking for the bug and start characterising the conditions. Which scan number. Cancelled or completed. Cold or hot. Those are the variables, and they are the whole fix.
 
 ### Two more that look like your bug and are not
 
-**A sensor failure you may retry exactly once.** The capture stack can fail with a sensor error that wraps "media services were reset" — the camera was taken by another client, the media daemon restarted, the device hit a thermal cutoff. Nothing you did causes it and a retry usually works. But only while **no shot exists yet**: the retry reuses the same session and therefore the same images directory, and starting a capture session hard-requires an empty directory. One photo on disk and the retry fails with a different error entirely.
+**A sensor failure you may retry exactly once.** The capture stack can fail with a sensor error that wraps "media services were reset" — the camera was taken by another client, the media daemon restarted, the device hit a thermal cutoff. Nothing you did causes it and a retry usually works. But only while **no shot exists yet**: the retry reuses the same session and therefore the same images directory, and starting a capture session hard-requires an empty directory. One photo on disk and the retry fails with a different error entirely: `directoryNotEmpty`.
 
 The related decision is stranger and took longer to find. The audio session for capture has its category configured and is **deliberately never activated** — because activating an audio session in the same process that is bringing up ARKit and the camera can itself trigger that same media-services reset. The guard against the failure and one of its causes turned out to be the same subsystem.
 
@@ -308,6 +340,12 @@ The mesh goes up with a manifest beside it. This part is cheap to get right on d
     },
   ]}
 />
+
+The coordinate frame is the entry that deserves a picture, because every way of getting it wrong still produces a valid mesh. The transfer format is positions, texture coordinates and triangles. Nothing in it says which way is up, which hand the axes follow, or what 1.0 means. ARKit and RealityKit work right-handed, y up, in metres; the receiver either reads that from the manifest or guesses. Even USD, which can record its unit, falls back to centimetres when a file does not author one.
+
+The mirror is the subtle one. It keeps every dimension, so a bounding-box check passes. What it reverses is triangle winding, and because normals were dropped from the transfer, the receiver derives them from that winding: every one of them now points into the chair.
+
+<CoordinateFrameLab />
 
 One more, learned the expensive way: **do not fake required fields.** If the backend requires product identity and the page did not send it, refuse the upload locally and report why. The alternative is pushing tens of megabytes over cellular to collect a validation error — and, worse, a stub that fills in test values is indistinguishable from a real scan once it is in the database.
 
@@ -423,10 +461,10 @@ The 3D was the interesting problem. The list above is the product.
 
 ## References
 
-**Capture and reconstruction** — [`ObjectCaptureSession`](https://developer.apple.com/documentation/realitykit/objectcapturesession) · [`ObjectCaptureSession.CaptureState`](https://developer.apple.com/documentation/realitykit/objectcapturesession/capturestate) · [`ObjectCaptureSession.Feedback`](https://developer.apple.com/documentation/realitykit/objectcapturesession/feedback) · [`ObjectCaptureView`](https://developer.apple.com/documentation/realitykit/objectcaptureview) · [`PhotogrammetrySession`](https://developer.apple.com/documentation/realitykit/photogrammetrysession) · [`PhotogrammetrySession.Request`](https://developer.apple.com/documentation/realitykit/photogrammetrysession/request) · [`PhotogrammetrySession.Output`](https://developer.apple.com/documentation/realitykit/photogrammetrysession/output)
+**Capture and reconstruction** — [`ObjectCaptureSession`](https://developer.apple.com/documentation/realitykit/objectcapturesession) · [`ObjectCaptureSession.CaptureState`](https://developer.apple.com/documentation/realitykit/objectcapturesession/capturestate) · [`ObjectCaptureSession.Feedback`](https://developer.apple.com/documentation/realitykit/objectcapturesession/feedback) · [`ObjectCaptureView`](https://developer.apple.com/documentation/realitykit/objectcaptureview) · [`PhotogrammetrySession`](https://developer.apple.com/documentation/realitykit/photogrammetrysession) · [`PhotogrammetrySession.Configuration`](https://developer.apple.com/documentation/realitykit/photogrammetrysession/configuration-swift.struct) · [`PhotogrammetrySession.Request`](https://developer.apple.com/documentation/realitykit/photogrammetrysession/request) · [`PhotogrammetrySession.Output`](https://developer.apple.com/documentation/realitykit/photogrammetrysession/output)
 
-**Mesh and formats** — [Model I/O](https://developer.apple.com/documentation/modelio) · [`MDLAsset`](https://developer.apple.com/documentation/modelio/mdlasset) · [`MDLMesh`](https://developer.apple.com/documentation/modelio/mdlmesh) · [`MDLVertexDescriptor`](https://developer.apple.com/documentation/modelio/mdlvertexdescriptor) · [`MDLSubmesh`](https://developer.apple.com/documentation/modelio/mdlsubmesh) · [OpenUSD](https://openusd.org/release/index.html) · [AR Quick Look](https://developer.apple.com/augmented-reality/quick-look/)
+**Mesh and formats** — [Model I/O](https://developer.apple.com/documentation/modelio) · [`MDLAsset`](https://developer.apple.com/documentation/modelio/mdlasset) · [`MDLMesh`](https://developer.apple.com/documentation/modelio/mdlmesh) · [`MDLVertexDescriptor`](https://developer.apple.com/documentation/modelio/mdlvertexdescriptor) · [`MDLSubmesh`](https://developer.apple.com/documentation/modelio/mdlsubmesh) · [OpenUSD](https://openusd.org/release/index.html) · [USD linear units](https://openusd.org/release/api/group___usd_geom_linear_units__group.html) · [AR Quick Look](https://developer.apple.com/augmented-reality/quick-look/)
 
-**System and transport** — [`ARError`](https://developer.apple.com/documentation/arkit/arerror) · [`AVCaptureDevice`](https://developer.apple.com/documentation/avfoundation/avcapturedevice) · [`ProcessInfo.ThermalState`](https://developer.apple.com/documentation/foundation/processinfo/thermalstate) · [`URLSession`](https://developer.apple.com/documentation/foundation/urlsession) · [`SHA256`](https://developer.apple.com/documentation/cryptokit/sha256) · [`WKWebView`](https://developer.apple.com/documentation/webkit/wkwebview) · [`WKScriptMessageHandler`](https://developer.apple.com/documentation/webkit/wkscriptmessagehandler)
+**System and transport** — [`ARError`](https://developer.apple.com/documentation/arkit/arerror) · [`AVCaptureDevice`](https://developer.apple.com/documentation/avfoundation/avcapturedevice) · [`ARConfiguration.FrameSemantics`](https://developer.apple.com/documentation/arkit/arconfiguration/framesemantics-swift.struct) · [`ProcessInfo.ThermalState`](https://developer.apple.com/documentation/foundation/processinfo/thermalstate) · [`URLSession`](https://developer.apple.com/documentation/foundation/urlsession) · [`SHA256`](https://developer.apple.com/documentation/cryptokit/sha256) · [`WKWebView`](https://developer.apple.com/documentation/webkit/wkwebview) · [`WKScriptMessageHandler`](https://developer.apple.com/documentation/webkit/wkscriptmessagehandler)
 
-**Sessions** — [WWDC23: Meet Object Capture for iOS](https://developer.apple.com/videos/play/wwdc2023/10191/) · [WWDC21: Create 3D models with Object Capture](https://developer.apple.com/videos/play/wwdc2021/10076/)
+**Sessions** — [WWDC24: Discover area mode for Object Capture](https://developer.apple.com/videos/play/wwdc2024/10107/) · [WWDC23: Meet Object Capture for iOS](https://developer.apple.com/videos/play/wwdc2023/10191/) · [WWDC21: Create 3D models with Object Capture](https://developer.apple.com/videos/play/wwdc2021/10076/)

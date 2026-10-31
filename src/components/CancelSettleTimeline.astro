@@ -1,0 +1,661 @@
+---
+/**
+ * Why a second scan after a cancelled one needs a settle delay. Five lanes on
+ * one clock: the app's own calls, the first capture session, the framework's
+ * teardown work behind it (capture XPC, dispatch queues, RealityKit's
+ * process-wide asset manager), the second capture session, and the render
+ * thread. Three endings: a finished scan, a cancelled scan followed at once by
+ * a new one, and a cancelled scan followed by a settle.
+ *
+ * The durations are the ones the article reports from the product: the
+ * teardown drains for about a second after cancel() returns, and the settle
+ * is about 1.5 s. The clock is to scale; the capture before it is shortened.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '02',
+  caption = 'cancel() returns at once and the session reaches .failed(.cancelled) moments later, the point at which Apple’s documentation says a new session may be created. The work behind it keeps draining for about a second more. A session constructed inside that window reports ready while it is wedged, and the crash arrives on the render thread with none of your code on the stack. Nothing public reports the end of the drain, so the fix is a settle delay, paid only when something was cancelled.',
+} = Astro.props;
+
+type Kind = 'sound' | 'meta' | 'net' | 'bad' | 'quiet';
+interface Segment {
+  lane: string;
+  t0: number;
+  t1: number;
+  label: string;
+  kind: Kind;
+}
+interface Mark {
+  lane: string;
+  t: number;
+  label: string;
+  kind: Kind;
+}
+interface Step {
+  t: number;
+  note: string;
+  bad?: boolean;
+}
+interface Scenario {
+  segments: Segment[];
+  marks: Mark[];
+  steps: Step[];
+}
+
+const T_MAX = 4.4;
+
+const LANES = [
+  { key: 'app', name: 'your code' },
+  { key: 's1', name: 'capture session 1' },
+  { key: 'drain', name: 'framework teardown' },
+  { key: 's2', name: 'capture session 2' },
+  { key: 'render', name: 'render thread' },
+];
+
+const INTRO =
+  'Session 1 is capturing. The render thread draws the camera feed on every display-link tick.';
+
+const SCENARIOS: Record<string, Scenario> = {
+  finish: {
+    segments: [
+      { lane: 's1', t0: 0, t1: 1.4, label: '.capturing', kind: 'sound' },
+      { lane: 's1', t0: 1.4, t1: 1.9, label: '.finishing', kind: 'meta' },
+      {
+        lane: 's2',
+        t0: 2.0,
+        t1: T_MAX,
+        label: '.ready → .detecting',
+        kind: 'sound',
+      },
+      {
+        lane: 'render',
+        t0: 0,
+        t1: T_MAX,
+        label: 'display-link ticks',
+        kind: 'quiet',
+      },
+    ],
+    marks: [
+      { lane: 'app', t: 1.4, label: 'finish()', kind: 'meta' },
+      { lane: 's1', t: 1.9, label: '.completed', kind: 'sound' },
+    ],
+    steps: [
+      { t: 0.8, note: INTRO },
+      { t: 1.4, note: 'The user taps Done and the app calls finish().' },
+      {
+        t: 1.9,
+        note: 'Finishing runs on the framework’s own schedule and ends in .completed.',
+      },
+      {
+        t: 2.0,
+        note: 'The app starts the next scan straight away. Nothing was cancelled, so there is nothing to wait for.',
+      },
+      {
+        t: T_MAX,
+        note: 'Session 2 comes up normally. This is the path every happy-path test takes, which is why the next one hides.',
+      },
+    ],
+  },
+  now: {
+    segments: [
+      { lane: 's1', t0: 0, t1: 1.4, label: '.capturing', kind: 'sound' },
+      {
+        lane: 'drain',
+        t0: 1.4,
+        t1: 2.5,
+        label: 'draining',
+        kind: 'net',
+      },
+      {
+        lane: 's2',
+        t0: 1.6,
+        t1: 2.3,
+        label: 'wedged',
+        kind: 'bad',
+      },
+      {
+        lane: 'render',
+        t0: 0,
+        t1: 2.3,
+        label: 'display-link ticks',
+        kind: 'quiet',
+      },
+    ],
+    marks: [
+      { lane: 'app', t: 1.4, label: 'cancel()', kind: 'meta' },
+      { lane: 's1', t: 1.5, label: '.failed(.cancelled)', kind: 'meta' },
+      { lane: 'render', t: 2.3, label: 'crash', kind: 'bad' },
+    ],
+    steps: [
+      { t: 0.8, note: INTRO },
+      {
+        t: 1.4,
+        note: 'The user backs out and the app calls cancel(). It returns at once.',
+      },
+      {
+        t: 1.5,
+        note: 'The state moves to .failed(.cancelled). Apple’s documentation says that once the session is in the failed state it is safe to tear it down and create a new one.',
+      },
+      {
+        t: 1.6,
+        note: 'So the app constructs session 2 and starts it, while session 1’s capture XPC, dispatch queues and RealityKit’s process-wide asset manager are still draining.',
+        bad: true,
+      },
+      {
+        t: 2.0,
+        note: 'Session 2 reports .ready. Underneath, it is wedged at running and will never start detecting.',
+        bad: true,
+      },
+      {
+        t: 2.3,
+        note: 'The next display-link tick reaches stale scene references inside the asset manager and crashes on the render thread. No frame of your code is on the stack.',
+        bad: true,
+      },
+    ],
+  },
+  settle: {
+    segments: [
+      { lane: 's1', t0: 0, t1: 1.4, label: '.capturing', kind: 'sound' },
+      {
+        lane: 'app',
+        t0: 1.5,
+        t1: 3.0,
+        label: 'settle ~1.5 s',
+        kind: 'meta',
+      },
+      {
+        lane: 'drain',
+        t0: 1.4,
+        t1: 2.5,
+        label: 'draining',
+        kind: 'net',
+      },
+      {
+        lane: 's2',
+        t0: 3.0,
+        t1: T_MAX,
+        label: '.ready → .detecting',
+        kind: 'sound',
+      },
+      {
+        lane: 'render',
+        t0: 0,
+        t1: T_MAX,
+        label: 'display-link ticks',
+        kind: 'quiet',
+      },
+    ],
+    marks: [
+      { lane: 'app', t: 1.4, label: '', kind: 'meta' },
+      { lane: 's1', t: 1.5, label: '.failed(.cancelled)', kind: 'meta' },
+    ],
+    steps: [
+      { t: 0.8, note: INTRO },
+      {
+        t: 1.4,
+        note: 'The user backs out and the app calls cancel(). This time the app records that something was cancelled.',
+      },
+      {
+        t: 1.5,
+        note: 'The state goes to .failed(.cancelled), and instead of a session the app starts a settle timer.',
+      },
+      {
+        t: 2.5,
+        note: 'The drain ends about a second after cancel() returned. No public API reports this moment, which is why the fix is a delay rather than a callback.',
+      },
+      {
+        t: 3.0,
+        note: 'The settle has elapsed. Session 2 is constructed after the drain and comes up like the first one.',
+      },
+      {
+        t: T_MAX,
+        note: 'The price is a second and a half on a path the user chose to abandon anyway, and only cancellation pays it.',
+      },
+    ],
+  },
+};
+
+const TICKS = [0, 1, 2, 3, 4];
+---
+
+<VizFrame
+  fig={fig}
+  title="Cancel returns before the framework stops"
+  caption={caption}
+  class="cst"
+  data-cst
+>
+  <div slot="tools" class="cst__tools">
+    <button type="button" class="viz-btn" data-next aria-label="Next step"
+      >step</button
+    >
+    <AnimControls label="Timeline" />
+  </div>
+
+  <div class="cst__bar">
+    <div class="viz-seg" role="group" aria-label="How the first scan ends">
+      <button type="button" aria-pressed="false" data-scenario="finish"
+        >finished</button
+      >
+      <button type="button" aria-pressed="true" data-scenario="now"
+        >cancelled, rescan at once</button
+      >
+      <button type="button" aria-pressed="false" data-scenario="settle"
+        >cancelled, settle first</button
+      >
+    </div>
+    <span class="viz-chip viz-chip--level" data-clock>t = 0.0 s</span>
+  </div>
+
+  <div class="cst__board viz-panel" style="--t: 0">
+    {
+      LANES.map((lane) => (
+        <div class="cst__lane">
+          <span class="cst__name viz-mono">{lane.name}</span>
+          <div class="cst__track" data-track={lane.key} />
+        </div>
+      ))
+    }
+    <div class="cst__lane cst__lane--axis" aria-hidden="true">
+      <span class="cst__name"></span>
+      <div class="cst__axis">
+        {
+          TICKS.map((t) => (
+            <span style={`left: ${(t / T_MAX) * 100}%`}>{t} s</span>
+          ))
+        }
+      </div>
+    </div>
+  </div>
+
+  <p class="cst__note" aria-live="polite" data-note></p>
+  <span class="viz-mono cst__counter" data-counter></span>
+
+  <script
+    is:inline
+    type="application/json"
+    data-cst-data
+    set:html={JSON.stringify({ tMax: T_MAX, scenarios: SCENARIOS })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = 2300;
+
+    function initTimeline(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-cst-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const board = root.querySelector('.cst__board');
+      const tracks = Object.fromEntries(
+        [...root.querySelectorAll('[data-track]')].map((el) => [
+          el.dataset.track,
+          el,
+        ]),
+      );
+      const note = root.querySelector('[data-note]');
+      const clock = root.querySelector('[data-clock]');
+      const counter = root.querySelector('[data-counter]');
+      const segBtns = [...root.querySelectorAll('[data-scenario]')];
+
+      let scenario = 'now';
+      let current = 0;
+      let playing = false;
+      let timer = 0;
+
+      const pct = (t) => `${((t / data.tMax) * 100).toFixed(3)}%`;
+      const sc = () => data.scenarios[scenario];
+      const last = () => sc().steps.length - 1;
+
+      function build() {
+        Object.values(tracks).forEach((tr) => tr.replaceChildren());
+        sc().segments.forEach((s) => {
+          const seg = document.createElement('span');
+          seg.className = `cst__seg cst__seg--${s.kind}`;
+          seg.style.left = pct(s.t0);
+          seg.dataset.t0 = String(s.t0);
+          seg.dataset.t1 = String(s.t1);
+          const label = document.createElement('span');
+          label.textContent = s.label;
+          seg.append(label);
+          tracks[s.lane].append(seg);
+        });
+        sc().marks.forEach((m) => {
+          const mark = document.createElement('span');
+          mark.className = `cst__mark cst__mark--${m.kind}`;
+          mark.style.left = pct(m.t);
+          mark.dataset.t = String(m.t);
+          if (m.label) {
+            const label = document.createElement('span');
+            label.textContent = m.label;
+            mark.append(label);
+          }
+          tracks[m.lane].append(mark);
+        });
+        const cursor = document.createElement('span');
+        Object.values(tracks).forEach((tr) => {
+          const c = cursor.cloneNode();
+          c.className = 'cst__cursor';
+          tr.append(c);
+        });
+      }
+
+      function render() {
+        const step = sc().steps[current];
+        const t = step.t;
+        board.style.setProperty('--t', String(t / data.tMax));
+        root.querySelectorAll('.cst__seg').forEach((seg) => {
+          const t0 = Number(seg.dataset.t0);
+          const t1 = Number(seg.dataset.t1);
+          const end = Math.min(t, t1);
+          seg.hidden = t < t0;
+          seg.style.width = pct(Math.max(0, end - t0));
+        });
+        root.querySelectorAll('.cst__mark').forEach((mark) => {
+          mark.hidden = t < Number(mark.dataset.t);
+        });
+        note.textContent = step.note;
+        note.classList.toggle('is-bad', Boolean(step.bad));
+        clock.textContent = `t = ${t.toFixed(1)} s`;
+        counter.textContent = `${current + 1} / ${sc().steps.length}`;
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(() => {
+          current += 1;
+          render();
+          if (current >= last()) {
+            playing = false;
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          schedule();
+        }, STEP_MS);
+      }
+
+      function play() {
+        if (playing) return;
+        if (current >= last()) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        schedule();
+      }
+
+      function reset() {
+        stop();
+        current = 0;
+        render();
+      }
+
+      root.querySelector('[data-next]').addEventListener('click', () => {
+        stop();
+        current = current >= last() ? 0 : current + 1;
+        render();
+        root.dispatchEvent(
+          new CustomEvent(current >= last() ? 'anim:ended' : 'anim:paused'),
+        );
+      });
+
+      segBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.scenario === scenario) return;
+          scenario = btn.dataset.scenario;
+          segBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          stop();
+          build();
+          reset();
+          if (reduce) {
+            current = last();
+            render();
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          play();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      build();
+      // Reduced motion rests on the outcome until the reader steps through.
+      current = reduce ? last() : 0;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-cst]').forEach(initTimeline);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style is:global>
+  .cst__tools {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .cst__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .cst__bar .viz-seg {
+    flex-wrap: wrap;
+    max-width: 100%;
+    border-radius: 16px;
+  }
+
+  .cst__board {
+    display: grid;
+    gap: 6px;
+    padding: var(--sp-3);
+  }
+  .cst__lane {
+    display: grid;
+    grid-template-columns: 9.5rem minmax(0, 1fr);
+    align-items: center;
+    gap: var(--sp-3);
+  }
+  .cst__name {
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .cst__track {
+    position: relative;
+    height: 30px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--fg) 4%, transparent);
+  }
+
+  .cst__seg {
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    display: flex;
+    align-items: center;
+    min-width: 2px;
+    padding: 0 6px;
+    overflow: hidden;
+    border-radius: 4px;
+    border: 1px solid color-mix(in srgb, var(--c) 55%, transparent);
+    background: color-mix(in srgb, var(--c) 18%, var(--viz-panel));
+    transition: width 0.6s var(--ease);
+  }
+  .cst__seg span {
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--c);
+  }
+  .cst__seg--sound {
+    --c: var(--viz-sound-text);
+  }
+  .cst__seg--meta {
+    --c: var(--viz-meta);
+  }
+  .cst__seg--net {
+    --c: var(--viz-net);
+    background: repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--viz-net) 22%, var(--viz-panel)) 0 6px,
+      color-mix(in srgb, var(--viz-net) 10%, var(--viz-panel)) 6px 12px
+    );
+  }
+  .cst__seg--bad {
+    --c: var(--viz-bad);
+  }
+  .cst__seg--quiet {
+    --c: var(--fg-faint);
+    background: repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--fg) 14%, transparent) 0 2px,
+      transparent 2px 9px
+    );
+    border-color: transparent;
+  }
+  .cst__seg--quiet span {
+    font-weight: 500;
+    color: var(--fg-faint);
+  }
+
+  .cst__mark {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--c);
+  }
+  .cst__mark span {
+    position: absolute;
+    top: 50%;
+    left: 6px;
+    transform: translateY(-50%);
+    padding: 1px 6px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--c);
+    background: var(--viz-panel);
+    border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+    border-radius: 999px;
+  }
+  .cst__mark--meta {
+    --c: var(--viz-meta);
+  }
+  .cst__mark--sound {
+    --c: var(--viz-sound-text);
+  }
+  .cst__mark--bad {
+    --c: var(--viz-bad);
+    width: 3px;
+  }
+
+  .cst__cursor {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    left: calc(var(--t) * 100%);
+    width: 0;
+    border-left: 1.5px dashed var(--fg-muted);
+    transition: left 0.6s var(--ease);
+    pointer-events: none;
+  }
+
+  .cst__lane--axis {
+    margin-top: 2px;
+  }
+  .cst__axis {
+    position: relative;
+    height: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .cst__axis span {
+    position: absolute;
+    top: 3px;
+    transform: translateX(-50%);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-faint);
+    white-space: nowrap;
+  }
+  .cst__axis span:first-child {
+    transform: none;
+  }
+
+  .cst__note {
+    min-height: 4.7em;
+    margin: var(--sp-3) 0 0;
+    padding-left: var(--sp-3);
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg-muted);
+    border-left: 3px solid var(--viz-meta);
+  }
+  .cst__note.is-bad {
+    border-left-color: var(--viz-bad);
+  }
+  .cst__counter {
+    display: block;
+    margin-top: 6px;
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+
+  @media (max-width: 560px) {
+    .cst__lane {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2px;
+    }
+    .cst__lane--axis .cst__name {
+      display: none;
+    }
+    .cst__board {
+      padding: var(--sp-2);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cst__seg,
+    .cst__cursor {
+      transition: none;
+    }
+  }
+</style>

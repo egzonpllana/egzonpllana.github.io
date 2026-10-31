@@ -1,0 +1,692 @@
+---
+/**
+ * One mesh, read back under the reader's assumptions. The writer's frame is
+ * fixed and declared: right-handed, y up, metres, the frame RealityKit and
+ * Object Capture work in. The reader picks what the receiving side assumes
+ * instead, and the figure redraws the chair the way that side reconstructs it,
+ * with the cut list it would derive.
+ *
+ * The transforms are the ones a converter actually applies:
+ *   left-handed  z -> -z (determinant -1: a mirror, so triangle winding flips
+ *                and normals derived from it point inwards)
+ *   z up         (x, y, z) -> (x, z, -y), the usual z-up to y-up rotation
+ *   units        every coordinate multiplied by the assumed unit in metres
+ * After that the reader drops the result onto its floor (min y = 0, centred in
+ * x and z), as a fitting service would.
+ *
+ * The chair is illustrative: 0.92 m wide, 0.98 m tall, 0.86 m deep.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '03',
+  caption = 'A bare positions-and-triangles format carries no handedness, no up axis and no unit, so the receiver supplies them, correctly or not. Every wrong guess still produces a valid mesh: a mirror keeps every dimension and turns the surface inside out, a swapped up axis lays the chair on its back, and a unit mismatch shrinks it a hundredfold. None of them fails a check that only asks whether the mesh is well formed.',
+} = Astro.props;
+---
+
+<VizFrame
+  fig={fig}
+  title="Three strings between a chair and a cover"
+  caption={caption}
+  class="cfl"
+  data-cfl
+>
+  <div class="cfl__top">
+    <div class="cfl__writer viz-panel">
+      <span class="viz-label">manifest says</span>
+      <div class="cfl__chips">
+        <span class="viz-chip viz-chip--meta">handedness: right</span>
+        <span class="viz-chip viz-chip--meta">up: y</span>
+        <span class="viz-chip viz-chip--meta">units: meters</span>
+      </div>
+    </div>
+    <div class="cfl__reader">
+      <span class="viz-label">receiver assumes</span>
+      <div class="cfl__controls">
+        <div
+          class="viz-seg"
+          role="group"
+          aria-label="Handedness the receiver assumes"
+        >
+          <button type="button" aria-pressed="true" data-k="hand" data-v="right"
+            >right</button
+          >
+          <button type="button" aria-pressed="false" data-k="hand" data-v="left"
+            >left</button
+          >
+        </div>
+        <div
+          class="viz-seg"
+          role="group"
+          aria-label="Up axis the receiver assumes"
+        >
+          <button type="button" aria-pressed="true" data-k="up" data-v="y"
+            >y up</button
+          >
+          <button type="button" aria-pressed="false" data-k="up" data-v="z"
+            >z up</button
+          >
+        </div>
+        <div
+          class="viz-seg"
+          role="group"
+          aria-label="Unit the receiver assumes"
+        >
+          <button type="button" aria-pressed="true" data-k="unit" data-v="1"
+            >m</button
+          >
+          <button type="button" aria-pressed="false" data-k="unit" data-v="0.01"
+            >cm</button
+          >
+          <button
+            type="button"
+            aria-pressed="false"
+            data-k="unit"
+            data-v="0.001">mm</button
+          >
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cfl__stage viz-panel">
+    <svg
+      viewBox="0 0 400 330"
+      preserveAspectRatio="xMidYMid meet"
+      role="img"
+      aria-label="The armchair as the receiver reconstructs it, drawn over a dashed box with the true extents."
+      data-svg
+    >
+      <g data-floor></g>
+      <g data-ghost></g>
+      <g data-chair></g>
+      <g data-normals></g>
+      <g data-marks></g>
+      <g data-axes transform="translate(46 54)"></g>
+    </svg>
+    <div class="viz-legend cfl__legend" aria-hidden="true">
+      <span><i style="--c:var(--viz-sound)"></i>chair as read</span>
+      <span><i style="--c:var(--viz-meta)"></i>writer’s axes, as read</span>
+      <span><i style="--c:var(--viz-level)"></i>normal, outward</span>
+      <span><i style="--c:var(--viz-bad)"></i>normal, inward</span>
+    </div>
+  </div>
+
+  <div class="cfl__read viz-panel" aria-live="polite">
+    <div>
+      <span class="viz-label">cut list, w × d × h</span>
+      <span class="viz-chip" data-out-dims></span>
+    </div>
+    <div>
+      <span class="viz-label">true chair</span>
+      <span class="viz-chip viz-chip--sound">92 × 86 × 98 cm</span>
+    </div>
+    <div>
+      <span class="viz-label">surface</span>
+      <span class="viz-chip" data-out-normals></span>
+    </div>
+    <ul class="cfl__verdict" data-out-verdict></ul>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const NS = 'http://www.w3.org/2000/svg';
+    const K = 140; // px per metre
+    const CX = 200;
+    const CY = 222;
+    const C30 = Math.cos(Math.PI / 6);
+    const S30 = 0.5;
+
+    // Writer frame: right-handed, y up, metres; front of the chair is +z.
+    // [x0, x1, y0, y1, z0, z1]
+    const BOXES = [
+      { id: 'leg', b: [-0.44, -0.38, 0, 0.1, -0.41, -0.35] },
+      { id: 'leg', b: [0.38, 0.44, 0, 0.1, -0.41, -0.35] },
+      { id: 'leg', b: [-0.44, -0.38, 0, 0.1, 0.35, 0.41] },
+      { id: 'leg', b: [0.38, 0.44, 0, 0.1, 0.35, 0.41] },
+      { id: 'back', b: [-0.46, 0.46, 0.1, 0.98, -0.43, -0.25] },
+      { id: 'base', b: [-0.32, 0.32, 0.1, 0.44, -0.25, 0.43] },
+      { id: 'cushion', b: [-0.32, 0.32, 0.44, 0.56, -0.25, 0.43] },
+      { id: 'arm', b: [-0.46, -0.32, 0.1, 0.68, -0.25, 0.43] },
+      { id: 'arm', b: [0.32, 0.46, 0.1, 0.68, -0.25, 0.43] },
+    ];
+    const TRUE = [-0.46, 0.46, 0, 0.98, -0.43, 0.43];
+
+    const proj = (p) => [
+      CX + (p[0] - p[2]) * C30 * K,
+      CY - p[1] * K + (p[0] + p[2]) * S30 * K,
+    ];
+    const f = (n) => n.toFixed(1);
+
+    function el(name, attrs, parent) {
+      const node = document.createElementNS(NS, name);
+      Object.entries(attrs).forEach(([k, v]) =>
+        node.setAttribute(k, String(v)),
+      );
+      if (parent) parent.appendChild(node);
+      return node;
+    }
+
+    function poly(points, cls, parent) {
+      return el(
+        'polygon',
+        {
+          points: points.map((p) => proj(p).map(f).join(',')).join(' '),
+          class: cls,
+        },
+        parent,
+      );
+    }
+
+    /** Linear part of the reader's conversion, without the unit. */
+    function linear(hand, up) {
+      return (p) => {
+        let [x, y, z] = p;
+        if (hand === 'left') z = -z;
+        if (up === 'z') [y, z] = [z, -y];
+        return [x, y, z];
+      };
+    }
+
+    function aabb(corners) {
+      const lo = [Infinity, Infinity, Infinity];
+      const hi = [-Infinity, -Infinity, -Infinity];
+      corners.forEach((c) =>
+        c.forEach((v, i) => {
+          lo[i] = Math.min(lo[i], v);
+          hi[i] = Math.max(hi[i], v);
+        }),
+      );
+      return [lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]];
+    }
+
+    function cornersOf(b) {
+      const out = [];
+      for (const x of [b[0], b[1]])
+        for (const y of [b[2], b[3]])
+          for (const z of [b[4], b[5]]) out.push([x, y, z]);
+      return out;
+    }
+
+    /** Visible faces of an axis-aligned box seen from +x, +y, +z. */
+    function drawBox(b, extra, parent) {
+      const cls = extra ? `cfl__face ${extra}` : 'cfl__face';
+      const [x0, x1, y0, y1, z0, z1] = b;
+      poly(
+        [
+          [x0, y1, z0],
+          [x1, y1, z0],
+          [x1, y1, z1],
+          [x0, y1, z1],
+        ],
+        `${cls} cfl__face--top`,
+        parent,
+      );
+      poly(
+        [
+          [x1, y0, z0],
+          [x1, y1, z0],
+          [x1, y1, z1],
+          [x1, y0, z1],
+        ],
+        `${cls} cfl__face--x`,
+        parent,
+      );
+      poly(
+        [
+          [x0, y0, z1],
+          [x1, y0, z1],
+          [x1, y1, z1],
+          [x0, y1, z1],
+        ],
+        `${cls} cfl__face--z`,
+        parent,
+      );
+    }
+
+    function wireBox(b, parent) {
+      const c = cornersOf(b).map(proj);
+      // corner index: x * 4 + y * 2 + z
+      const edges = [
+        [0, 1],
+        [2, 3],
+        [4, 5],
+        [6, 7],
+        [0, 2],
+        [1, 3],
+        [4, 6],
+        [5, 7],
+        [0, 4],
+        [1, 5],
+        [2, 6],
+        [3, 7],
+      ];
+      edges.forEach(([a, z]) =>
+        el(
+          'line',
+          {
+            x1: f(c[a][0]),
+            y1: f(c[a][1]),
+            x2: f(c[z][0]),
+            y2: f(c[z][1]),
+            class: 'cfl__ghost',
+          },
+          parent,
+        ),
+      );
+    }
+
+    function arrow(from, to, inward, parent) {
+      const cls = inward ? 'cfl__n cfl__n--in' : 'cfl__n';
+      const head = inward ? 'cfl__nh cfl__nh--in' : 'cfl__nh';
+      const [ax, ay] = proj(from);
+      const [bx, by] = proj(to);
+      const len = Math.hypot(bx - ax, by - ay);
+      if (len < 2) return;
+      const ux = (bx - ax) / len;
+      const uy = (by - ay) / len;
+      const h = Math.min(7, len * 0.45);
+      el(
+        'line',
+        { x1: f(ax), y1: f(ay), x2: f(bx), y2: f(by), class: cls },
+        parent,
+      );
+      el(
+        'polygon',
+        {
+          points: [
+            [bx, by],
+            [bx - ux * h - uy * h * 0.55, by - uy * h + ux * h * 0.55],
+            [bx - ux * h + uy * h * 0.55, by - uy * h - ux * h * 0.55],
+          ]
+            .map((p) => p.map(f).join(','))
+            .join(' '),
+          class: head,
+        },
+        parent,
+      );
+      el('circle', { cx: f(ax), cy: f(ay), r: 2.4, class: head }, parent);
+    }
+
+    function initLab(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const state = { hand: 'right', up: 'y', unit: 1 };
+      const layer = (name) => root.querySelector(`[data-${name}]`);
+      const floor = layer('floor');
+      const ghost = layer('ghost');
+      const chair = layer('chair');
+      const normals = layer('normals');
+      const marks = layer('marks');
+      const axes = layer('axes');
+      const out = {
+        dims: root.querySelector('[data-out-dims]'),
+        normals: root.querySelector('[data-out-normals]'),
+        verdict: root.querySelector('[data-out-verdict]'),
+      };
+      const buttons = [...root.querySelectorAll('[data-k]')];
+
+      // Floor grid and the true extents never move.
+      for (let i = -7; i <= 7; i += 1) {
+        const v = i / 10;
+        const cls = i === 0 ? 'cfl__floor cfl__floor--mid' : 'cfl__floor';
+        const a = proj([v, 0, -0.7]);
+        const b = proj([v, 0, 0.7]);
+        const c = proj([-0.7, 0, v]);
+        const d = proj([0.7, 0, v]);
+        el(
+          'line',
+          { x1: f(a[0]), y1: f(a[1]), x2: f(b[0]), y2: f(b[1]), class: cls },
+          floor,
+        );
+        el(
+          'line',
+          { x1: f(c[0]), y1: f(c[1]), x2: f(d[0]), y2: f(d[1]), class: cls },
+          floor,
+        );
+      }
+      wireBox(TRUE, ghost);
+
+      function render() {
+        const L = linear(state.hand, state.up);
+        const det = state.hand === 'left' ? -1 : 1;
+        const s = state.unit;
+
+        // Convert, then drop onto the reader's floor and centre it.
+        const boxes = BOXES.map((bx) => ({
+          id: bx.id,
+          b: aabb(cornersOf(bx.b).map(L)),
+        }));
+        const all = aabb(boxes.flatMap((bx) => cornersOf(bx.b)));
+        const dx = -(all[0] + all[1]) / 2;
+        const dy = -all[2];
+        const dz = -(all[4] + all[5]) / 2;
+        const place = (b) => [
+          (b[0] + dx) * s,
+          (b[1] + dx) * s,
+          (b[2] + dy) * s,
+          (b[3] + dy) * s,
+          (b[4] + dz) * s,
+          (b[5] + dz) * s,
+        ];
+        const placed = boxes.map((bx) => ({ id: bx.id, b: place(bx.b) }));
+        const ext = place(all);
+
+        // Painter's order: farthest from the viewer at +x +y +z first.
+        const depth = (b) => b[0] + b[1] + b[2] + b[3] + b[4] + b[5];
+        chair.replaceChildren();
+        [...placed]
+          .sort((a, b) => depth(a.b) - depth(b.b))
+          .forEach((bx) =>
+            drawBox(bx.b, bx.id === 'cushion' ? 'cfl__face--seat' : '', chair),
+          );
+
+        // Normals on the outermost face along each display axis. A mirror
+        // keeps the geometry's outward direction but reverses the winding,
+        // so the normal a receiver derives from it points the other way.
+        normals.replaceChildren();
+        marks.replaceChildren();
+        const tiny = s < 0.2;
+        if (!tiny) {
+          const len = 0.16;
+          const pick = (axis) =>
+            placed.reduce((best, bx) =>
+              bx.b[axis * 2 + 1] > best.b[axis * 2 + 1] ? bx : best,
+            );
+          [0, 1, 2].forEach((axis) => {
+            const bx = pick(axis).b;
+            const c = [
+              (bx[0] + bx[1]) / 2,
+              (bx[2] + bx[3]) / 2,
+              (bx[4] + bx[5]) / 2,
+            ];
+            c[axis] = bx[axis * 2 + 1];
+            const tip = [...c];
+            tip[axis] += det * len;
+            arrow(c, tip, det < 0, normals);
+          });
+
+          // Where the writer's front (+z) ended up.
+          const front = L([0, 0.3, 0.62]);
+          const fp = proj([
+            (front[0] + dx) * s,
+            (front[1] + dy) * s,
+            (front[2] + dz) * s,
+          ]);
+          const t = el(
+            'text',
+            { x: f(fp[0]), y: f(fp[1]), class: 'cfl__front' },
+            marks,
+          );
+          t.textContent = 'front';
+        } else {
+          const o = proj([0, 0, 0]);
+          el(
+            'circle',
+            { cx: f(o[0]), cy: f(o[1]), r: 13, class: 'cfl__ring' },
+            marks,
+          );
+          const t = el(
+            'text',
+            { x: f(o[0]), y: f(o[1] + 34), class: 'cfl__tiny' },
+            marks,
+          );
+          t.textContent = `the whole chair: ${((ext[1] - ext[0]) * 100).toFixed(2)} cm wide`;
+        }
+
+        // The writer's axes as the reader now sees them.
+        axes.replaceChildren();
+        el('circle', { cx: 0, cy: 0, r: 2.5, class: 'cfl__axis-head' }, axes);
+        ['x', 'y', 'z'].forEach((name, i) => {
+          const e = [0, 0, 0];
+          e[i] = 1;
+          const d = L(e);
+          const A = 28;
+          const ex = (d[0] - d[2]) * C30 * A;
+          const ey = -d[1] * A + (d[0] + d[2]) * S30 * A;
+          el(
+            'line',
+            { x1: 0, y1: 0, x2: f(ex), y2: f(ey), class: 'cfl__axis' },
+            axes,
+          );
+          const label = el(
+            'text',
+            { x: f(ex * 1.38), y: f(ey * 1.38 + 4), class: 'cfl__axis-label' },
+            axes,
+          );
+          label.textContent = `+${name}`;
+        });
+
+        // Cut list in centimetres, as the reader derives it.
+        const w = (ext[1] - ext[0]) * 100;
+        const h = (ext[3] - ext[2]) * 100;
+        const dpt = (ext[5] - ext[4]) * 100;
+        const fmt = (n) =>
+          n >= 10 ? n.toFixed(0) : n >= 1 ? n.toFixed(1) : n.toFixed(2);
+        const dimsOk =
+          Math.abs(w - 92) < 0.5 &&
+          Math.abs(h - 98) < 0.5 &&
+          Math.abs(dpt - 86) < 0.5;
+        out.dims.textContent = `${fmt(w)} × ${fmt(dpt)} × ${fmt(h)} cm`;
+        out.dims.className = `viz-chip ${dimsOk ? 'viz-chip--level' : 'viz-chip--bad'}`;
+        out.normals.textContent = det > 0 ? 'outward' : 'inside out';
+        out.normals.className = `viz-chip ${det > 0 ? 'viz-chip--level' : 'viz-chip--bad'}`;
+
+        const lines = [];
+        if (state.hand === 'left')
+          lines.push(
+            'Mirrored front to back. Every dimension still checks out, which is why this one ships: the reversed winding turns every derived normal inwards, so anything offset along the normals, such as fabric ease, moves into the chair instead of away from it.',
+          );
+        if (state.up === 'z')
+          lines.push(
+            'Lying on its back. The chair’s depth is read as its height and its height as its depth, so the cover comes out 12 cm too short and 12 cm too deep.',
+          );
+        if (s !== 1)
+          lines.push(
+            `Read as ${s === 0.01 ? 'centimetres' : 'millimetres'}: the same numbers describe something ${s === 0.01 ? 'a hundred' : 'a thousand'} times smaller. The mesh is still perfectly valid.`,
+          );
+        if (!lines.length)
+          lines.push(
+            'Both sides agree on all three strings. This is the only setting in which the cover fits.',
+          );
+        out.verdict.replaceChildren(
+          ...lines.map((text) => {
+            const li = document.createElement('li');
+            li.textContent = text;
+            li.className =
+              lines.length === 1 && dimsOk && det > 0 ? 'is-ok' : 'is-bad';
+            return li;
+          }),
+        );
+      }
+
+      buttons.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const k = btn.dataset.k;
+          state[k] = k === 'unit' ? Number(btn.dataset.v) : btn.dataset.v;
+          buttons
+            .filter((b) => b.dataset.k === k)
+            .forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+          render();
+        }),
+      );
+
+      render();
+    }
+
+    const boot = () => document.querySelectorAll('[data-cfl]').forEach(initLab);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style is:global>
+  .cfl__top {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .cfl__writer {
+    display: grid;
+    gap: 6px;
+    padding: var(--sp-3);
+  }
+  .cfl__chips,
+  .cfl__controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .cfl__reader {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    padding: var(--sp-3) 0;
+  }
+
+  .cfl__stage {
+    display: grid;
+    gap: 6px;
+    padding: var(--sp-2);
+  }
+  .cfl__stage svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 380px;
+  }
+  .cfl__legend {
+    padding: 0 4px 2px;
+  }
+
+  .cfl__floor {
+    stroke: var(--viz-grid);
+    stroke-width: 1;
+  }
+  .cfl__floor--mid {
+    stroke: var(--border-strong);
+  }
+  .cfl__ghost {
+    stroke: var(--fg-faint);
+    stroke-width: 1.2;
+    stroke-dasharray: 4 4;
+  }
+  .cfl__face {
+    stroke: var(--viz-sound);
+    stroke-width: 1.2;
+    stroke-linejoin: round;
+  }
+  .cfl__face--top {
+    fill: color-mix(in srgb, var(--viz-sound) 34%, var(--viz-panel));
+  }
+  .cfl__face--x {
+    fill: color-mix(in srgb, var(--viz-sound) 22%, var(--viz-panel));
+  }
+  .cfl__face--z {
+    fill: color-mix(in srgb, var(--viz-sound) 12%, var(--viz-panel));
+  }
+  .cfl__face--seat.cfl__face--top {
+    fill: color-mix(in srgb, var(--viz-sound) 50%, var(--viz-panel));
+  }
+  .cfl__n {
+    stroke: var(--viz-level);
+    stroke-width: 2.2;
+    stroke-linecap: round;
+  }
+  .cfl__nh {
+    fill: var(--viz-level);
+  }
+  .cfl__n--in {
+    stroke: var(--viz-bad);
+  }
+  .cfl__nh--in {
+    fill: var(--viz-bad);
+  }
+  .cfl__front {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    fill: var(--fg);
+    text-anchor: middle;
+    paint-order: stroke;
+    stroke: var(--viz-panel);
+    stroke-width: 3px;
+  }
+  .cfl__ring {
+    fill: none;
+    stroke: var(--viz-bad);
+    stroke-width: 2;
+  }
+  .cfl__tiny {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    fill: var(--viz-bad);
+    text-anchor: middle;
+  }
+  .cfl__axis {
+    stroke: var(--viz-meta);
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+  .cfl__axis-head {
+    fill: var(--viz-meta);
+  }
+  .cfl__axis-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    fill: var(--viz-meta);
+    text-anchor: middle;
+  }
+
+  .cfl__read {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-2) var(--sp-3);
+    margin-top: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .cfl__read div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .cfl__read .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+  }
+  .cfl__verdict {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: 6px;
+  }
+  .cfl__verdict li {
+    padding-left: var(--sp-3);
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg-muted);
+    border-left: 3px solid var(--viz-bad);
+  }
+  .cfl__verdict li.is-ok {
+    border-left-color: var(--viz-sound);
+  }
+
+  @media (max-width: 640px) {
+    .cfl__top {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .cfl__reader {
+      padding: 0;
+    }
+    .cfl__read {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>
