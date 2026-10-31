@@ -1,0 +1,607 @@
+---
+title: 'Understanding Concurrency in Swift 6 with Sendable protocol, MainActor, and async-await'
+description: 'What Swift 6 actually checks: isolation domains, what may cross between them, and where async code runs. Re-checked against Swift Evolution and Swift 6.4 probes, including what changes with Swift 6.2’s main-actor default isolation, nonisolated(nonsending) and @concurrent.'
+date: 2024-08-25
+updated: 2026-10-30
+tags: ['Swift', 'iOS', 'Concurrency', 'async-await', 'Sendable']
+heroImage: '../../assets/covers/understanding-concurrency-swift-6-sendable-mainactor.png'
+---
+
+import StatTiles from '../../components/StatTiles.astro';
+import CounterRaceLanes from '../../components/CounterRaceLanes.astro';
+import IsolationCrossingPicker from '../../components/IsolationCrossingPicker.astro';
+import AsyncHopTimeline from '../../components/AsyncHopTimeline.astro';
+
+Two pieces of code that run at the same time, touch the same memory, and at least one of them writes: that is a data race. The result depends on timing, so it passes every test on your machine and corrupts state on someone else's. Locks, serial queues and careful reviews all prevent races, and none of them are checked by anyone but you.
+
+Swift 6 checks. Every piece of mutable state belongs to one isolation domain: the main actor, an actor instance, or nothing at all. Code inside a domain touches its state directly. Code outside has to ask, with `await`. A value may move from one domain to another only if the compiler can show that both sides will not touch it at once, and `Sendable` is how a type says so. In Swift 6 language mode, breaking those rules is a compile error, not a warning.
+
+I first wrote this article in August 2024 as background for [Building a generic, thread-safe Networking Layer in Swift 6](/articles/thread-safe-networking-layer-swift-6-interceptors/). It listed the tools and got several of them wrong. It said `Sendable` makes a type thread-safe; it is a promise the compiler checks, and it makes nothing atomic. It said `@MainActor` runs everything in a type on the main thread, and that `Task { }` runs work on a background thread; a `Task` started from main-actor code runs on the main actor. Its cancellation example printed "Data fetched" instead of "Task was cancelled", its stream example never stopped producing, and its `@preconcurrency` section described something the attribute does not do. Since then, Swift 6.2 changed where a `nonisolated async` function runs and let a module make the main actor its default isolation, which changes the answer to half the questions here.
+
+This version re-checks every claim against the Swift Evolution proposals and small programs built with Swift 6.4 (Xcode 27.1) in Swift 6 language mode, with and without the 6.2 settings. Swift is the worked example. Isolation domains, values that move between them and suspension points exist in any language with an async runtime; Swift is unusual in having a compiler that enforces them.
+
+<StatTiles
+  tiles={[
+    {
+      label: 'class, two threads',
+      value: 46,
+      suffix: '%',
+      sub: 'of 2,000,000 increments lost, release build',
+    },
+    {
+      label: 'debug build',
+      value: 4.7,
+      decimals: 1,
+      suffix: '%',
+      sub: 'lost in the worst of five runs',
+    },
+    {
+      label: 'actor or Mutex',
+      value: 0,
+      sub: 'increments lost, in every run',
+    },
+    {
+      label: 'Swift 6 mode',
+      value: 1,
+      suffix: ' error',
+      sub: 'for the racy version, unless you write @unchecked',
+    },
+  ]}
+/>
+
+---
+
+## A data race, made visible
+
+Concurrency means several tasks are in progress at once. Parallelism means several of them are executing at the same instant, on different cores. A data race needs parallelism, or at least a preemptive scheduler that can switch threads between any two machine instructions.
+
+The smallest race is a counter. `count += 1` looks like one operation and is three: load the value into a register, add one, store it back. Two threads that run those steps at the same time can both load the same old value, and then the second store overwrites the first.
+
+<CounterRaceLanes />
+
+I measured it. A class with a `var count`, two threads from `DispatchQueue.concurrentPerform`, each calling `increment()` 1,000,000 times, on an M1 Pro. The class had to be marked `@unchecked Sendable` to compile at all, which comes back below.
+
+- **Release build:** between 1,066,939 and 1,093,443 counted, over eight runs. About 46% of the increments were lost.
+- **Debug build:** between 1,906,277 and 1,958,127. Slower code gives the threads fewer chances to collide, so fewer updates were lost, and the bug looks rarer than it is.
+- **Thread Sanitizer** (`-sanitize=thread`) reported `Swift access race` in `UnsafeCounter.increment()` on the first run.
+
+There is an honest trap in this measurement. My first release build printed exactly 2,000,000 in every run, and each run took 31 µs or less: far too fast for 2,000,000 separate increments, so the optimizer had inlined `increment()` and collapsed the loops, leaving almost no window for a collision. The program was still racy; it was just lucky. I marked `increment()` `@inline(never)` to measure the real thing. A race is not "wrong numbers"; it is undefined behaviour, and the right number proves nothing.
+
+Here is the same counter without `@unchecked`, in Swift 6 language mode:
+
+```swift
+final class Counter {
+    var count = 0
+    func increment() { count += 1 }
+}
+
+func countConcurrently() async -> Int {
+    let counter = Counter()
+    await withTaskGroup { group in
+        for _ in 0..<2 {
+            group.addTask {
+                for _ in 0..<1_000_000 { counter.increment() }
+            }
+        }
+    }
+    return counter.count
+}
+```
+
+```text
+error: passing closure as a 'sending' parameter risks causing data races between
+code in the current isolation context and concurrent execution of the closure
+note: closure captures 'counter' which is accessible to code in the current isolation context
+```
+
+The compiler does not know about counters. It sees a non-`Sendable` class instance captured by a closure that will run concurrently with the code that created it, and refuses. With main-actor default isolation, which comes later, the error is a different one with the same meaning: `Counter` is then a main-actor class, and the child tasks are not on the main actor.
+
+Two fixes compile. An actor owns the state and runs one caller's job at a time:
+
+```swift
+actor CounterActor {
+    private(set) var count = 0
+    func increment() { count += 1 }
+}
+
+func countConcurrently() async -> Int {
+    let counter = CounterActor()
+    await withTaskGroup { group in
+        for _ in 0..<2 {
+            group.addTask {
+                for _ in 0..<1_000_000 { await counter.increment() }
+            }
+        }
+    }
+    return await counter.count
+}
+```
+
+A `Mutex` from the Synchronization library ([SE-0433](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0433-mutex.md), iOS 18 and macOS 15) protects the state without making callers `await`:
+
+```swift
+import Synchronization
+
+@available(iOS 18, macOS 15, *)
+final class LockedCounter: Sendable {
+    private let state = Mutex(0)
+
+    func increment() { state.withLock { $0 += 1 } }
+    var count: Int { state.withLock { $0 } }
+}
+```
+
+Both counted exactly 2,000,000 in every run. The `Mutex` version is checked `Sendable`, not `@unchecked`: its only stored property is a `let` of a `Sendable` type, and the compiler can verify that. The first version of this article used a `DispatchQueue` and `@unchecked Sendable` for the same job. That still works, but the compiler takes your word for it, and you lose the check for every property you add later.
+
+An actor is not a thread. Its jobs run on whichever thread of the cooperative pool is free; in a probe with eight tasks calling one actor 1,600 times, the jobs ran on four different threads, never two at once. What the actor guarantees is mutual exclusion, not a place.
+
+> **In plain words:** a data race is two threads touching the same memory, at least one writing, with nothing ordering them. `count += 1` lost 46% of its updates across two threads. Swift 6 rejects the code that allows it, and an actor or a `Mutex` fixes it.
+
+---
+
+## Isolation domains
+
+Swift's model has three kinds of domain:
+
+- **The main actor.** A global actor: one instance for the whole process, whose executor is the main dispatch queue, so its code runs on the main thread. `@MainActor` on a declaration puts it in this domain. ([Why the main actor and `DispatchQueue.main` behave the same while the user scrolls](/articles/runloop-main-vs-dispatchqueue-main/).)
+- **Each actor instance.** Its stored properties and methods belong to it. Its default executor is serial and runs on the cooperative pool.
+- **Nonisolated code.** Belongs to no actor. It can only touch state that is safe to touch from anywhere: its parameters, local variables, `Sendable` values.
+
+Inside a domain, code is synchronous and direct. From outside, every access to the domain's state is `await`, because the call becomes a job on that domain's executor and the caller may have to wait its turn. That is the whole mechanism behind Fig 01: two `await counter.increment()` calls are two jobs on one serial executor.
+
+The attribute marks the domain of a declaration, not of everything written inside it. In a `@MainActor` class:
+
+```swift
+import Foundation
+
+nonisolated struct FeedItem: Decodable, Sendable {
+    let id: Int
+    let title: String
+}
+
+nonisolated protocol FeedClientProtocol: Sendable {
+    func loadFeed() async throws -> [FeedItem]
+}
+
+@MainActor
+final class FeedViewModel {
+    private(set) var items: [FeedItem] = []
+    private let client: any FeedClientProtocol
+
+    init(client: any FeedClientProtocol) {
+        self.client = client
+    }
+
+    func refresh() async throws {
+        let feed = try await client.loadFeed()   // the main actor is free while this waits
+        items = feed                             // back on the main actor
+    }
+
+    nonisolated func cacheKey(for id: Int) -> String {
+        "feed.\(id)"                             // no isolation: runs on the caller's thread
+    }
+}
+```
+
+`refresh()` and every line of it run on the main actor, but `loadFeed()` is not part of the view model. Where it runs is decided by its own declaration, as the next sections show. A `nonisolated` member, a `@Sendable` closure, a `Task.detached` and a `@concurrent` function written inside the class all run outside the main actor. The original article said `@MainActor` makes "any operations" of the class run on the main thread. It makes the class's isolated members run there, and requires everyone else to `await` them.
+
+> **In plain words:** every piece of mutable state belongs to one domain. Code in the domain touches it directly; code outside sends a job and awaits. `@MainActor` names the domain of a declaration, not of every call it makes.
+
+---
+
+## Sendable: what may cross
+
+When a value moves from one domain to another, by argument, return value or closure capture, both domains could end up holding it. That is safe only if they cannot race on it. `Sendable` is the protocol that says so. It has no requirements and no runtime cost. It adds no lock and makes no operation atomic; the compiler checks that the type's structure makes sharing safe, and rejects the crossing otherwise.
+
+What is `Sendable`:
+
+- **Value types** whose stored properties are all `Sendable`. Each domain gets its own copy. Internal and private structs and enums get this conformance implicitly; `public` ones must declare it, because their layout may change.
+- **Final classes with only `let` properties of `Sendable` type**, when they declare it. Classes are never `Sendable` implicitly.
+- **Actors**, always. Their state is reachable only through their executor.
+- **Classes isolated to a global actor**, such as a `@MainActor` class. Their state is reachable only on that actor.
+- **`@Sendable` closures**, which may only capture `Sendable` values, and capture them by value.
+
+```swift
+import Foundation
+
+struct Coordinates {                 // implicitly Sendable: internal, all stored properties Sendable
+    var latitude: Double
+    var longitude: Double
+}
+
+public struct Money: Sendable {      // public types must say it
+    public let cents: Int
+}
+
+final class Profile: Sendable {      // a final class with only immutable Sendable state
+    let id: UUID
+    let name: String
+
+    init(id: UUID, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
+@MainActor
+final class SessionViewModel {       // isolated to a global actor, so Sendable
+    var isSignedIn = false
+}
+```
+
+Since Swift 6.0, `Sendable` is no longer the only way across. With region-based isolation ([SE-0414](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0414-region-based-isolation.md)), the compiler tracks which values can reach which. A non-`Sendable` value that nothing else can reach after the call may be handed over, because the sender gave it up:
+
+```swift
+final class Draft {
+    var text = ""
+}
+
+actor Archive {
+    private var drafts: [Draft] = []
+    func store(_ draft: Draft) { drafts.append(draft) }
+}
+
+@MainActor
+func saveDraft(to archive: Archive) async {
+    let draft = Draft()
+    draft.text = "Hello"
+    await archive.store(draft)   // allowed: nothing on the main actor can reach draft any more
+    // draft.text = "Again"      // error: sending 'draft' risks causing data races
+}
+```
+
+The `sending` keyword ([SE-0430](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0430-transferring-parameters-and-results.md)) puts that rule in a signature. `Task.init`, `Task.detached` and `TaskGroup.addTask` take their closure as `sending`, which is why the closure in the counter example was rejected: it captured a value the caller could still reach.
+
+<IsolationCrossingPicker />
+
+Two rows of Fig 02 deserve a second look. `@unchecked Sendable` compiles anything, including the racy counter. It is a promise that you synchronise the state yourself, and the compiler stops checking the type at all, so it belongs on types that wrap a lock or a C resource, with a comment saying what protects what. And with main-actor default isolation, almost everything crosses, because almost every class becomes a main-actor class. That does not make the state shareable. It makes it reachable only on the main actor, and the error moves to the line where the receiver tries to read it.
+
+Global and static variables are shared by every domain, so Swift 6 checks them too ([SE-0412](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0412-strict-concurrency-for-global-variables.md)). `var requestCount = 0` at the top level fails with `var 'requestCount' is not concurrency-safe because it is nonisolated global shared mutable state`. The ways out:
+
+```swift
+let maxRetries = 3                          // immutable and Sendable: fine
+@MainActor var requestCount = 0             // isolated: fine
+nonisolated(unsafe) var legacyFlag = false  // compiles, and the safety is on you
+```
+
+`Sendable` says a value is safe to share. It says nothing about the logic around it. An actor whose method checks a cache, awaits a request, and then writes the cache is free of data races and still sends the same request twice, because another caller can run during the `await`. [The network caching article](/articles/from-network-chaos-to-cached-harmony/) walks through that case.
+
+> **In plain words:** `Sendable` is a checked claim that a value can be shared between domains without a race. It does not make a type thread-safe; it proves that sharing it cannot race. A non-`Sendable` value can still move if the sender provably lets go of it.
+
+---
+
+## async and await: suspension, not background
+
+An `async` function can suspend. At a suspension point the function stops, its local state is saved in a frame on the heap rather than on the thread's stack, and the thread is released to run something else. When whatever it was waiting for finishes, the rest of the function is enqueued as a job on the executor it must resume on. `await` marks the places where that can happen. It is a possible suspension point: a call to a function on the same actor that never suspends does not switch anything.
+
+Two consequences matter more than the syntax. First, `await` does not block the thread. While a main-actor function awaits a network response, the main thread draws frames and handles touches. Second, the world can change across an `await`. Another job may run on the same actor in between, so anything you checked before the `await` may no longer hold after it.
+
+`async` says nothing about which thread runs the code. That was the third claim the original got wrong: `async` does not mean background. Where an `async` function runs is decided by its isolation. A `@MainActor` async function runs on the main thread, before and after each `await`. An actor method runs on that actor's executor. A `nonisolated` async function is where Swift 6.2 changed the rules.
+
+<AsyncHopTimeline />
+
+Under [SE-0338](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0338-clarify-execution-non-actor-async.md) (Swift 5.7), a `nonisolated` async function never runs on an actor: calling it from the main actor hops to the global concurrent executor. [SE-0461](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md) (Swift 6.2) makes it run on the caller's actor instead, as `nonisolated(nonsending)`, so that sync and async nonisolated functions behave the same. A function that should always leave the actor says so with `@concurrent`.
+
+The new behaviour is the upcoming feature `NonisolatedNonsendingByDefault`. The Swift 6.4 compiler lists it as enabled by default in the Swift 7 language mode, not in Swift 6. I printed `pthread_main_np()` at each point, with and without the feature:
+
+```text
+                                    Swift 6 mode    + NonisolatedNonsendingByDefault
+@MainActor caller                   main thread     main thread
+nonisolated async, before await     pool thread     main thread
+nonisolated async, after await      pool thread     main thread
+@concurrent func                    pool thread     pool thread
+Task { } from the main actor        main thread     main thread
+Task.detached { }                   pool thread     pool thread
+```
+
+Xcode turns the feature on through the Approachable Concurrency build setting (`SWIFT_APPROACHABLE_CONCURRENCY`), which also enables `InferIsolatedConformances`, `InferSendableFromCaptures`, `GlobalActorIsolatedTypesUsability` and `DisableOutwardActorInference`. Xcode 27.1's new-project template sets it to YES. The same template still sets the Swift language version to 5, where most of the checks in this article are off or warnings, until you switch the target to Swift 6 or set Strict Concurrency Checking to Complete. So in a new app, a `nonisolated` async function runs on the main actor when the main actor calls it; in a Swift package or an older project, it runs on the pool. The same source, different threads.
+
+When work should leave the caller's actor, make that explicit:
+
+```swift
+import Foundation
+
+nonisolated struct Article: Decodable, Sendable {
+    let id: Int
+    let body: String
+}
+
+nonisolated struct ArticleDecoder {
+    @concurrent
+    func decode(_ data: Data) async throws -> [Article] {
+        try JSONDecoder().decode([Article].self, from: data)
+    }
+}
+```
+
+`@concurrent` keeps the SE-0338 behaviour in every mode, and it is visible in the signature, so the next reader does not need to know which build settings are on.
+
+> **In plain words:** `await` releases the thread while the function waits; it does not move work to the background. A `nonisolated` async function runs on the pool in Swift 6 mode, and on the caller's actor with `NonisolatedNonsendingByDefault`, which new Xcode projects enable. Mark CPU-heavy async work `@concurrent`.
+
+---
+
+## Main-actor default isolation
+
+[SE-0466](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md) (Swift 6.2) lets a module choose `MainActor` as its default isolation: `-default-isolation MainActor` for the compiler, `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` in Xcode, `.defaultIsolation(MainActor.self)` in a package manifest. Every declaration without an explicit isolation is then `@MainActor`: types, their methods, global functions and global variables. Xcode 27.1's app template sets it. Packages and older projects keep `nonisolated`.
+
+The reasoning is that most code in an app target is UI code that runs on the main thread anyway, and most data races in apps come from code that leaves it by accident. With this default, leaving the main actor is the thing you write down.
+
+It is a real change, and the compiler shows where. In my probe, a plain helper function that every other function called became a main-actor function and broke every nonisolated caller with `main actor-isolated global function 'onMain()' cannot be called from outside of the actor`. The case most apps hit is decoding:
+
+```text
+struct User: Decodable { let name: String }       // main-actor default
+
+@concurrent func decodeUser(_ data: Data) async throws -> User {
+    try JSONDecoder().decode(User.self, from: data)
+}
+
+error: main actor-isolated conformance of 'User' to 'Decodable' cannot be used in @concurrent context
+```
+
+The struct is main-actor isolated, so its `Decodable` conformance is too ([SE-0470](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0470-isolated-conformances.md)), and the decoder cannot use it off the main actor. Declaring the type `nonisolated struct User: Decodable` fixes it, which is why the models and protocols in the snippets of this article are marked `nonisolated`. Every snippet here compiles in both modes.
+
+> **In plain words:** with main-actor default isolation, everything in the module you did not annotate runs on the main actor. Data models, decoders and services that must run elsewhere need `nonisolated` or `@concurrent`, and the compiler will tell you which.
+
+---
+
+## Tasks: where they start and what they inherit
+
+A `Task` is a unit of async work that the runtime schedules. It has a priority, task-local values, a cancellation flag, and, when it is created inside an actor's code, that actor's isolation.
+
+**`Task { }`** inherits the isolation, priority and task-locals of the context that creates it. Created in main-actor code, its closure runs on the main actor. The original summary said `Task { }` performs "async work on a background thread without blocking the main thread"; the first part is wrong, and the probe table above shows it. It does not block the caller because the caller does not wait for it, not because it runs elsewhere.
+
+**`Task.detached { }`** inherits nothing: no actor, no priority, no task-locals. It runs on the pool. It is not a child of anything; it has no parent to run "concurrently with", as the original put it. Use it rarely, when inheriting the caller's context would be wrong.
+
+**`Task.immediate { }`** ([SE-0472](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0472-task-start-synchronously-on-caller-context.md), Swift 6.2) starts running synchronously, on the caller's thread, until its first suspension. A plain `Task { }` is enqueued and runs later. I logged the order in a main-actor function:
+
+```text
+1 before Task {}                    1 before Task.immediate
+2 after Task {}                     2 inside Task.immediate, before await
+3 inside Task {}                    3 after Task.immediate
+                                    4 inside Task.immediate, after await
+```
+
+That makes it the right tool when a button tap must update state in the same turn, before the next frame:
+
+```swift
+@MainActor
+final class SearchViewModel {
+    private(set) var isSearching = false
+
+    func search(_ query: String) {
+        Task.immediate {
+            isSearching = true                       // runs before search(_:) returns
+            try? await Task.sleep(for: .milliseconds(300))
+            isSearching = false
+        }
+    }
+}
+```
+
+The tasks above are unstructured: nothing waits for them, and nothing cancels them unless you keep the handle. **Structured** tasks are children of the task that creates them. `async let` starts one child per binding; a task group starts as many as you add. A child cannot outlive its scope: leaving the scope awaits the children, and cancelling the parent cancels them.
+
+```swift
+struct UserData: Sendable {
+    let name: String
+    let age: Int
+}
+
+protocol UserAPIProtocol: Sendable {
+    func user(id: Int) async throws -> UserData
+}
+
+func loadUsers(ids: [Int], api: any UserAPIProtocol) async throws -> [UserData] {
+    try await withThrowingTaskGroup { group in
+        for id in ids {
+            group.addTask { try await api.user(id: id) }
+        }
+        var users: [UserData] = []
+        for try await user in group {
+            users.append(user)                       // completion order, not ids order
+        }
+        return users
+    }
+}
+```
+
+Since Swift 6.1 the child result type is inferred, so `of: UserData.self` is optional ([SE-0442](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0442-allow-taskgroup-childtaskresult-type-to-be-inferred.md)). Results arrive in the order the children finish. If the order matters, return the id with the value and sort, or write into a dictionary.
+
+### Cancellation is cooperative
+
+Cancelling a task sets a flag. Nothing stops. Code that checks the flag, or calls something that does, such as `Task.sleep` or `URLSession`'s async methods, throws `CancellationError`. The original example swallowed that error:
+
+```swift
+let task = Task {
+    try? await Task.sleep(nanoseconds: 5_000_000_000)
+    print("Data fetched")
+}
+task.cancel()
+```
+
+`try?` turned the `CancellationError` into `nil`, so the task went on and printed "Data fetched" at once, 0 ms after cancelling. The task could not throw, so `try await task.value` drew a warning and its `catch` block was unreachable: "Task was cancelled" could never print. Let the error propagate:
+
+```swift
+func loadWithCancellation() async {
+    let task = Task {
+        try await Task.sleep(for: .seconds(5))
+        return "Data fetched"
+    }
+    task.cancel()
+    do {
+        print(try await task.value)
+    } catch is CancellationError {
+        print("Task was cancelled")
+    } catch {
+        print("Failed: \(error)")
+    }
+}
+```
+
+This prints "Task was cancelled". A long loop of your own should check `Task.isCancelled` or call `try Task.checkCancellation()` between iterations.
+
+Priority is a hint to the scheduler, not an order. When a higher-priority task awaits a lower-priority one, the runtime raises the lower one's priority so it is not stuck behind other work.
+
+> **In plain words:** `Task { }` runs where it was created, `Task.detached` runs on the pool and inherits nothing, `Task.immediate` starts before the caller continues. Children of `async let` and task groups end with their scope. Cancellation is a flag that your code has to respect.
+
+---
+
+## The original example, revisited
+
+The first version ended with this:
+
+```swift
+@MainActor
+func updateUI() async {
+    let userViewModel = UserViewModel()
+    // Run async task to fetch user data in a background task
+    Task {
+        let userData = await fetchUserData()
+        // After fetching, update UI on main thread
+        await userViewModel.updateUserName(userData.name)
+    }
+}
+```
+
+It compiles, with one warning: `no 'async' operations occur within 'await' expression` on the second `await`. That warning is the clue. The `Task` inherited the main actor, so its closure was already there, and `updateUserName` needed no hop. `fetchUserData()` is a `nonisolated` async function: on the pool in Swift 6 mode, on the main actor under `NonisolatedNonsendingByDefault`. It only sleeps, so either is harmless here; a real decode would not be. And the view model is created inside the function, so nothing keeps it or the task.
+
+The same idea, with the view model owning its task and its state:
+
+```swift
+nonisolated struct UserProfile: Sendable, Equatable {
+    let name: String
+    let age: Int
+}
+
+nonisolated protocol UserServiceProtocol: Sendable {
+    func fetchUser() async throws -> UserProfile
+}
+
+@MainActor
+final class UserViewModel {
+    enum State: Equatable {
+        case idle
+        case loading
+        case loaded(UserProfile)
+        case failed
+    }
+
+    private(set) var state: State = .idle
+    private let service: any UserServiceProtocol
+    private var loadTask: Task<Void, Never>?
+
+    init(service: any UserServiceProtocol) {
+        self.service = service
+    }
+
+    func load() {
+        loadTask?.cancel()
+        state = .loading
+        loadTask = Task {
+            do {
+                let user = try await service.fetchUser()
+                state = .loaded(user)
+            } catch is CancellationError {
+                return
+            } catch {
+                state = .failed
+            }
+        }
+    }
+}
+```
+
+The task runs on the main actor, so it writes `state` directly. The service call leaves the main actor or not depending on how the service declares it, and the main thread is free while it waits either way. A second `load()` cancels the first. A cancelled load leaves `state` to the load that replaced it.
+
+Since Swift 6.2, a `deinit` can be isolated too ([SE-0371](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0371-isolated-synchronous-deinit.md)). A plain `deinit` of a `@MainActor` class is nonisolated, because the last reference can be released on any thread. It may still cancel `loadTask`, a `Sendable` stored property, but calling one of the class's own methods from it fails with `call to main actor-isolated instance method 'log()' in a synchronous nonisolated context`. `isolated deinit` runs on the main actor, so it can. In my probe, it ran on the main thread.
+
+---
+
+## Old code at the boundary
+
+Most apps call APIs written before Swift concurrency. Three tools bridge them.
+
+**Continuations** turn a completion handler into an `async` function. Resume exactly once: the checked versions report a continuation that is never resumed and trap on a second resume.
+
+```swift
+import Foundation
+
+nonisolated func legacyFetch(completion: @escaping @Sendable (Result<String, any Error>) -> Void) {
+    DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+        completion(.success("Data fetched"))
+    }
+}
+
+nonisolated func fetchData() async throws -> String {
+    try await withCheckedThrowingContinuation { continuation in
+        legacyFetch { result in
+            continuation.resume(with: result)
+        }
+    }
+}
+```
+
+**`AsyncStream`** turns a source of many values into something you can `for await`. The original example started a producer task that looped forever. I ran it with the sleep shortened to 10 ms and stopped consuming after three values; 500 ms later the producer had run 37 times and was still going. The producer has to stop when the consumer does:
+
+```swift
+func numberStream() -> AsyncStream<Int> {
+    AsyncStream { continuation in
+        let producer = Task {
+            var current = 1
+            while !Task.isCancelled {
+                continuation.yield(current)
+                current += 1
+                try? await Task.sleep(for: .seconds(1))
+            }
+            continuation.finish()
+        }
+        continuation.onTermination = { _ in producer.cancel() }
+    }
+}
+
+func consumeNumbers() async {
+    for await number in numberStream() {
+        print(number)
+        if number == 3 { break }               // ends the stream and cancels the producer
+    }
+}
+```
+
+With `onTermination`, the producer stopped at three iterations and stayed there.
+
+**`@preconcurrency`** is about other people's code. The original described it as marking your own class as "written before concurrency" to relax the checks on it. Applied to your own declaration it does not relax anything about that declaration: `@preconcurrency final class LegacyClass: Sendable { var data: Int }` fails with the same `stored property 'data' ... is mutable` error. Its uses ([SE-0337](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0337-support-incremental-migration-to-concurrency-checking.md), [SE-0423](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0423-dynamic-actor-isolation.md)) are:
+
+- **`@preconcurrency import SomeModule`** for a module that has not adopted concurrency. I built a module in Swift 5 mode with a non-`Sendable` class, and used it from Swift 6 code. With a plain `import`, converting it to `any Sendable` was an error, and the compiler suggested the attribute. With `@preconcurrency import`, the diagnostic was gone, not even a warning. That is a promise you now keep by hand.
+- **On a library's own declarations**, so that adding `@MainActor` or `@Sendable` to an existing API does not break clients that have not adopted concurrency yet.
+- **On a conformance**, `extension Screen: @preconcurrency LegacyDelegate`, when a main-actor type implements a protocol whose requirements are not isolated. Swift 6 inserts a runtime check: if the old code calls the method off the main actor, the app traps instead of racing.
+
+That runtime check is the part of Swift 6 that is not compile-time. Closures isolated to an actor and passed to code that was not compiled with concurrency checking get the same check ([SE-0423](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0423-dynamic-actor-isolation.md)). [The RunLoop article](/articles/runloop-main-vs-dispatchqueue-main/) shows it trapping in a Combine `sink`.
+
+> **In plain words:** wrap callbacks in a checked continuation and resume it once. Make every stream stop its producer on termination. `@preconcurrency` silences checks for code you do not own; it is not a way to make your own code safe.
+
+---
+
+## Takeaways
+
+> **A data race is lost work, not a crash.** Two threads, one `count += 1`, 46% of the increments gone in a release build, and a debug build that hides most of it.
+
+> **Isolation is the model.** Every piece of mutable state belongs to the main actor, an actor, or nothing. Outside its domain, you `await`.
+
+> **Sendable is a checked promise.** It proves a value can be shared without a race. It makes nothing atomic and does not stop logic races across an `await`. `@unchecked` turns the proof off.
+
+> **A value can move without being Sendable.** If the sender cannot reach it afterwards, region-based isolation lets it go.
+
+> **async is not background.** `await` frees the thread; isolation decides where the code runs. `Task { }` from the main actor runs on the main actor.
+
+> **Know your build settings.** `NonisolatedNonsendingByDefault` moves nonisolated async functions onto the caller's actor, and main-actor default isolation moves everything else there. New Xcode projects enable both. Write `@concurrent` and `nonisolated` where it matters, so the code says what it does in any configuration.
+
+> **Cancellation is cooperative.** `try?` around a cancellable call swallows the cancellation.
+
+---
+
+## References
+
+**Swift Evolution** — [SE-0296: async/await](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0296-async-await.md) · [SE-0302: Sendable and @Sendable closures](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0302-concurrent-value-and-concurrent-closures.md) · [SE-0304: Structured concurrency](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0304-structured-concurrency.md) · [SE-0306: Actors](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md) · [SE-0316: Global actors](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0316-global-actors.md) · [SE-0337: Incremental migration to concurrency checking](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0337-support-incremental-migration-to-concurrency-checking.md) · [SE-0338: Execution of non-actor-isolated async functions](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0338-clarify-execution-non-actor-async.md) · [SE-0371: Isolated synchronous deinit](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0371-isolated-synchronous-deinit.md) · [SE-0412: Strict concurrency for global variables](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0412-strict-concurrency-for-global-variables.md) · [SE-0414: Region based isolation](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0414-region-based-isolation.md) · [SE-0423: Dynamic actor isolation enforcement](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0423-dynamic-actor-isolation.md) · [SE-0430: sending parameter and result values](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0430-transferring-parameters-and-results.md) · [SE-0433: Mutex](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0433-mutex.md) · [SE-0442: TaskGroup child result type inference](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0442-allow-taskgroup-childtaskresult-type-to-be-inferred.md) · [SE-0461: Run nonisolated async functions on the caller's actor by default](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md) · [SE-0466: Control default actor isolation inference](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md) · [SE-0470: Global-actor isolated conformances](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0470-isolated-conformances.md) · [SE-0472: Starting tasks synchronously from caller context](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0472-task-start-synchronously-on-caller-context.md)
+
+**The Swift Programming Language** — [Concurrency](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/) · [Swift 6 migration guide: data race safety](https://www.swift.org/migration/documentation/swift-6-concurrency-migration-guide/dataracesafety)
+
+**Apple** — [Concurrency](https://developer.apple.com/documentation/swift/concurrency) · [`Task`](https://developer.apple.com/documentation/swift/task) · [`Mutex`](https://developer.apple.com/documentation/synchronization/mutex) · [Diagnosing memory, thread, and crash issues early (Thread Sanitizer)](https://developer.apple.com/documentation/xcode/diagnosing-memory-thread-and-crash-issues-early) · [WWDC21: Swift concurrency: Behind the scenes](https://developer.apple.com/videos/play/wwdc2021/10254/)

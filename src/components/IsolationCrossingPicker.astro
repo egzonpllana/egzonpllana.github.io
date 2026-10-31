@@ -1,0 +1,710 @@
+---
+/**
+ * Pick a value on the main actor and send it to another isolation domain:
+ * an actor method, or a closure handed to Task.detached. The figure shows
+ * whether Swift 6 accepts it and, when it does not, the diagnostic.
+ *
+ * Two module settings: the default (nonisolated) and main-actor default
+ * isolation (SE-0466, the Xcode 26+ app template). Under the second, every
+ * unannotated class is main-actor isolated and therefore Sendable, so values
+ * cross; their mutable state stays behind on the main actor.
+ *
+ * Every diagnostic is copied from Swift 6.4 (Xcode 27.1) in Swift 6 language
+ * mode, from one probe per row.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '02',
+  caption = 'Every arrow is a value one domain hands to another while both may be running. The compiler lets it through when the value is Sendable, or when it can prove the sender no longer reaches it. With main-actor default isolation, plain classes cross because they become main-actor isolated; their state can then be touched only on the main actor.',
+} = Astro.props;
+
+type Verdict = 'ok' | 'error' | 'unchecked' | 'stays';
+interface Outcome {
+  verdict: Verdict;
+  why: string;
+  actorDiag?: string[];
+  detachedDiag?: string[];
+}
+interface Value {
+  id: string;
+  label: string;
+  decl: string;
+  /** Lines before the send, in the sending function. */
+  setup?: string;
+  /** What is sent: a local, a parameter or a property. */
+  name: string;
+  /** The sending function's parameter, when the value arrives as one. */
+  param?: string;
+  /** A line after the send, when the sender keeps using the value. */
+  after?: string;
+  plain: Outcome;
+  main: Outcome;
+}
+
+const values: Value[] = [
+  {
+    id: 'struct',
+    label: 'struct with vars',
+    decl: 'struct Coordinates { var latitude: Double; var longitude: Double }',
+    setup: 'let c = Coordinates(latitude: 1, longitude: 2)',
+    name: 'c',
+    plain: {
+      verdict: 'ok',
+      why: 'A struct is copied on the way, so each domain has its own copy and nothing is shared. An internal struct whose stored properties are Sendable is Sendable without saying so.',
+    },
+    main: {
+      verdict: 'ok',
+      why: 'Still a copy. The struct is now main-actor isolated, so its methods are main-actor methods, but its Sendable stored properties can be read by whoever holds the copy.',
+    },
+  },
+  {
+    id: 'profile',
+    label: 'final class: Sendable, lets',
+    decl: 'final class Profile: Sendable { let name: String }',
+    name: 'p',
+    param: '_ p: Profile',
+    plain: {
+      verdict: 'ok',
+      why: 'One shared instance, but nobody can write to it. The conformance is checked: add a var and the declaration stops compiling.',
+    },
+    main: {
+      verdict: 'ok',
+      why: 'Same answer. Immutable Sendable state can be read anywhere.',
+    },
+  },
+  {
+    id: 'snapshot',
+    label: 'final class, lets, no Sendable',
+    decl: 'final class Snapshot { let name: String }',
+    name: 's',
+    param: '_ s: Snapshot',
+    plain: {
+      verdict: 'error',
+      why: 'Classes are never inferred Sendable, even with only lets. The value came in as a parameter, so the main actor may still hold it. Writing : Sendable would compile.',
+      actorDiag: [
+        "error: sending 's' risks causing data races",
+        "note: sending main actor-isolated 's' to actor-isolated instance method 'store' risks causing data races between actor-isolated and main actor-isolated uses",
+      ],
+      detachedDiag: [
+        "error: passing closure as a 'sending' parameter risks causing data races between main actor-isolated code and concurrent execution of the closure",
+        "note: closure captures 'v' which is accessible to main actor-isolated code",
+      ],
+    },
+    main: {
+      verdict: 'ok',
+      why: 'The class is main-actor isolated, and that makes it Sendable. Its let properties of Sendable type can be read from any domain.',
+    },
+  },
+  {
+    id: 'draft-sendable',
+    label: 'class with a var, marked Sendable',
+    decl: 'final class Draft: Sendable { var text = "" }',
+    name: 'd',
+    param: '_ d: Draft',
+    plain: {
+      verdict: 'error',
+      why: 'Sendable is checked where the type is declared. A var in a Sendable class would be mutable state shared by every domain that holds it.',
+      actorDiag: [
+        "error: stored property 'text' of 'Sendable'-conforming class 'Draft' is mutable",
+      ],
+      detachedDiag: [
+        "error: stored property 'text' of 'Sendable'-conforming class 'Draft' is mutable",
+      ],
+    },
+    main: {
+      verdict: 'stays',
+      why: 'Compiles: text is protected by the main actor. The receiver holds a reference it cannot use for that state without going back to the main actor.',
+      actorDiag: [
+        "error: main actor-isolated property 'text' can not be referenced on a nonisolated actor instance",
+      ],
+      detachedDiag: [
+        "error: main actor-isolated property 'text' cannot be accessed from outside of the actor",
+      ],
+    },
+  },
+  {
+    id: 'fresh',
+    label: 'new class instance, not used after',
+    decl: 'final class Draft { var text = "" }',
+    setup: 'let d = Draft()\nd.text = "Hello"',
+    name: 'd',
+    plain: {
+      verdict: 'ok',
+      why: 'Region-based isolation (SE-0414): the compiler sees that nothing on the main actor can reach d after the call, so the value moves to the other domain instead of being shared.',
+    },
+    main: {
+      verdict: 'stays',
+      why: 'Crosses because the class is main-actor isolated. Its text can only be touched on the main actor, wherever the reference goes.',
+      actorDiag: [
+        "error: main actor-isolated property 'text' can not be referenced on a nonisolated actor instance",
+      ],
+      detachedDiag: [
+        "error: main actor-isolated property 'text' cannot be accessed from outside of the actor",
+      ],
+    },
+  },
+  {
+    id: 'used',
+    label: 'new class instance, used after',
+    decl: 'final class Draft { var text = "" }',
+    setup: 'let d = Draft()',
+    name: 'd',
+    after: 'd.text = "again"',
+    plain: {
+      verdict: 'error',
+      why: 'The same instance, but the main actor writes to it after sending it. Both domains could touch text at once.',
+      actorDiag: [
+        "error: sending 'd' risks causing data races",
+        "note: sending 'd' to actor-isolated instance method 'store' risks causing data races between actor-isolated and local main actor-isolated uses",
+        'note: access can happen concurrently',
+      ],
+      detachedDiag: [
+        "error: sending value of non-Sendable type '() async -> ()' risks causing data races",
+        'note: access can happen concurrently',
+      ],
+    },
+    main: {
+      verdict: 'stays',
+      why: 'Compiles. The later write runs on the main actor, and the receiver cannot touch text without going back there.',
+      actorDiag: [
+        "error: main actor-isolated property 'text' can not be referenced on a nonisolated actor instance",
+      ],
+      detachedDiag: [
+        "error: main actor-isolated property 'text' cannot be accessed from outside of the actor",
+      ],
+    },
+  },
+  {
+    id: 'stored',
+    label: 'class stored on a view model',
+    decl: '@MainActor final class EditorViewModel { var draft = Draft() }',
+    name: 'vm.draft',
+    param: '_ vm: EditorViewModel',
+    plain: {
+      verdict: 'error',
+      why: 'The draft is reachable from main-actor state, so the main actor can always touch it again. It can never be given away.',
+      actorDiag: [
+        "error: sending 'vm.draft' risks causing data races",
+        "note: sending main actor-isolated 'vm.draft' to actor-isolated instance method 'store' risks causing data races between actor-isolated and main actor-isolated uses",
+      ],
+      detachedDiag: [
+        "error: passing closure as a 'sending' parameter risks causing data races between main actor-isolated code and concurrent execution of the closure",
+        "note: closure captures 'v' which is accessible to main actor-isolated code",
+      ],
+    },
+    main: {
+      verdict: 'stays',
+      why: 'Draft is main-actor isolated, so the reference crosses. Its state still belongs to the main actor.',
+      actorDiag: [
+        "error: main actor-isolated property 'text' can not be referenced on a nonisolated actor instance",
+      ],
+      detachedDiag: [
+        "error: main actor-isolated property 'text' cannot be accessed from outside of the actor",
+      ],
+    },
+  },
+  {
+    id: 'actor',
+    label: 'actor',
+    decl: 'actor Ledger { var entries = 0 }',
+    name: 'l',
+    param: '_ l: Ledger',
+    plain: {
+      verdict: 'ok',
+      why: 'An actor reference is always Sendable. Its state is reachable only through its own queue, with await.',
+    },
+    main: {
+      verdict: 'ok',
+      why: 'Unchanged. An actor is its own isolation domain; default isolation does not apply to it.',
+    },
+  },
+  {
+    id: 'unchecked',
+    label: '@unchecked Sendable, var, no lock',
+    decl: 'final class Tally: @unchecked Sendable { var count = 0 }',
+    name: 't',
+    param: '_ t: Tally',
+    after: 't.count += 1',
+    plain: {
+      verdict: 'unchecked',
+      why: 'Compiles, because @unchecked turns the check off. With a bare var and no lock this is the counter from Fig 01, and nothing will tell you.',
+    },
+    main: {
+      verdict: 'stays',
+      why: 'Compiles, and is accidentally safe: the class is main-actor isolated, so count is protected by the main actor and the receiver cannot touch it.',
+      actorDiag: [
+        "error: main actor-isolated property 'count' can not be referenced on a nonisolated actor instance",
+      ],
+      detachedDiag: [
+        "error: main actor-isolated property 'count' cannot be accessed from outside of the actor",
+      ],
+    },
+  },
+];
+
+const verdictLabel: Record<Verdict, string> = {
+  ok: 'crosses',
+  error: 'compile error',
+  unchecked: 'compiles, unchecked',
+  stays: 'crosses, state stays on main',
+};
+---
+
+<VizFrame
+  fig={fig}
+  title="Can this value cross an isolation boundary?"
+  caption={caption}
+  class="icp"
+  data-icp
+>
+  <div class="icp__bar">
+    <div class="icp__ctl">
+      <span class="viz-label">module default</span>
+      <div class="viz-seg" role="group" aria-label="Module default isolation">
+        <button type="button" aria-pressed="true" data-iso="plain"
+          >nonisolated</button
+        >
+        <button type="button" aria-pressed="false" data-iso="main"
+          >MainActor</button
+        >
+      </div>
+    </div>
+    <div class="icp__ctl">
+      <span class="viz-label">send to</span>
+      <div class="viz-seg" role="group" aria-label="Receiver">
+        <button type="button" aria-pressed="true" data-to="actor"
+          >an actor</button
+        >
+        <button type="button" aria-pressed="false" data-to="detached"
+          >Task.detached</button
+        >
+      </div>
+    </div>
+  </div>
+
+  <div class="icp__map" data-map>
+    <div class="icp__domain viz-panel">
+      <span class="viz-label">sender</span>
+      <b>@MainActor func save()</b>
+      <span class="viz-chip viz-chip--sound icp__token" data-token-from
+        >value</span
+      >
+    </div>
+    <div class="icp__edge" aria-hidden="true">
+      <span class="icp__arrow"></span>
+      <span class="icp__edge-label viz-mono" data-edge-label>crosses</span>
+    </div>
+    <div class="icp__domain viz-panel">
+      <span class="viz-label">receiver</span>
+      <b data-receiver>actor Archive</b>
+      <span class="viz-chip viz-chip--sound icp__token" data-token-to
+        >value</span
+      >
+    </div>
+  </div>
+
+  <ul class="icp__values" aria-label="Value to send">
+    {
+      values.map((v, i) => (
+        <li>
+          <button
+            type="button"
+            class="icp__value"
+            aria-pressed={i === 0 ? 'true' : 'false'}
+            data-value={v.id}
+          >
+            {v.label}
+          </button>
+        </li>
+      ))
+    }
+  </ul>
+
+  <div class="icp__detail viz-panel" aria-live="polite">
+    <pre class="icp__code"><code data-code /></pre>
+    <span class="icp__verdict" data-verdict></span>
+    <p class="icp__why" data-why></p>
+    <div class="icp__diag" data-diag hidden></div>
+  </div>
+
+  <div class="viz-legend icp__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>the value</span>
+    <span><i style="--c:var(--viz-meta)"></i>isolation domain</span>
+    <span><i style="--c:var(--viz-net)"></i>crosses</span>
+    <span><i style="--c:var(--viz-level)"></i>compiles, not checked</span>
+    <span><i style="--c:var(--viz-bad)"></i>compile error</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-icp-data
+    set:html={JSON.stringify({ values, verdictLabel })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const RECEIVER = {
+      actor: 'actor Archive',
+      detached: 'Task.detached { … }',
+    };
+
+    // The sending function, written exactly as the probe behind each row.
+    function sendingCode(v, iso, to) {
+      const params = [v.param, to === 'actor' ? 'to archive: Archive' : null]
+        .filter(Boolean)
+        .join(', ');
+      const body = [
+        ...(v.setup ? v.setup.split('\n') : []),
+        ...(to === 'actor'
+          ? [`await archive.store(${v.name})`]
+          : [`let v = ${v.name}`, 'Task.detached { print(v) }']),
+        ...(v.after ? [v.after] : []),
+      ];
+      return [
+        iso === 'main' ? '// module default isolation: MainActor' : null,
+        v.decl,
+        '',
+        `@MainActor func save(${params}) async {`,
+        ...body.map((line) => `    ${line}`),
+        '}',
+      ]
+        .filter((line) => line !== null)
+        .join('\n');
+    }
+
+    function initCrossingPicker(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const { values, verdictLabel } = JSON.parse(
+        root.querySelector('[data-icp-data]').textContent,
+      );
+      const valueBtns = [...root.querySelectorAll('[data-value]')];
+      const isoBtns = [...root.querySelectorAll('[data-iso]')];
+      const toBtns = [...root.querySelectorAll('[data-to]')];
+      const map = root.querySelector('[data-map]');
+      const receiverEl = root.querySelector('[data-receiver]');
+      const tokenFrom = root.querySelector('[data-token-from]');
+      const tokenTo = root.querySelector('[data-token-to]');
+      const edgeLabel = root.querySelector('[data-edge-label]');
+      const codeEl = root.querySelector('[data-code]');
+      const verdictEl = root.querySelector('[data-verdict]');
+      const whyEl = root.querySelector('[data-why]');
+      const diagEl = root.querySelector('[data-diag]');
+
+      let iso = 'plain';
+      let to = 'actor';
+      let selected = values[0].id;
+
+      function render() {
+        const v = values.find((x) => x.id === selected);
+        const out = v[iso];
+        const diag = (to === 'actor' ? out.actorDiag : out.detachedDiag) || [];
+
+        valueBtns.forEach((b) =>
+          b.setAttribute('aria-pressed', String(b.dataset.value === selected)),
+        );
+        map.dataset.verdict = out.verdict;
+        receiverEl.textContent = RECEIVER[to];
+        tokenFrom.textContent = v.name;
+        tokenTo.textContent = v.name;
+        tokenTo.hidden = out.verdict === 'error';
+        edgeLabel.textContent =
+          out.verdict === 'error' ? 'blocked' : verdictLabel[out.verdict];
+        codeEl.textContent = sendingCode(v, iso, to);
+
+        verdictEl.textContent = verdictLabel[out.verdict];
+        verdictEl.className = `icp__verdict is-${out.verdict}`;
+        // A main-actor-isolated value crosses; the error comes only when the
+        // receiver reaches for its state.
+        whyEl.textContent =
+          out.verdict === 'stays' && diag.length
+            ? `${out.why} If the receiver reads that state directly:`
+            : out.why;
+
+        diagEl.replaceChildren(
+          ...diag.map((line) => {
+            const code = document.createElement('code');
+            code.textContent = line;
+            if (line.startsWith('note')) code.className = 'is-note';
+            return code;
+          }),
+        );
+        diagEl.hidden = diag.length === 0;
+        diagEl.classList.toggle('is-soft', out.verdict === 'stays');
+      }
+
+      valueBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          selected = btn.dataset.value;
+          render();
+        }),
+      );
+      isoBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          iso = btn.dataset.iso;
+          isoBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+      toBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          to = btn.dataset.to;
+          toBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-icp]').forEach(initCrossingPicker);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .icp__bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-4);
+    margin-bottom: var(--sp-3);
+  }
+  .icp__ctl {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px var(--sp-2);
+  }
+
+  .icp__map {
+    --edge: var(--viz-net);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(72px, 0.6fr) minmax(0, 1fr);
+    align-items: stretch;
+    gap: var(--sp-2);
+  }
+  .icp__map[data-verdict='error'] {
+    --edge: var(--viz-bad);
+  }
+  .icp__map[data-verdict='unchecked'] {
+    --edge: var(--viz-level);
+  }
+  .icp__domain {
+    display: grid;
+    align-content: start;
+    justify-items: start;
+    gap: 6px;
+    min-width: 0;
+    padding: var(--sp-3);
+    border-color: color-mix(in srgb, var(--viz-meta) 55%, var(--border));
+    background: color-mix(in srgb, var(--viz-meta) 5%, var(--viz-panel));
+  }
+  .icp__domain b {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--viz-meta);
+    overflow-wrap: anywhere;
+  }
+  .icp__token {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .icp__edge {
+    display: grid;
+    align-content: center;
+    justify-items: center;
+    gap: 6px;
+  }
+  .icp__arrow {
+    position: relative;
+    width: 100%;
+    height: 2px;
+    background: var(--edge);
+  }
+  .icp__arrow::after {
+    content: '';
+    position: absolute;
+    right: -1px;
+    top: -4px;
+    border: 5px solid transparent;
+    border-left: 7px solid var(--edge);
+    border-right: 0;
+  }
+  .icp__map[data-verdict='error'] .icp__arrow {
+    background: repeating-linear-gradient(
+      90deg,
+      var(--edge) 0 6px,
+      transparent 6px 10px
+    );
+  }
+  .icp__map[data-verdict='error'] .icp__arrow::after {
+    content: '×';
+    top: -11px;
+    right: 50%;
+    transform: translateX(50%);
+    border: 0;
+    font-family: var(--font-mono);
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--edge);
+    background: var(--bg-subtle);
+    padding: 0 2px;
+  }
+  .icp__edge-label {
+    font-size: 10.5px;
+    font-weight: 600;
+    text-align: center;
+    color: var(--edge);
+  }
+
+  .icp__values {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: var(--sp-4);
+  }
+  .icp__value {
+    padding: 5px 10px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--fg-muted);
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition:
+      border-color 0.2s var(--ease),
+      background 0.2s var(--ease);
+  }
+  .icp__value:hover {
+    border-color: var(--border-strong);
+  }
+  .icp__value:focus-visible {
+    outline: 2px solid var(--viz-meta);
+    outline-offset: 2px;
+  }
+  .icp__value[aria-pressed='true'] {
+    color: var(--fg);
+    font-weight: 600;
+    border-color: var(--viz-sound);
+    background: color-mix(in srgb, var(--viz-sound) 10%, var(--viz-panel));
+  }
+
+  .icp__detail {
+    display: grid;
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .icp__code {
+    margin: 0;
+    padding: var(--sp-2) var(--sp-3);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .icp__code code {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--fg);
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+  .icp__verdict {
+    --c: var(--viz-net);
+    justify-self: start;
+    padding: 2px 9px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--c);
+    border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--c) 10%, transparent);
+  }
+  .icp__verdict.is-error {
+    --c: var(--viz-bad);
+  }
+  .icp__verdict.is-unchecked {
+    --c: var(--viz-level);
+  }
+  .icp__verdict.is-stays {
+    --c: var(--viz-meta);
+  }
+  .icp__why {
+    margin: 0;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+  .icp__diag {
+    display: grid;
+    gap: 4px;
+    padding: var(--sp-2);
+    background: color-mix(in srgb, var(--viz-bad) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--viz-bad) 35%, transparent);
+    border-radius: 6px;
+  }
+  .icp__diag.is-soft {
+    background: color-mix(in srgb, var(--viz-meta) 7%, transparent);
+    border-color: color-mix(in srgb, var(--viz-meta) 35%, transparent);
+  }
+  .icp__diag :global(code) {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--viz-bad);
+    background: none;
+    border: 0;
+    padding: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+  .icp__diag.is-soft :global(code) {
+    color: var(--viz-meta);
+  }
+  .icp__diag :global(code.is-note) {
+    color: var(--fg-muted);
+  }
+  .icp__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 560px) {
+    .icp__map {
+      grid-template-columns: minmax(0, 1fr) 44px minmax(0, 1fr);
+      gap: 4px;
+    }
+    .icp__domain {
+      padding: var(--sp-2);
+    }
+    .icp__edge-label {
+      font-size: 9.5px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .icp__value {
+      transition: none;
+    }
+  }
+</style>

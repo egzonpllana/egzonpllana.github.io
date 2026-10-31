@@ -1,0 +1,493 @@
+---
+/**
+ * One call from a main-actor view model into a nonisolated async function,
+ * drawn as rows in time order across three lanes: the main actor, the
+ * cooperative pool, and "suspended", where nothing runs on any thread.
+ *
+ * Three settings:
+ *   - Swift 6 language mode as shipped (SE-0338): a nonisolated async function
+ *     always leaves the caller's actor and runs on the global executor.
+ *   - NonisolatedNonsendingByDefault (SE-0461, Swift 6.2): it runs on the
+ *     caller's actor, so the decode after the await runs on the main thread.
+ *   - The same, with the decode moved into a @concurrent function.
+ *
+ * The thread placement matches a Swift 6.4 probe that printed
+ * pthread_main_np() at each point under each setting.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '03',
+  caption = 'async says nothing about threads. Where each piece runs depends on the function’s isolation, and for a nonisolated async function, on a compiler setting. While the request is in flight, no thread is used at all and the main actor runs other work. What changes between the settings is where the decode after the await runs.',
+} = Astro.props;
+
+type Lane = 'main' | 'pool' | 'wait';
+interface Row {
+  lane: Lane;
+  code: string;
+  note: string;
+  hop?: string;
+  bad?: boolean;
+  also?: string;
+}
+interface Mode {
+  label: string;
+  decl: string;
+  hops: number;
+  decodeOn: string;
+  rows: Row[];
+}
+
+const waitRow: Row = {
+  lane: 'wait',
+  code: 'try await session.data(for: request)',
+  note: 'Suspended. The function’s state is saved off the stack and no thread waits for the response.',
+  also: 'main actor free: touches, frames, other jobs',
+};
+
+const modes: Record<'se0338' | 'nonsending' | 'concurrent', Mode> = {
+  se0338: {
+    label: 'Swift 6 mode',
+    decl: 'nonisolated func loadFeed() async throws -> [FeedItem]',
+    hops: 2,
+    decodeOn: 'a pool thread',
+    rows: [
+      {
+        lane: 'main',
+        code: 'isLoading = true',
+        note: 'refresh() starts on the main actor.',
+      },
+      {
+        lane: 'pool',
+        code: 'let request = makeRequest()',
+        note: 'SE-0338: a nonisolated async function never runs on an actor, so the call leaves the main actor.',
+        hop: 'hop off main',
+      },
+      waitRow,
+      {
+        lane: 'pool',
+        code: 'return try decode(data)',
+        note: 'The response arrives and loadFeed resumes on the pool. The CPU work runs there.',
+      },
+      {
+        lane: 'main',
+        code: 'items = feed; isLoading = false',
+        note: 'refresh() is main-actor code, so its continuation is enqueued on the main actor.',
+        hop: 'hop to main',
+      },
+    ],
+  },
+  nonsending: {
+    label: 'nonisolated(nonsending)',
+    decl: 'nonisolated func loadFeed() async throws -> [FeedItem]  // runs on the caller’s actor',
+    hops: 0,
+    decodeOn: 'the main thread',
+    rows: [
+      {
+        lane: 'main',
+        code: 'isLoading = true',
+        note: 'refresh() starts on the main actor.',
+      },
+      {
+        lane: 'main',
+        code: 'let request = makeRequest()',
+        note: 'SE-0461: the same declaration now runs on the caller’s actor. No hop.',
+      },
+      waitRow,
+      {
+        lane: 'main',
+        code: 'return try decode(data)',
+        note: 'loadFeed resumes on the main actor, because that is its caller’s. A large payload decodes on the main thread while the user is scrolling.',
+        bad: true,
+      },
+      {
+        lane: 'main',
+        code: 'items = feed; isLoading = false',
+        note: 'Already on the main actor. No hop back either.',
+      },
+    ],
+  },
+  concurrent: {
+    label: '+ @concurrent decode',
+    decl: '@concurrent func decode(_ data: Data) async throws -> [FeedItem]',
+    hops: 2,
+    decodeOn: 'a pool thread',
+    rows: [
+      {
+        lane: 'main',
+        code: 'isLoading = true',
+        note: 'refresh() starts on the main actor.',
+      },
+      {
+        lane: 'main',
+        code: 'let request = makeRequest()',
+        note: 'Cheap work stays on the caller’s actor, with no hop.',
+      },
+      waitRow,
+      {
+        lane: 'pool',
+        code: 'return try await decoder.decode(data)',
+        note: '@concurrent says, in the signature, that this function always leaves the actor. Only the expensive part moves.',
+        hop: 'hop off main',
+      },
+      {
+        lane: 'main',
+        code: 'items = feed; isLoading = false',
+        note: 'The result comes back to the main actor.',
+        hop: 'hop to main',
+      },
+    ],
+  },
+};
+
+const lanes: { id: Lane; name: string; sub: string }[] = [
+  { id: 'main', name: 'Main actor', sub: 'main thread' },
+  { id: 'pool', name: 'Concurrent pool', sub: 'any pool thread' },
+  { id: 'wait', name: 'Suspended', sub: 'no thread' },
+];
+---
+
+<VizFrame
+  fig={fig}
+  title="Where each piece of an async call runs"
+  caption={caption}
+  class="aht"
+  data-aht
+>
+  <div class="aht__bar">
+    <div class="viz-seg" role="group" aria-label="Compiler setting">
+      {
+        Object.entries(modes).map(([id, mode], i) => (
+          <button
+            type="button"
+            aria-pressed={i === 0 ? 'true' : 'false'}
+            data-mode={id}
+          >
+            {mode.label}
+          </button>
+        ))
+      }
+    </div>
+  </div>
+
+  <p class="aht__decl viz-mono" data-decl></p>
+
+  <div class="aht__readout">
+    <div>
+      <span class="viz-label">main-actor hops</span>
+      <span class="viz-chip viz-chip--net" data-hops></span>
+    </div>
+    <div>
+      <span class="viz-label">decode runs on</span>
+      <span class="viz-chip viz-chip--level" data-decode></span>
+    </div>
+  </div>
+
+  <div class="aht__board viz-panel">
+    <div class="aht__lanes" aria-hidden="true">
+      {
+        lanes.map((l) => (
+          <span class:list={['aht__lane-head', `is-${l.id}`]}>
+            <b>{l.name}</b>
+            <span>{l.sub}</span>
+          </span>
+        ))
+      }
+    </div>
+    <ol class="aht__rows" data-rows aria-live="polite"></ol>
+  </div>
+
+  <div class="viz-legend aht__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-meta)"></i>executor lane</span>
+    <span><i style="--c:var(--viz-net)"></i>hop between executors</span>
+    <span><i style="--c:var(--viz-bad)"></i>CPU work on the main thread</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-aht-data
+    set:html={JSON.stringify({ modes, lanes })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initHopTimeline(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const { modes, lanes } = JSON.parse(
+        root.querySelector('[data-aht-data]').textContent,
+      );
+      const laneIndex = Object.fromEntries(lanes.map((l, i) => [l.id, i]));
+      const laneName = Object.fromEntries(lanes.map((l) => [l.id, l.name]));
+      const modeBtns = [...root.querySelectorAll('[data-mode]')];
+      const rowsEl = root.querySelector('[data-rows]');
+      const declEl = root.querySelector('[data-decl]');
+      const hopsEl = root.querySelector('[data-hops]');
+      const decodeEl = root.querySelector('[data-decode]');
+
+      let mode = 'se0338';
+
+      function block(row) {
+        const div = document.createElement('div');
+        div.className = `aht__block is-${row.lane}`;
+        if (row.bad) div.classList.add('is-bad');
+        div.style.gridColumn = String(laneIndex[row.lane] + 2);
+        div.style.gridRow = row.hop ? '2' : '1';
+        const tag = document.createElement('span');
+        tag.className = 'aht__tag';
+        tag.textContent = laneName[row.lane];
+        const code = document.createElement('code');
+        code.textContent = row.code;
+        const note = document.createElement('span');
+        note.className = 'aht__note';
+        note.textContent = row.note;
+        div.append(tag, code, note);
+        return div;
+      }
+
+      function render() {
+        const m = modes[mode];
+        root.dataset.mode = mode;
+        declEl.textContent = m.decl;
+        hopsEl.textContent = String(m.hops);
+        decodeEl.textContent = m.decodeOn;
+        decodeEl.className = `viz-chip ${m.decodeOn === 'the main thread' ? 'viz-chip--bad' : 'viz-chip--level'}`;
+
+        rowsEl.replaceChildren(
+          ...m.rows.map((row, i) => {
+            const li = document.createElement('li');
+            li.className = 'aht__row';
+            const num = document.createElement('span');
+            num.className = 'aht__num';
+            num.textContent = String(i + 1).padStart(2, '0');
+            li.append(num);
+            if (row.hop) {
+              const hop = document.createElement('span');
+              hop.className = 'aht__hop viz-chip viz-chip--net';
+              hop.textContent = row.hop;
+              hop.style.gridColumn = String(laneIndex[row.lane] + 2);
+              hop.style.gridRow = '1';
+              li.append(hop);
+            }
+            li.append(block(row));
+            if (row.also) {
+              const free = document.createElement('div');
+              free.className = 'aht__free';
+              free.style.gridColumn = '2';
+              free.style.gridRow = '1';
+              free.textContent = row.also;
+              li.append(free);
+            }
+            return li;
+          }),
+        );
+      }
+
+      modeBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          mode = btn.dataset.mode;
+          modeBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-aht]').forEach(initHopTimeline);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .aht__bar {
+    margin-bottom: var(--sp-3);
+  }
+  .aht__bar .viz-seg {
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+  .aht__decl {
+    margin: 0 0 var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    font-size: 11.5px;
+    color: var(--fg);
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow-wrap: anywhere;
+  }
+  .aht__readout {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-5);
+    margin-bottom: var(--sp-3);
+  }
+  .aht__readout div {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+
+  .aht__board {
+    --cols: repeat(3, minmax(0, 1fr));
+    padding: var(--sp-2) var(--sp-3) var(--sp-3) var(--sp-2);
+  }
+  .aht__lanes,
+  .aht__rows :global(.aht__row) {
+    display: grid;
+    grid-template-columns: 28px var(--cols);
+    column-gap: var(--sp-2);
+  }
+  .aht__lanes {
+    padding-bottom: var(--sp-2);
+    border-bottom: 1px solid var(--border);
+  }
+  .aht__lane-head {
+    display: grid;
+    gap: 1px;
+    padding-left: 8px;
+    border-left: 3px solid var(--viz-meta);
+  }
+  .aht__lane-head:first-child {
+    grid-column: 2;
+  }
+  .aht__lane-head.is-pool {
+    border-left-color: color-mix(in srgb, var(--viz-meta) 55%, transparent);
+  }
+  .aht__lane-head.is-wait {
+    border-left: 3px dashed var(--border-strong);
+  }
+  .aht__lane-head b {
+    font-size: 12.5px;
+    color: var(--fg);
+  }
+  .aht__lane-head span {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+
+  .aht__rows {
+    display: grid;
+  }
+  .aht__rows :global(.aht__row) {
+    row-gap: 4px;
+    padding: var(--sp-2) 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .aht__rows :global(.aht__row:last-child) {
+    border-bottom: 0;
+  }
+  .aht__rows :global(.aht__num) {
+    grid-column: 1;
+    grid-row: 1 / span 3;
+    padding-top: 4px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--fg-faint);
+  }
+  .aht__rows :global(.aht__hop) {
+    grid-row: 1;
+    justify-self: start;
+    margin-left: 1px;
+  }
+  .aht__rows :global(.aht__block) {
+    --c: var(--viz-meta);
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    padding: 6px 8px;
+    background: color-mix(in srgb, var(--c) 8%, var(--viz-panel));
+    border: 1px solid color-mix(in srgb, var(--c) 35%, transparent);
+    border-left: 3px solid var(--c);
+    border-radius: 6px;
+  }
+  .aht__rows :global(.aht__block.is-pool) {
+    --c: color-mix(in srgb, var(--viz-meta) 60%, var(--fg-faint));
+  }
+  .aht__rows :global(.aht__block.is-wait) {
+    --c: var(--fg-faint);
+    background: transparent;
+    border-style: dashed;
+  }
+  .aht__rows :global(.aht__block.is-bad) {
+    --c: var(--viz-bad);
+  }
+  .aht__rows :global(.aht__block code) {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--fg);
+    background: none;
+    border: 0;
+    padding: 0;
+    overflow-wrap: anywhere;
+  }
+  .aht__rows :global(.aht__tag) {
+    display: none;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--c);
+  }
+  .aht__rows :global(.aht__note) {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--fg-muted);
+  }
+  .aht__rows :global(.aht__free) {
+    align-self: start;
+    padding: 4px 8px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: var(--viz-meta);
+    border: 1px dashed color-mix(in srgb, var(--viz-meta) 45%, transparent);
+    border-radius: 6px;
+  }
+  .aht__legend {
+    margin-top: var(--sp-3);
+  }
+
+  /* Narrow screens: one column, each block names its lane. */
+  @media (max-width: 640px) {
+    .aht__lanes {
+      display: none;
+    }
+    .aht__rows :global(.aht__row) {
+      grid-template-columns: 24px minmax(0, 1fr);
+    }
+    .aht__rows :global(.aht__hop),
+    .aht__rows :global(.aht__block),
+    .aht__rows :global(.aht__free) {
+      grid-column: 2 !important;
+      grid-row: auto !important;
+    }
+    .aht__rows :global(.aht__free) {
+      justify-self: start;
+    }
+    .aht__rows :global(.aht__tag) {
+      display: block;
+    }
+    .aht__rows :global(.aht__block.is-pool) {
+      margin-left: 14px;
+    }
+    .aht__rows :global(.aht__block.is-wait) {
+      margin-left: 28px;
+    }
+  }
+</style>
