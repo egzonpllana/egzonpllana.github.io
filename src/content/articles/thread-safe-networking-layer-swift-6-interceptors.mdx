@@ -1,0 +1,742 @@
+---
+title: 'Building a generic, thread-safe Networking Layer in Swift 6 with Interceptors'
+description: 'How I build a networking layer from scratch: endpoints that carry their response type, a client that is one function, and an interceptor chain whose order decides what goes on the wire. Re-checked with Swift 6.4 probes, including eight concurrent 401s sharing one token refresh, retries that respect idempotency, and cancellation that reaches the socket.'
+date: 2024-08-25
+updated: 2026-10-30
+tags: ['Swift', 'Async Await', 'Sendable', 'Generics', 'Networking']
+heroImage: '../../assets/covers/thread-safe-networking-layer-swift-6-interceptors.png'
+repoUrl: 'https://github.com/egzonpllana/event-horizon-ios'
+---
+
+import StatTiles from '../../components/StatTiles.astro';
+import InterceptorChainOrder from '../../components/InterceptorChainOrder.astro';
+import RetrySafetyMatrix from '../../components/RetrySafetyMatrix.astro';
+import TokenRefreshTimeline from '../../components/TokenRefreshTimeline.astro';
+
+Every request an app sends needs the same few things done to it. It needs a base URL and a token. It needs a second attempt when the server is briefly overloaded, and no second attempt when that would charge a card twice. It needs a new token when the old one expires, a log line, and a way to stop when the user leaves the screen. None of that belongs in a view model, and all of it has to work when twenty requests are in flight at once.
+
+A networking layer is where those jobs live. Mine has three parts: an endpoint that describes a request and the type its response decodes to, a client that runs it, and a chain of interceptors between the two, each doing one of the jobs above. The chain is where most of the design is, because the jobs interact. A retry has to know whether a key was added. A token refresh has to know whether another request already did it. A logger has to decide whether it is allowed to see the token.
+
+I first wrote this article in August 2024, around the client in my [network-layer-swift-6](https://github.com/egzonpllana/network-layer-swift-6) example project; later edits pointed it at EventHorizon, the package I extracted from that project in March 2025, which has [its own article](/articles/eventhorizon-thread-safe-networking-swift/). Re-reading the August 2024 code in October 2026 with the Swift 6.4 compiler, it had problems the article did not mention. Its client added the token to a copy of the request and sent the original, so no token ever reached the server. Its error mapping caught its own errors, so a 404 arrived as `requestFailed(statusCode(404))` and a caller matching `.statusCode` never matched. The view model in the article compiled in Swift 6 mode and still assigned its `@Published` property off the main thread, and the SwiftUI view did not compile at all. The interceptor example put a fixed `Bearer my_token` into the client, which is a token that can never be refreshed.
+
+This version builds the layer again from the beginning, with the interceptor chain at the centre, and checks every snippet in Swift 6 language mode with and without the Swift 6.2 isolation settings. Swift is the worked example; the chain, the retry rules and the refresh problem are the same in OkHttp, Alamofire or a `fetch` wrapper.
+
+<StatTiles
+  tiles={[
+    {
+      label: 'refresh per 401',
+      value: 8,
+      suffix: ' refreshes',
+      sub: 'for 8 concurrent 401s; the grant was revoked',
+    },
+    {
+      label: 'shared refresh',
+      value: 1,
+      suffix: ' refresh',
+      sub: 'same 8 requests, all replayed and answered',
+    },
+    {
+      label: 'caller cancels at 100 ms',
+      value: 110,
+      suffix: ' ms',
+      sub: 'to CancellationError; the server needed 2 s',
+    },
+    {
+      label: 'August 2024 client',
+      value: 0,
+      suffix: ' tokens sent',
+      sub: 'the header went on a copy nobody sent',
+    },
+  ]}
+/>
+
+---
+
+## The shape of the layer
+
+Three types carry the design:
+
+- **`Endpoint<Response>`** is a value: method, path, query, headers, body, and how to decode the response. It knows nothing about networking.
+- **`Interceptor`** is one job: authentication, retries, idempotency keys, logging. Each gets the request and the rest of the chain, and returns a response.
+- **`APIClient`** builds the request from the endpoint, runs it through the chain, checks the status and decodes. It holds nothing that changes after `init`.
+
+The transport at the end of the chain is a protocol with one method, so tests can replace `URLSession` without replacing the client. Everything that has state, which turns out to be only the token, lives in one actor.
+
+> **In plain words:** the endpoint says what to ask and what comes back, the interceptors decide how, and the client runs the two together. Only the token changes while the app runs.
+
+---
+
+## Describing a request
+
+The first version modelled endpoints as an enum and let the call site name the response type:
+
+```text
+let posts: [PostDTO] = try await apiClient.request(APIEndpoint.getPosts)
+```
+
+Nothing ties `getPosts` to `[PostDTO]`. Ask for `[UserDTO]` instead and the compiler agrees, and the mistake shows up as a decoding error at runtime.
+
+Making the endpoint generic over its response moves that mistake to compile time. The endpoint also carries its decoder, which handles the one case a generic `Decodable` constraint cannot: a 204 with no body.
+
+```swift
+import Foundation
+
+nonisolated enum HTTPMethod: String, Sendable {
+    case get = "GET", head = "HEAD", put = "PUT", delete = "DELETE"
+    case post = "POST", patch = "PATCH"
+
+    /// RFC 9110 §9.2.2: sending it twice has the same intended effect as sending it once.
+    var isIdempotent: Bool {
+        switch self {
+        case .get, .head, .put, .delete: true
+        case .post, .patch: false
+        }
+    }
+}
+
+/// A request, and the type its response decodes to.
+nonisolated struct Endpoint<Response: Sendable>: Sendable {
+    var method: HTTPMethod
+    var path: String
+    var query: [URLQueryItem] = []
+    var headers: [String: String] = [:]
+    var body: Data?
+    var decode: @Sendable (Data) throws -> Response
+}
+
+nonisolated extension Endpoint where Response: Decodable {
+    init(
+        _ method: HTTPMethod,
+        _ path: String,
+        query: [URLQueryItem] = [],
+        headers: [String: String] = [:],
+        body: Data? = nil
+    ) {
+        self.init(method: method, path: path, query: query, headers: headers, body: body) { data in
+            try JSONDecoder().decode(Response.self, from: data)
+        }
+    }
+}
+
+/// For endpoints whose success has no body, such as a 204.
+nonisolated struct NoContent: Sendable {}
+
+nonisolated extension Endpoint where Response == NoContent {
+    init(_ method: HTTPMethod, _ path: String, headers: [String: String] = [:], body: Data? = nil) {
+        self.init(method: method, path: path, headers: headers, body: body) { _ in NoContent() }
+    }
+}
+
+nonisolated extension Endpoint {
+    func urlRequest(relativeTo baseURL: URL) throws -> URLRequest {
+        var components = URLComponents(url: baseURL.appending(path: path), resolvingAgainstBaseURL: false)
+        if !query.isEmpty { components?.queryItems = query }
+        guard let url = components?.url else { throw APIError.invalidURL(path) }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method.rawValue
+        request.httpBody = body
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        return request
+    }
+}
+```
+
+Endpoints are grouped by feature as static functions, one per route:
+
+```swift
+import Foundation
+
+nonisolated struct Post: Decodable, Sendable {
+    let id: Int
+    let title: String
+}
+
+nonisolated struct NewPost: Encodable, Sendable {
+    let title: String
+    let body: String
+}
+
+nonisolated enum PostsAPI {
+    static func list(page: Int) -> Endpoint<[Post]> {
+        Endpoint(.get, "/v1/posts", query: [URLQueryItem(name: "page", value: String(page))])
+    }
+
+    static func create(_ post: NewPost) throws -> Endpoint<Post> {
+        Endpoint(
+            .post, "/v1/posts",
+            headers: ["Content-Type": "application/json"],
+            body: try JSONEncoder().encode(post)
+        )
+    }
+
+    static func delete(id: Int) -> Endpoint<NoContent> {
+        Endpoint(.delete, "/v1/posts/\(id)")
+    }
+}
+```
+
+`client.send(PostsAPI.list(page: 1))` now returns `[Post]` without an annotation, and assigning it to anything else fails to compile. Three smaller choices in that code are deliberate:
+
+- **Query items are an array.** A dictionary's order changes between launches, which breaks anything keyed by the exact URL, such as `URLCache` or request signatures.
+- **Encoding throws.** `create(_:)` is `throws`, so an encoding failure reaches the caller instead of becoming a request with no body, which is what `try?` did in the first version.
+- **Everything is `nonisolated`.** In a module that uses Swift 6.2's main-actor default isolation ([SE-0466](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md)), which Xcode's app template turns on, an unannotated type is `@MainActor`. Its `Decodable` conformance becomes main-actor-isolated and can no longer satisfy a `Sendable` generic parameter, as the [EventHorizon article](/articles/eventhorizon-thread-safe-networking-swift/) shows. The modifier on the type is not enough: in my probe, the extensions were still inferred as main-actor and every endpoint factory failed with `call to main actor-isolated initializer 'init(_:_:query:headers:body:)' in a synchronous nonisolated context`. Writing `nonisolated extension` fixed it. In a Swift package the default is `nonisolated`, which is one more reason to put the networking layer in its own module.
+
+> **In plain words:** an endpoint is plain data that names its response type. Get the type wrong and the build fails, not the request.
+
+---
+
+## The client is one function
+
+The client does four things: build the request, run the chain, check the status, decode. It does them in that order so that the interceptors see every response, 401s and 503s included, before the client decides it is an error.
+
+```swift
+import Foundation
+
+nonisolated enum APIError: Error {
+    case invalidURL(String)
+    case notHTTP
+    case transport(URLError)
+    case status(Int, body: Data)
+    case decoding(any Error)
+}
+
+nonisolated struct HTTPResponse: Sendable {
+    let data: Data
+    let response: HTTPURLResponse
+    var status: Int { response.statusCode }
+}
+
+nonisolated protocol HTTPTransport: Sendable {
+    func send(_ request: URLRequest) async throws -> HTTPResponse
+}
+
+nonisolated struct URLSessionTransport: HTTPTransport {
+    let session: URLSession
+
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw APIError.notHTTP }
+        return HTTPResponse(data: data, response: http)
+    }
+}
+
+/// The rest of the chain: the next interceptor, or the transport at the end.
+typealias Next = @Sendable (URLRequest) async throws -> HTTPResponse
+
+nonisolated protocol Interceptor: Sendable {
+    func intercept(_ request: URLRequest, next: Next) async throws -> HTTPResponse
+}
+
+nonisolated protocol APIClientProtocol: Sendable {
+    func send<Response>(_ endpoint: Endpoint<Response>) async throws -> Response
+}
+
+nonisolated struct APIClient: APIClientProtocol {
+    private let baseURL: URL
+    private let chain: Next
+
+    /// The first interceptor is the outermost layer: it sees the request first
+    /// and the response last.
+    init(baseURL: URL, transport: any HTTPTransport, interceptors: [any Interceptor]) {
+        self.baseURL = baseURL
+        let send: Next = { request in try await transport.send(request) }
+        self.chain = interceptors.reversed().reduce(send) { next, interceptor in
+            { request in try await interceptor.intercept(request, next: next) }
+        }
+    }
+
+    @concurrent
+    func send<Response>(_ endpoint: Endpoint<Response>) async throws -> Response {
+        let request = try endpoint.urlRequest(relativeTo: baseURL)
+        let response: HTTPResponse
+        do {
+            response = try await chain(request)
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch let error as URLError {
+            throw APIError.transport(error)
+        }
+
+        guard (200..<300).contains(response.status) else {
+            throw APIError.status(response.status, body: response.data)
+        }
+        do {
+            return try endpoint.decode(response.data)
+        } catch {
+            throw APIError.decoding(error)
+        }
+    }
+}
+```
+
+Each error is mapped once, where it happens, and nothing catches its own throws. `CancellationError` and errors thrown by interceptors, such as `AuthError.signedOut` below, pass through unchanged. A cancelled `URLSession` task throws `URLError.cancelled`, which I turn into `CancellationError`, so a caller can tell "I stopped waiting" from "the network failed" with one `catch`.
+
+### What "thread-safe" means here
+
+The title promises a thread-safe layer, and the first version earned that word less than it claimed. Here the compiler checks it. `APIClient` is a struct whose stored properties are a `URL` and a `@Sendable` closure, so its `Sendable` conformance is verified, not declared with `@unchecked`. There is no lock and no `nonisolated(unsafe)` anywhere in the layer. Each request is a `URLRequest`, a value: every interceptor gets a copy and returns a copy, so two requests cannot see each other's headers. The interceptors are `Sendable` structs with immutable configuration. The one piece of mutable state, the current token, lives in an actor. All of it builds in Swift 6 language mode with no warnings, with `NonisolatedNonsendingByDefault` on, and with main-actor default isolation on top. ([What `Sendable` checks and what it does not](/articles/understanding-concurrency-swift-6-sendable-mainactor/).)
+
+### Where `send` runs
+
+`@concurrent` is there because of Swift 6.2. Under [SE-0461](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md), which Xcode's Approachable Concurrency setting enables, a `nonisolated` async function runs on the caller's actor. A view model calls `send` from the main actor, so without the attribute the decoding runs there too. I logged `pthread_main_np()` inside the endpoint's decode closure, called from a `@MainActor` function:
+
+```text
+                                Swift 6 mode    + NonisolatedNonsendingByDefault
+send without @concurrent        pool thread     main thread
+send with @concurrent           pool thread     pool thread
+```
+
+Waiting for the network never blocks the main thread either way; decoding a large response does. With `@concurrent`, the whole chain, interceptors included, runs on the cooperative pool in every configuration, and the signature says so.
+
+> **In plain words:** the client is a pure function from an endpoint to a value or one error. It is safe to share because it has nothing to share, and the compiler checks that claim instead of trusting it.
+
+---
+
+## The interceptor chain is an onion
+
+There are two common shapes for interceptors. The first is a pair of hooks: an adapter that changes the outgoing request, and a handler that looks at the response. Alamofire calls them `RequestAdapter` and `RequestRetrier`; EventHorizon calls them `intercept(request:)` and `intercept(response:data:)`. The client owns the loop and calls the hooks at fixed points. That works until an interceptor needs to send the request again, wait, or not send it at all, and each of those becomes a special case in the client.
+
+The second shape gives each interceptor the request and the rest of the chain as a function, `next`. It can change the request before calling `next`, look at the response after, call `next` twice to retry, or not call it to answer from a cache. OkHttp's interceptors work this way. The chain is built once by folding the array from the inside out, so the first interceptor in the array wraps all the others. On the way out the request passes through the layers in array order; on the way back the response passes through them in reverse.
+
+That nesting is why order matters. Each layer only sees what the layers outside it did. A layer outside the retry runs once per call; a layer inside it runs once per attempt. A layer outside the auth layer never sees the token. Here are the four interceptors from this article in one chain. Move them in and out:
+
+<InterceptorChainOrder />
+
+The order I use is `[Logging, IdempotencyKey, Retry, Auth]`, and each position has a reason:
+
+- **IdempotencyKey outside Retry**, so all attempts of one POST carry the same key.
+- **Retry outside Auth**, so each attempt reads the token current at that moment.
+- **Logging outermost**, so the log never contains a token, at the cost of one line per call rather than per attempt. If you need every attempt, put it innermost and redact `Authorization`.
+
+A header that never changes, such as `Accept` or an API version, can go in any layer, or in the endpoint. A token cannot: the first version's `HeaderInjectorInterceptor(headers: ["Authorization": "Bearer my_token"])` fixed the token when the client was created.
+
+The logging interceptor is the smallest complete example of the shape:
+
+```swift
+import Foundation
+
+nonisolated struct LoggingInterceptor: Interceptor {
+    let log: @Sendable (String) -> Void
+
+    func intercept(_ request: URLRequest, next: Next) async throws -> HTTPResponse {
+        let line = "\(request.httpMethod ?? "GET") \(request.url?.path() ?? "")"
+        let start = ContinuousClock.now
+        do {
+            let response = try await next(request)
+            log("\(line) \(response.status) in \(ContinuousClock.now - start)")
+            return response
+        } catch {
+            log("\(line) failed: \(error)")
+            throw error
+        }
+    }
+}
+```
+
+> **In plain words:** each interceptor wraps everything inside it. It sees the request after the outer layers changed it and the response before the outer layers see it. Put a layer outside the one whose result it needs.
+
+---
+
+## Retries: which requests may be sent twice
+
+A retry sends the same request again and hopes for a different answer. Whether that is allowed has nothing to do with the status code alone. The question is: could the server already have acted on the first copy, and would a second copy change anything? [RFC 9110 §9.2.2](https://www.rfc-editor.org/rfc/rfc9110#section-9.2.2) answers half of it. A method is idempotent if two identical requests have the same intended effect as one: GET, HEAD, PUT and DELETE are; POST and PATCH are not. And "a client SHOULD NOT automatically retry a request with a non-idempotent method unless it has some means to know that the request semantics are actually idempotent ... or some means to detect that the original request was never applied."
+
+That gives two ways for a POST to be retried. Either the failure proves the server never saw it, like a connection that was never opened, or the request carries something that makes a second copy harmless. That something is an `Idempotency-Key` header: a unique value per logical operation, which the server stores with the result and uses to answer a repeat without running it again. Stripe's API works this way, and the header is being standardised by the IETF as [draft-ietf-httpapi-idempotency-key-header](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/), still a draft in October 2026. The key only helps if your server implements it.
+
+<RetrySafetyMatrix />
+
+The retry interceptor encodes Fig 02. It decides whether a request is repeatable from the request it is given, so a key added by an outer layer counts and a key added inside it does not:
+
+```swift
+import Foundation
+
+nonisolated struct IdempotencyKeyInterceptor: Interceptor {
+    func intercept(_ request: URLRequest, next: Next) async throws -> HTTPResponse {
+        guard
+            let method = request.httpMethod.flatMap(HTTPMethod.init(rawValue:)),
+            !method.isIdempotent,
+            request.value(forHTTPHeaderField: "Idempotency-Key") == nil
+        else { return try await next(request) }
+
+        var request = request
+        request.setValue(UUID().uuidString, forHTTPHeaderField: "Idempotency-Key")
+        return try await next(request)
+    }
+}
+
+nonisolated struct RetryInterceptor: Interceptor {
+    var maxAttempts = 3
+    var baseDelay: Duration = .milliseconds(500)
+    var maxDelay: Duration = .seconds(10)
+
+    func intercept(_ request: URLRequest, next: Next) async throws -> HTTPResponse {
+        let repeatable = Self.isRepeatable(request)
+        var attempt = 1
+        while true {
+            let outcome: Result<HTTPResponse, any Error>
+            do {
+                outcome = .success(try await next(request))
+            } catch {
+                outcome = .failure(error)
+            }
+            guard attempt < maxAttempts, let delay = delay(after: outcome, attempt: attempt, repeatable: repeatable) else {
+                return try outcome.get()
+            }
+            try await Task.sleep(for: delay)   // throws CancellationError when the caller gives up
+            attempt += 1
+        }
+    }
+
+    /// Safe to send again if a second copy cannot do anything the first did not.
+    static func isRepeatable(_ request: URLRequest) -> Bool {
+        let method = request.httpMethod.flatMap(HTTPMethod.init(rawValue:)) ?? .get
+        return method.isIdempotent || request.value(forHTTPHeaderField: "Idempotency-Key") != nil
+    }
+
+    private func delay(after outcome: Result<HTTPResponse, any Error>, attempt: Int, repeatable: Bool) -> Duration? {
+        switch outcome {
+        case .success(let response):
+            switch response.status {
+            case 408, 429:                       // the server says it did not act on it
+                break
+            case 500, 502, 503, 504:             // it may have acted on it
+                guard repeatable else { return nil }
+            default:
+                return nil
+            }
+            guard let retryAfter = response.retryAfter else { return backoff(attempt) }
+            return retryAfter <= maxDelay ? retryAfter : nil
+        case .failure(let error as URLError):
+            switch error.code {
+            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+                return backoff(attempt)          // never reached the server
+            case .timedOut, .networkConnectionLost:
+                return repeatable ? backoff(attempt) : nil
+            default:
+                return nil                       // offline, cancelled, TLS: another try will not help
+            }
+        case .failure:
+            return nil
+        }
+    }
+
+    /// Full jitter: a random wait between zero and the exponential ceiling.
+    private func backoff(_ attempt: Int) -> Duration {
+        let ceiling = min(baseDelay * (1 << (attempt - 1)), maxDelay)
+        return ceiling * Double.random(in: 0...1)
+    }
+}
+
+nonisolated extension HTTPResponse {
+    /// RFC 9110 §10.2.3: a number of seconds, or an HTTP-date.
+    var retryAfter: Duration? {
+        guard let value = response.value(forHTTPHeaderField: "Retry-After") else { return nil }
+        if let seconds = Int(value), seconds >= 0 { return .seconds(seconds) }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        guard let date = formatter.date(from: value) else { return nil }
+        return .seconds(max(0, date.timeIntervalSinceNow))
+    }
+}
+```
+
+Four details in that code are easy to get wrong:
+
+- **The server's `Retry-After` wins over the backoff,** and a wait longer than `maxDelay` ends the retries. A screen that spins for two minutes is worse than an error that says "try again later".
+- **The backoff has full jitter.** Without randomness, every client that failed at the same moment retries at the same moment, and the recovering server gets the whole wave again ([AWS Builders' Library](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/)).
+- **Offline is not retried.** `notConnectedToInternet` is safe to repeat, but a timer will not bring the network back. Setting `waitsForConnectivity` on the session configuration makes a task wait for a connection instead of failing.
+- **401 is not here.** A 401 is not a transient failure; it needs a new token, which is the next section.
+
+I checked it against a local server. A GET answered with 503 and `Retry-After: 1` went out three times and failed with `APIError.status(503)` after 2.14 s, two one-second waits plus three round trips. In a stub run, a POST answered with 503, 502 and then 201 went out three times with one key, `67F6897C…`, on all three attempts. With `IdempotencyKeyInterceptor` moved inside `RetryInterceptor`, the POST went out once and failed with the 503: the retry could not see the key, treated the POST as unsafe, and stopped. That is the safe failure. A retry that decided from a "retryable" flag on the endpoint instead of from the request would have sent three POSTs with three different keys, which the server must treat as three different operations.
+
+> **In plain words:** retry when the server cannot have acted on the request, or when acting twice is harmless. The method and a key decide the second; the kind of failure decides the first.
+
+---
+
+## Token refresh: many 401s, one refresh
+
+An access token expires while the app is in the background. The user opens it, and the home screen sends eight requests at once. All eight leave with the expired token, and all eight come back 401 within a few milliseconds of each other.
+
+The obvious auth interceptor refreshes on a 401 and replays. Eight of them refresh eight times, and on a modern auth server that does more than waste requests. [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700#section-4.14.2), the OAuth 2.0 security best practice, requires an authorization server to protect a public client's refresh tokens, a mobile app's included, either by binding them to the client or by rotating them: every refresh returns a new refresh token and invalidates the old one. If an invalidated one is presented again, the server assumes it was stolen, "cannot determine which party submitted the invalid refresh token, but it will revoke the active refresh token." Eight refreshes with the same refresh token look exactly like theft. The first succeeds, the second revokes the grant, and the user is signed out by their own app.
+
+I ran it against a fake auth server that rotates and detects reuse, with eight concurrent requests. Refreshing per 401: eight refresh calls, zero of eight requests succeeded, grant revoked. With one shared refresh: one call, eight of eight succeeded. Fig 03 replays the same burst with one slow request whose 401 arrives late; in the per-401 run it finds the session already gone, so it shows seven refresh calls instead of eight.
+
+<TokenRefreshTimeline />
+
+Sharing the refresh is the same trick as sharing any in-flight fetch: store the `Task` before the first `await`, so the next caller finds it. The [EventHorizon article](/articles/eventhorizon-thread-safe-networking-swift/) shows a coalescing refresher for that package. The slow request at the bottom of Fig 03 needs one more check. It was sent with the old token, but its 401 arrives after the shared refresh has finished and nothing is in flight any more. A refresher that only coalesces starts a second refresh; in my probe that was two refresh calls instead of one. The request already has the answer: the token it was sent with is no longer the current one, so it can replay with the current token. Alamofire's `AuthenticationInterceptor` asks the same question through `isRequest(_:authenticatedWith:)`.
+
+```swift
+import Foundation
+
+nonisolated struct Credentials: Sendable, Equatable {
+    let accessToken: String
+    let refreshToken: String
+}
+
+nonisolated enum AuthError: Error {
+    case signedOut
+    /// The server refused the refresh token (OAuth `invalid_grant`).
+    case refreshRejected
+}
+
+nonisolated protocol TokenRefreshing: Sendable {
+    func refresh(using refreshToken: String) async throws -> Credentials
+}
+
+actor AuthSession {
+    private var credentials: Credentials?
+    private var refreshTask: Task<Credentials, any Error>?
+    private let refresher: any TokenRefreshing
+
+    init(credentials: Credentials?, refresher: any TokenRefreshing) {
+        self.credentials = credentials
+        self.refresher = refresher
+    }
+
+    /// The token to send now. Waits for a refresh that is already running.
+    func accessToken() async throws -> String {
+        if let refreshTask { return try await refreshTask.value.accessToken }
+        guard let credentials else { throw AuthError.signedOut }
+        return credentials.accessToken
+    }
+
+    /// Called with the token a request was sent with, after the server rejected it.
+    func refresh(rejected token: String) async throws -> String {
+        if let refreshTask { return try await refreshTask.value.accessToken }
+        guard let credentials else { throw AuthError.signedOut }
+        if credentials.accessToken != token { return credentials.accessToken }
+
+        let refreshToken = credentials.refreshToken
+        let task = Task { [refresher] in try await refresher.refresh(using: refreshToken) }
+        refreshTask = task
+        defer { refreshTask = nil }
+        do {
+            let fresh = try await task.value
+            self.credentials = fresh
+            return fresh.accessToken
+        } catch AuthError.refreshRejected {
+            self.credentials = nil
+            throw AuthError.signedOut
+        }
+    }
+}
+
+nonisolated struct AuthInterceptor: Interceptor {
+    let session: AuthSession
+
+    func intercept(_ request: URLRequest, next: Next) async throws -> HTTPResponse {
+        let token = try await session.accessToken()
+        let response = try await next(request.authorized(with: token))
+        guard response.status == 401 else { return response }
+
+        let fresh = try await session.refresh(rejected: token)
+        return try await next(request.authorized(with: fresh))   // once; a second 401 goes to the caller
+    }
+}
+
+nonisolated extension URLRequest {
+    func authorized(with token: String) -> URLRequest {
+        var request = self
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+}
+```
+
+The details that make it correct:
+
+- **The check and the store happen before the first `await`.** An actor runs one caller at a time but lets the next one in at every suspension point. `refreshTask = task` is written before `await task.value`, so every caller that arrives during the refresh finds the task and joins it. ([Why an actor alone does not prevent a duplicate request](/articles/from-network-chaos-to-cached-harmony/).)
+- **The interceptor remembers which token it sent.** The local `token` is the evidence for the check above; no extra state is needed.
+- **New requests wait too.** `accessToken()` joins a running refresh, so a request that starts during the refresh does not leave with a token that is about to be replaced.
+- **The refresh is an unstructured `Task` on purpose.** If the caller that started it is cancelled, the refresh keeps going for everyone who joined. That caller still waits for it to finish, which is the price of sharing.
+- **Only a rejected refresh token signs the user out.** A refresh that fails because the network dropped throws the network error and keeps the credentials for the next try.
+- **The refresh call must not go through the auth interceptor.** I routed the refresher through the same client by mistake in a probe. The refresh request read `accessToken()`, found the refresh task running, and waited for it; the refresh task was waiting for that request. It was still waiting after 2.13 s, and would have waited forever. The refresher gets its own `APIClient` built without `AuthInterceptor`.
+
+> **In plain words:** when many requests discover the expired token at once, one of them refreshes and the others wait for it. A request that finds the token already replaced does not refresh again. With rotating refresh tokens, getting this wrong signs the user out.
+
+---
+
+## Cancellation reaches the socket
+
+A request should stop when nobody wants its answer: the user left the screen, typed another letter into a search field, or pulled to refresh again. Swift's cancellation is cooperative. It sets a flag on a task, and code that checks the flag stops. `URLSession`'s async methods check it and cancel the underlying `URLSessionTask`; `Task.sleep` checks it too.
+
+So the layer only has to stay out of the way: no `Task { }` anywhere between the caller and `URLSession`. Every `await` in the client and the interceptors runs in the caller's task, so the caller's cancellation flag is the one `URLSession` sees. The one unstructured task is the shared refresh, for the reason above. EventHorizon runs each request in its own `Task { }`, which is why [cancelling the caller there does not stop the request](/articles/eventhorizon-thread-safe-networking-swift/).
+
+I measured it against a local server that answers after 2 seconds, cancelling the caller after 100 ms. The call threw `CancellationError` after 110 ms. A second request, answered with 503 and `Retry-After: 1`, was cancelled during its backoff sleep and threw `CancellationError` after 110 ms as well, without a second attempt. Underneath, `URLSession` threw `URLError.cancelled`, which the client mapped; the retry interceptor never retries it, because cancellation is not in its list.
+
+> **In plain words:** keep every request in the caller's task and cancellation needs no code of its own. One `Task { }` in the middle is enough to lose it.
+
+---
+
+## Using it from a view model
+
+The first version's view model was a plain `ObservableObject` class that assigned `posts` inside a `nonisolated` async method. In Swift 6 language mode it compiles without a diagnostic. I ran the same shape and logged where the assignment happened: off the main thread, which SwiftUI flags at runtime as "Publishing changes from background threads is not allowed". With `NonisolatedNonsendingByDefault` on, the same code ran on the main thread, because the method then runs on its caller's actor. Code whose thread depends on a build setting is not thread-safe, it is lucky. Its view also did not compile: `.onAppear` was attached after the closing brace of `body`.
+
+Isolating the view model to the main actor makes the thread a property of the type:
+
+```swift
+import Foundation
+import Observation
+
+@MainActor
+@Observable
+final class PostsViewModel {
+    enum State {
+        case idle
+        case loading
+        case loaded([Post])
+        case failed(any Error)
+    }
+
+    private(set) var state: State = .idle
+    private let client: any APIClientProtocol
+
+    init(client: any APIClientProtocol) {
+        self.client = client
+    }
+
+    func load() async {
+        state = .loading
+        do {
+            state = .loaded(try await client.send(PostsAPI.list(page: 1)))
+        } catch is CancellationError {
+            state = .idle
+        } catch {
+            state = .failed(error)
+        }
+    }
+}
+```
+
+```swift
+import SwiftUI
+
+struct PostsView: View {
+    @State private var viewModel: PostsViewModel
+
+    init(client: any APIClientProtocol) {
+        _viewModel = State(initialValue: PostsViewModel(client: client))
+    }
+
+    var body: some View {
+        Group {
+            switch viewModel.state {
+            case .idle, .loading:
+                ProgressView()
+            case .loaded(let posts):
+                List(posts, id: \.id) { Text($0.title) }
+            case .failed:
+                Text("Could not load posts.")
+            }
+        }
+        .task { await viewModel.load() }
+    }
+}
+```
+
+`.task` is the important line. It starts the load when the view appears and cancels it when the view disappears, and the cancellation travels down through the client to `URLSession`. The first version's `.onAppear { Task { try await … } }` started an unstructured task that nothing cancelled, and dropped its error: the Swift 6.4 compiler now warns that an unused throwing `Task` "may accidentally ignore errors thrown inside the task".
+
+Wiring it together happens once, at the composition root:
+
+```swift
+import Foundation
+
+func makeAPIClient(baseURL: URL, credentials: Credentials?) -> any APIClientProtocol {
+    let transport = URLSessionTransport(session: .shared)
+
+    // The refresh endpoint is called through a client without AuthInterceptor.
+    let refresher = RefreshTokenAPI(
+        client: APIClient(baseURL: baseURL, transport: transport, interceptors: [RetryInterceptor()])
+    )
+    let session = AuthSession(credentials: credentials, refresher: refresher)
+
+    return APIClient(
+        baseURL: baseURL,
+        transport: transport,
+        interceptors: [
+            LoggingInterceptor { print($0) },
+            IdempotencyKeyInterceptor(),
+            RetryInterceptor(),
+            AuthInterceptor(session: session),
+        ]
+    )
+}
+
+nonisolated struct RefreshTokenAPI: TokenRefreshing {
+    let client: any APIClientProtocol
+
+    func refresh(using refreshToken: String) async throws -> Credentials {
+        let encoded = refreshToken.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        do {
+            let response = try await client.send(Endpoint<TokenResponse>(
+                .post, "/oauth/token",
+                headers: ["Content-Type": "application/x-www-form-urlencoded"],
+                body: Data("grant_type=refresh_token&refresh_token=\(encoded)".utf8)
+            ))
+            return Credentials(accessToken: response.accessToken, refreshToken: response.refreshToken)
+        } catch APIError.status(400, _), APIError.status(401, _) {
+            throw AuthError.refreshRejected      // RFC 6749 §5.2: invalid_grant is a 400
+        }
+    }
+}
+
+nonisolated struct TokenResponse: Decodable, Sendable {
+    let accessToken: String
+    let refreshToken: String
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+    }
+}
+```
+
+The refresh token is percent-encoded for the form body because OAuth does not promise it is URL-safe, and a `+` in a form body means a space.
+
+---
+
+## Honest downsides
+
+- **The refresh request is a POST without an idempotency key.** It goes through `RetryInterceptor`, which will only retry it when the connection never opened. With rotating refresh tokens, a timed-out refresh that the server did process leaves the app holding a refresh token that is already used. Retrying it would be reuse; not retrying it means the next 401 signs the user out. The protocol has no clean answer, which is one argument for refreshing a little before expiry, when nothing is waiting.
+- **The key is only as good as the server.** `IdempotencyKeyInterceptor` adds a header; if the backend ignores it, retried POSTs are duplicates again.
+- **Logging outermost hides retries.** One line per call is easy to read and says nothing about the two attempts that failed first.
+- **A late cancellation waits for the shared refresh.** The caller that started a refresh cannot leave before it ends.
+- **No upload progress.** `URLSession`'s `upload(for:from:delegate:)` takes a per-task delegate, which fits behind `HTTPTransport`; the [EventHorizon article](/articles/eventhorizon-thread-safe-networking-swift/) covers what goes wrong when progress gets its own session instead.
+- **`@concurrent` needs a Swift 6.2 compiler.** On an older toolchain, `nonisolated async` already runs on the pool, and the attribute can go.
+
+---
+
+## Takeaways
+
+> **Let the endpoint carry its response type.** A generic endpoint turns "decoded the wrong type" from a runtime error into a build error.
+
+> **Interceptors are an onion, so order is behaviour.** A layer only sees what the layers outside it did. Keys outside retries, retries outside auth, logging outside auth.
+
+> **Retry by "could the server have acted?", not by status code.** Connection failures, 408 and 429 are safe for any method. Timeouts and 5xx are safe for idempotent methods and keyed POSTs only.
+
+> **Many 401s need one refresh.** Store the in-flight refresh before the first `await`, and compare the token a request was sent with to the current one before refreshing again. With rotating refresh tokens, a duplicate refresh can sign the user out.
+
+> **Never send the refresh through the chain that waits for it.** It deadlocks.
+
+> **Keep requests in the caller's task.** Cancellation then reaches `URLSession` for free, including during a backoff sleep.
+
+> **Let the compiler earn "thread-safe".** Value types, `Sendable` without `@unchecked`, one actor for the mutable state, and `nonisolated` or `@concurrent` written down where the Swift 6.2 defaults would put networking on the main actor.
+
+---
+
+## References
+
+**Code** — [network-layer-swift-6](https://github.com/egzonpllana/network-layer-swift-6) (the August 2024 example project) · [EventHorizon](https://github.com/egzonpllana/event-horizon-ios), the package extracted from it, and [its article](/articles/eventhorizon-thread-safe-networking-swift/)
+
+**HTTP and OAuth** — [RFC 9110 §9.2.2: idempotent methods](https://www.rfc-editor.org/rfc/rfc9110#section-9.2.2) · [RFC 9110 §10.2.3: Retry-After](https://www.rfc-editor.org/rfc/rfc9110#section-10.2.3) · [RFC 9110 §15.5.9: 408](https://www.rfc-editor.org/rfc/rfc9110#section-15.5.9) · [RFC 9110 §15.6.4: 503](https://www.rfc-editor.org/rfc/rfc9110#section-15.6.4) · [RFC 6585 §4: 429 Too Many Requests](https://www.rfc-editor.org/rfc/rfc6585#section-4) · [The Idempotency-Key HTTP header field (Internet-Draft)](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/) · [RFC 9700 §4.14.2: refresh token rotation](https://www.rfc-editor.org/rfc/rfc9700#section-4.14.2) · [RFC 6749 §5.2: token error responses](https://www.rfc-editor.org/rfc/rfc6749#section-5.2) · [Timeouts, retries and backoff with jitter (AWS Builders' Library)](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/)
+
+**Other clients** — [OkHttp: interceptors](https://square.github.io/okhttp/features/interceptors/) (the chain-and-proceed shape) · [Alamofire: adapting and retrying requests](https://github.com/Alamofire/Alamofire/blob/master/Documentation/AdvancedUsage.md#adapting-and-retrying-requests-with-requestinterceptor) (`RequestAdapter`, `RequestRetrier`, `AuthenticationInterceptor`)
+
+**Swift** — [SE-0302: Sendable and @Sendable closures](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0302-concurrent-value-and-concurrent-closures.md) · [SE-0304: Structured concurrency](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0304-structured-concurrency.md) (cancellation, unstructured tasks) · [SE-0306: Actors](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md) (reentrancy) · [SE-0461: nonisolated async functions on the caller's actor, @concurrent](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md) · [SE-0466: Default actor isolation](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md) · [SE-0470: Isolated conformances](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0470-isolated-conformances.md)
+
+**Apple** — [`URLSession.data(for:delegate:)`](https://developer.apple.com/documentation/foundation/urlsession/data(for:delegate:)) · [`waitsForConnectivity`](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/waitsforconnectivity) · [`Task.sleep(for:tolerance:clock:)`](https://developer.apple.com/documentation/swift/task/sleep(for:tolerance:clock:)) · [`task(priority:_:)`](https://developer.apple.com/documentation/swiftui/view/task(priority:_:))

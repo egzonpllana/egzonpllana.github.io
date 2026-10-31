@@ -1,0 +1,436 @@
+---
+/**
+ * Which failed requests may be sent again, by method and by failure. The
+ * question behind every cell is RFC 9110 §9.2.2: could the server already
+ * have acted on the first copy, and would a second copy change anything?
+ * The cells are the rules of the article's RetryInterceptor and
+ * AuthInterceptor, so the figure and the code agree.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '02',
+  caption = 'Read across a row to see how the method changes the answer. Failures where the server never saw the request, or said it did not act on it, may be retried for any method. Failures after the request may have arrived are only retried when a second copy is harmless: an idempotent method, or a POST carrying an Idempotency-Key the server honours. A 401 is not a retry at all; Auth refreshes the token and replays once.',
+} = Astro.props;
+
+type Verdict = 'yes' | 'wait' | 'no' | 'auth';
+interface Row {
+  id: string;
+  failure: string;
+  code: string;
+  cells: [Verdict, Verdict, Verdict, Verdict];
+  why: string;
+  per?: Partial<Record<0 | 1 | 2 | 3, string>>;
+}
+
+const columns = [
+  { short: 'GET', long: 'GET, HEAD' },
+  { short: 'PUT', long: 'PUT, DELETE' },
+  { short: 'POST', long: 'POST, PATCH' },
+  { short: 'POST+key', long: 'POST with Idempotency-Key' },
+];
+
+const keyed =
+  'A second POST with the same Idempotency-Key is answered from the first one, if the server implements the key. If it does not, this cell is a "no".';
+const unkeyed =
+  'The first POST may have been processed and only the response lost. Sending it again can create a second order, charge twice, or post twice.';
+
+const rows: Row[] = [
+  {
+    id: 'connect',
+    failure: 'could not connect',
+    code: 'cannotFindHost, cannotConnectToHost, dnsLookupFailed',
+    cells: ['yes', 'yes', 'yes', 'yes'],
+    why: 'The connection was never opened, so the server never saw the request. RFC 9110 allows retrying any method when the client knows the first request was never applied.',
+  },
+  {
+    id: 'timeout',
+    failure: 'timed out',
+    code: 'URLError.timedOut',
+    cells: ['yes', 'yes', 'no', 'yes'],
+    why: 'The request may have reached the server and been processed; only the answer did not come back in time.',
+    per: { 2: unkeyed, 3: keyed },
+  },
+  {
+    id: 'lost',
+    failure: 'connection lost',
+    code: 'URLError.networkConnectionLost',
+    cells: ['yes', 'yes', 'no', 'yes'],
+    why: 'The connection dropped mid-exchange. Whether the server acted on the request is unknown, which is the case idempotency exists for.',
+    per: { 2: unkeyed, 3: keyed },
+  },
+  {
+    id: 'offline',
+    failure: 'offline',
+    code: 'URLError.notConnectedToInternet',
+    cells: ['no', 'no', 'no', 'no'],
+    why: 'Safe to repeat, but pointless on a timer: the device has no network, and a backoff of a second or two will not bring it back. Show the state, and let the session’s waitsForConnectivity setting or a path monitor decide when to try again.',
+  },
+  {
+    id: '408',
+    failure: '408',
+    code: 'Request Timeout',
+    cells: ['yes', 'yes', 'yes', 'yes'],
+    why: 'The server says it did not receive the complete request, so it did not act on it. RFC 9110 §15.5.9: the client may repeat it.',
+  },
+  {
+    id: '429',
+    failure: '429',
+    code: 'Too Many Requests',
+    cells: ['wait', 'wait', 'wait', 'wait'],
+    why: 'Rejected by rate limiting, not processed. Retry when Retry-After says so (RFC 6585 §4); if it asks for longer than the retry budget, give up and tell the caller.',
+  },
+  {
+    id: '500',
+    failure: '500',
+    code: 'Internal Server Error',
+    cells: ['yes', 'yes', 'no', 'yes'],
+    why: 'The server failed somewhere inside the request, possibly after writing. Often a bug that a retry will hit again, so the attempt budget matters more than the delay.',
+    per: { 2: unkeyed, 3: keyed },
+  },
+  {
+    id: '502',
+    failure: '502, 504',
+    code: 'Bad Gateway, Gateway Timeout',
+    cells: ['yes', 'yes', 'no', 'yes'],
+    why: 'A proxy or gateway did not get a usable answer from the server behind it. That server may have processed the request.',
+    per: { 2: unkeyed, 3: keyed },
+  },
+  {
+    id: '503',
+    failure: '503',
+    code: 'Service Unavailable',
+    cells: ['yes', 'yes', 'no', 'yes'],
+    why: 'Overload or maintenance (RFC 9110 §15.6.4). Honour Retry-After when present. A 503 can also come from a proxy in front of a server that did act, so an unkeyed POST stays a no.',
+    per: { 2: unkeyed, 3: keyed },
+  },
+  {
+    id: '401',
+    failure: '401',
+    code: 'Unauthorized',
+    cells: ['auth', 'auth', 'auth', 'auth'],
+    why: 'Not Retry’s job. The request was rejected for its credentials and not processed, so Auth refreshes the token, or picks up one another request already refreshed, and replays once. A second 401 goes to the caller.',
+  },
+  {
+    id: '4xx',
+    failure: 'other 4xx',
+    code: '400, 403, 404, 409, 422',
+    cells: ['no', 'no', 'no', 'no'],
+    why: 'The server understood the request and refused it. The same request will get the same answer.',
+  },
+  {
+    id: 'cancel',
+    failure: 'cancelled',
+    code: 'CancellationError, URLError.cancelled',
+    cells: ['no', 'no', 'no', 'no'],
+    why: 'The caller stopped waiting. A retry would do work nobody will use.',
+  },
+];
+
+const verdictText: Record<Verdict, string> = {
+  yes: 'retry with backoff',
+  wait: 'retry after Retry-After',
+  no: 'do not retry',
+  auth: 'refresh the token, replay once',
+};
+---
+
+<VizFrame
+  fig={fig}
+  title="Which failed requests may be sent again"
+  caption={caption}
+  class="rsm"
+  data-rsm
+>
+  <div>
+    <table class="rsm__table">
+      <caption class="rsm__sr">
+        Retry decision by failure (rows) and HTTP method (columns)
+      </caption>
+      <colgroup>
+        <col class="rsm__col-head" />
+        <col span="4" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th scope="col"><span class="viz-label">failure</span></th>
+          {
+            columns.map((c) => (
+              <th scope="col" title={c.long}>
+                <span class="rsm__colname">{c.short}</span>
+              </th>
+            ))
+          }
+        </tr>
+      </thead>
+      <tbody>
+        {
+          rows.map((r) => (
+            <tr>
+              <th scope="row">
+                <span class="rsm__failure">{r.failure}</span>
+                <span class="rsm__code">{r.code}</span>
+              </th>
+              {r.cells.map((v, ci) => (
+                <td>
+                  <button
+                    type="button"
+                    class={`rsm__cell rsm__cell--${v}`}
+                    data-row={r.id}
+                    data-col={ci}
+                    aria-pressed={
+                      r.id === 'timeout' && ci === 2 ? 'true' : 'false'
+                    }
+                    aria-label={`${r.failure}, ${columns[ci].long}: ${verdictText[v]}`}
+                  >
+                    {v}
+                  </button>
+                </td>
+              ))}
+            </tr>
+          ))
+        }
+      </tbody>
+    </table>
+  </div>
+
+  <div class="rsm__detail viz-panel" aria-live="polite">
+    <div class="rsm__detail-head">
+      <span class="viz-chip" data-verdict></span>
+      <span class="viz-mono rsm__which" data-which></span>
+    </div>
+    <p data-why></p>
+  </div>
+
+  <div class="viz-legend rsm__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>yes: retry with backoff</span>
+    <span
+      ><i style="--c:var(--viz-level)"></i>wait: retry after Retry-After</span
+    >
+    <span><i style="--c:var(--viz-net)"></i>auth: refresh and replay</span>
+    <span><i style="--c:var(--viz-bad)"></i>no: surface the error</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-rsm-data
+    set:html={JSON.stringify({ rows, columns, verdictText })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const CHIP = {
+      yes: 'viz-chip--sound',
+      wait: 'viz-chip--level',
+      auth: 'viz-chip--net',
+      no: 'viz-chip--bad',
+    };
+
+    function initMatrix(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-rsm-data]').textContent,
+      );
+      const cells = [...root.querySelectorAll('[data-row]')];
+      const verdictEl = root.querySelector('[data-verdict]');
+      const whichEl = root.querySelector('[data-which]');
+      const whyEl = root.querySelector('[data-why]');
+
+      function show(rowId, col) {
+        const row = data.rows.find((r) => r.id === rowId);
+        const v = row.cells[col];
+        verdictEl.textContent = data.verdictText[v];
+        verdictEl.className = `viz-chip ${CHIP[v]}`;
+        whichEl.textContent = `${row.failure} (${row.code}) · ${data.columns[col].long}`;
+        whyEl.textContent = (row.per && row.per[col]) || row.why;
+        cells.forEach((c) =>
+          c.setAttribute(
+            'aria-pressed',
+            String(c.dataset.row === rowId && Number(c.dataset.col) === col),
+          ),
+        );
+      }
+
+      cells.forEach((c) =>
+        c.addEventListener('click', () =>
+          show(c.dataset.row, Number(c.dataset.col)),
+        ),
+      );
+      show('timeout', 2);
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-rsm]').forEach(initMatrix);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .rsm .rsm__table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: separate;
+    border-spacing: 3px;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.3;
+  }
+  .rsm__sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .rsm__col-head {
+    width: 34%;
+  }
+  .rsm .rsm__table th,
+  .rsm .rsm__table td {
+    padding: 0;
+    border: 0;
+    background: none;
+    text-align: left;
+    vertical-align: middle;
+    font-family: inherit;
+    font-size: inherit;
+    letter-spacing: normal;
+    text-transform: none;
+  }
+  .rsm .rsm__table thead th {
+    padding-bottom: 4px;
+    white-space: normal;
+  }
+  .rsm .rsm__table thead th:first-child,
+  .rsm .rsm__table tbody td:first-child {
+    padding-left: 0;
+  }
+  .rsm__colname {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .rsm__failure {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 600;
+    line-height: 1.25;
+    color: var(--fg);
+  }
+  .rsm__code {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.3;
+    color: var(--fg-faint);
+    overflow-wrap: anywhere;
+  }
+  .rsm__cell {
+    --c: var(--viz-sound);
+    display: block;
+    width: 100%;
+    min-height: 32px;
+    padding: 2px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--c);
+    background: color-mix(in srgb, var(--c) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--c) 35%, transparent);
+    border-radius: 6px;
+    cursor: pointer;
+    transition:
+      background 0.15s var(--ease),
+      border-color 0.15s var(--ease);
+  }
+  .rsm__cell--yes {
+    --c: var(--viz-sound-text);
+  }
+  .rsm__cell--wait {
+    --c: var(--viz-level);
+  }
+  .rsm__cell--auth {
+    --c: var(--viz-net);
+  }
+  .rsm__cell--no {
+    --c: var(--viz-bad);
+  }
+  .rsm__cell:hover {
+    border-color: var(--c);
+  }
+  .rsm__cell:focus-visible {
+    outline: 2px solid var(--c);
+    outline-offset: 1px;
+  }
+  .rsm__cell[aria-pressed='true'] {
+    background: color-mix(in srgb, var(--c) 28%, transparent);
+    border: 2px solid var(--c);
+  }
+
+  .rsm__detail {
+    margin-top: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .rsm__detail-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+  }
+  .rsm__which {
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .rsm .rsm__detail p {
+    margin: var(--sp-2) 0 0;
+    min-height: 4.5em;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg);
+  }
+  .rsm__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 420px) {
+    .rsm__code {
+      display: none;
+    }
+  }
+  @media (max-width: 560px) {
+    .rsm__col-head {
+      width: 30%;
+    }
+    .rsm .rsm__table {
+      border-spacing: 2px;
+    }
+    .rsm__colname {
+      font-size: 10px;
+    }
+    .rsm__cell {
+      font-size: 10.5px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rsm__cell {
+      transition: none;
+    }
+  }
+</style>

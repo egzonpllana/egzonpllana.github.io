@@ -1,0 +1,700 @@
+---
+/**
+ * N requests leave with an expired access token and all get a 401. The auth
+ * server rotates refresh tokens and treats a reused one as theft (RFC 9700
+ * §4.14.2): it revokes the whole grant. Three client strategies:
+ *
+ *   naive   every 401 starts its own refresh with the refresh token it holds
+ *   shared  401s that arrive during a refresh await it (one in-flight Task)
+ *   check   shared, and a 401 for a token that is no longer current replays
+ *           with the current token instead of refreshing again
+ *
+ * The last row is a slow request: sent with the old token, its 401 arrives
+ * after the shared refresh has finished. Timings are illustrative; the
+ * outcomes match the article's Swift probe with eight requests.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '03',
+  caption = 'Every request leaves with an expired token. Refreshing per 401 sends one refresh per request with the same refresh token; the server rotates it on the first and reads the second as a stolen token, revokes the grant, and the user is signed out. Sharing one in-flight refresh turns the burst into one call. The slow request at the bottom gets its 401 after that refresh has finished: without comparing the token it was sent with, it starts a second, pointless refresh.',
+} = Astro.props;
+
+const AXIS = 1000;
+const ticks = [0, 250, 500, 750];
+const DEFAULT_COUNT = 8;
+---
+
+<VizFrame
+  fig={fig}
+  title="Eight 401s, one refresh token"
+  caption={caption}
+  class="trt"
+  data-trt
+>
+  <div slot="tools">
+    <AnimControls label="Burst" />
+  </div>
+
+  <div class="trt__bar">
+    <div class="viz-seg" role="group" aria-label="Refresh strategy">
+      <button type="button" aria-pressed="true" data-mode="naive"
+        >refresh per 401</button
+      >
+      <button type="button" aria-pressed="false" data-mode="shared"
+        >shared refresh</button
+      >
+      <button type="button" aria-pressed="false" data-mode="check"
+        >shared + token check</button
+      >
+    </div>
+    <label class="trt__count">
+      <span class="viz-label">requests</span>
+      <input
+        type="range"
+        min="2"
+        max="8"
+        step="1"
+        value={DEFAULT_COUNT}
+        data-count
+        aria-label="Concurrent requests"
+      />
+      <b class="viz-mono" data-count-out>{DEFAULT_COUNT}</b>
+    </label>
+  </div>
+
+  <div class="trt__stats viz-panel" aria-live="polite">
+    <div>
+      <span class="viz-label">refresh calls</span>
+      <span class="viz-chip viz-chip--net" data-stat-refresh>0</span>
+    </div>
+    <div>
+      <span class="viz-label">requests that succeeded</span>
+      <span class="viz-chip viz-chip--sound" data-stat-ok>0</span>
+    </div>
+    <div>
+      <span class="viz-label">session</span>
+      <span class="viz-chip viz-chip--sound" data-stat-session>signed in</span>
+    </div>
+  </div>
+
+  <div class="trt__chart viz-panel">
+    <div class="trt__axis" aria-hidden="true">
+      <span class="trt__axis-pad"></span>
+      <span class="trt__axis-track">
+        {
+          ticks.map((t) => (
+            <i style={`left:${(t / AXIS) * 100}%`}>
+              {t}
+              {t === 0 ? ' ms' : ''}
+            </i>
+          ))
+        }
+      </span>
+    </div>
+    <ol class="trt__rows" data-rows></ol>
+  </div>
+
+  <div class="viz-legend trt__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-net)"></i>request, with its access token</span
+    >
+    <span
+      ><i class="trt__legend-refresh"></i>refresh call, with its refresh token</span
+    >
+    <span><i style="--c:var(--viz-meta)"></i>awaiting the shared refresh</span>
+    <span><i style="--c:var(--viz-sound)"></i>200, value used</span>
+    <span><i style="--c:var(--viz-bad)"></i>401 or revoked</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-trt-data
+    set:html={JSON.stringify({ axis: AXIS, count: DEFAULT_COUNT })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const DURATION_MS = 5200;
+    const LATENCY = 120; // request out and back
+    const ARRIVE = 60; // request reaches the server
+    const REFRESH = 200; // refresh call out and back
+    const STAGGER = 25;
+    const LATE = { at: 50, latency: 420 };
+
+    /** Discrete-event run of one strategy. Returns rows of timed segments. */
+    function simulate(mode, count) {
+      const server = {
+        valid: 'A-expired',
+        active: 'R0',
+        used: new Set(),
+        gen: 0,
+        marks: [],
+      };
+      const session = { access: 'A0', refresh: 'R0', cleared: false };
+      const rows = [];
+      const queue = [];
+      const at = (t, fn) => queue.push({ t, fn, seq: queue.length });
+      let refreshCalls = 0;
+      let inflight = null;
+
+      for (let i = 0; i < count; i += 1) {
+        const late = i === count - 1;
+        const sent = late ? LATE.at : i * STAGGER;
+        const back = sent + (late ? LATE.latency : LATENCY);
+        const row = {
+          name: late ? 'slow request' : `request ${i + 1}`,
+          segs: [{ kind: 'wire', from: sent, to: back, label: 'A0' }],
+          marks: [{ at: back, kind: 'bad', label: '' }],
+          ok: false,
+        };
+        rows.push(row);
+        at(back, (t) => on401(row, 'A0', t));
+      }
+
+      function serverRefresh(token) {
+        if (token === server.active) {
+          server.used.add(token);
+          server.gen += 1;
+          server.active = `R${server.gen}`;
+          server.valid = `A${server.gen}`;
+          return { ok: true, access: server.valid, refresh: server.active };
+        }
+        if (server.used.has(token)) {
+          server.active = null;
+          server.valid = null;
+          return { ok: false, revoked: true };
+        }
+        return { ok: false };
+      }
+
+      function startRefresh(row, t) {
+        refreshCalls += 1;
+        const token = session.refresh;
+        const call = { waiters: [] };
+        row.segs.push({
+          kind: 'refresh',
+          from: t,
+          to: t + REFRESH,
+          label: token,
+        });
+        at(t + REFRESH / 2, (tt) => {
+          call.result = serverRefresh(token);
+          server.marks.push({
+            at: tt,
+            kind: call.result.ok ? 'ok' : 'bad',
+            label: call.result.ok
+              ? `${token} → ${server.active}`
+              : call.result.revoked
+                ? `${token} reused: grant revoked`
+                : `${token} rejected`,
+          });
+        });
+        at(t + REFRESH, (tt) => {
+          if (call.result.ok) {
+            session.access = call.result.access;
+            session.refresh = call.result.refresh;
+          } else {
+            session.cleared = true;
+          }
+          if (inflight === call) inflight = null;
+          [row, ...call.waiters].forEach((r) => resume(r, call.result, tt));
+        });
+        return call;
+      }
+
+      function resume(row, result, t) {
+        if (!result.ok) {
+          row.marks.push({ at: t, kind: 'bad', label: 'signed out' });
+          return;
+        }
+        replay(row, result.access, t);
+      }
+
+      function replay(row, token, t) {
+        row.segs.push({
+          kind: 'wire',
+          from: t,
+          to: t + LATENCY,
+          label: token,
+        });
+        at(t + ARRIVE, () => {
+          row.replayOk = token === server.valid;
+        });
+        at(t + LATENCY, (tt) => {
+          row.ok = row.replayOk;
+          row.marks.push({
+            at: tt,
+            kind: row.ok ? 'ok' : 'bad',
+            label: row.ok ? '200' : '401',
+          });
+        });
+      }
+
+      function on401(row, sentWith, t) {
+        if (session.cleared) {
+          row.marks.push({ at: t, kind: 'bad', label: 'signed out' });
+          return;
+        }
+        if (mode === 'naive') {
+          startRefresh(row, t);
+          return;
+        }
+        if (inflight) {
+          inflight.waiters.push(row);
+          row.segs.push({
+            kind: 'join',
+            from: t,
+            to: inflight.end,
+            label: '',
+          });
+          return;
+        }
+        if (mode === 'check' && session.access !== sentWith) {
+          replay(row, session.access, t);
+          return;
+        }
+        inflight = startRefresh(row, t);
+        inflight.end = t + REFRESH;
+      }
+
+      while (queue.length) {
+        queue.sort((a, b) => a.t - b.t || a.seq - b.seq);
+        const ev = queue.shift();
+        ev.fn(ev.t);
+      }
+
+      return {
+        rows,
+        serverMarks: server.marks,
+        refreshCalls,
+        ok: rows.filter((r) => r.ok).length,
+        signedOut: session.cleared,
+      };
+    }
+
+    function initRefresh(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-trt-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const rowsEl = root.querySelector('[data-rows]');
+      const countEl = root.querySelector('[data-count]');
+      const countOut = root.querySelector('[data-count-out]');
+      const modeBtns = [...root.querySelectorAll('[data-mode]')];
+      const refreshEl = root.querySelector('[data-stat-refresh]');
+      const okEl = root.querySelector('[data-stat-ok]');
+      const sessionEl = root.querySelector('[data-stat-session]');
+
+      let mode = 'naive';
+      let count = data.count;
+      let run = null;
+      let parts = [];
+      let now = 0;
+      let raf = 0;
+      let since = null;
+      const pct = (ms) => `${(Math.min(ms, data.axis) / data.axis) * 100}%`;
+
+      const el = (tag, cls, text) => {
+        const node = document.createElement(tag);
+        if (cls) node.className = cls;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      };
+
+      function makeRow(name, segs, marks, isServer) {
+        let labelled = 0;
+        let lastLabel = null;
+        const li = el('li', `trt__row${isServer ? ' trt__row--server' : ''}`);
+        const track = el('span', 'trt__track');
+        li.append(el('span', 'trt__name', name), track);
+        segs.forEach((s) => {
+          const bar = el('i', `trt__seg trt__seg--${s.kind}`);
+          bar.style.left = pct(s.from);
+          const tag = el('b', 'trt__tag', s.label);
+          tag.style.left = pct(s.from);
+          track.append(bar, tag);
+          parts.push({ type: 'seg', s, bar, tag });
+        });
+        marks.forEach((m) => {
+          const dot = el('i', `trt__mark trt__mark--${m.kind}`);
+          dot.style.left = pct(m.at);
+          // Repeated server verdicts keep their dot and drop the label.
+          const text = m.label && m.label !== lastLabel ? m.label : '';
+          const tag = el('b', `trt__mtag trt__mtag--${m.kind}`, text);
+          tag.style.left = `calc(${pct(m.at)} + 8px)`;
+          if (text) {
+            lastLabel = text;
+            if (isServer && labelled % 2 === 1)
+              tag.classList.add('trt__mtag--low');
+            labelled += 1;
+          }
+          track.append(dot, tag);
+          parts.push({ type: 'mark', m, dot, tag });
+        });
+        return li;
+      }
+
+      function build() {
+        run = simulate(mode, count);
+        parts = [];
+        const items = [
+          makeRow('auth server', [], run.serverMarks, true),
+          ...run.rows.map((r) => makeRow(r.name, r.segs, r.marks, false)),
+        ];
+        const head = el('li', 'trt__head');
+        head.setAttribute('aria-hidden', 'true');
+        rowsEl.replaceChildren(...items, head);
+        render();
+      }
+
+      function render() {
+        parts.forEach((p) => {
+          if (p.type === 'seg') {
+            const started = now >= p.s.from;
+            const end = Math.min(now, p.s.to);
+            p.bar.style.width = started
+              ? `calc(${pct(end)} - ${pct(p.s.from)})`
+              : '0';
+            p.tag.hidden = !started;
+          } else {
+            const shown = now >= p.m.at;
+            p.dot.hidden = !shown;
+            p.tag.hidden = !shown;
+          }
+        });
+        rowsEl.lastElementChild.style.setProperty(
+          '--x',
+          String(now / data.axis),
+        );
+
+        const refreshes = run.rows.reduce(
+          (n, r) =>
+            n +
+            r.segs.filter((s) => s.kind === 'refresh' && now >= s.from).length,
+          0,
+        );
+        refreshEl.textContent = String(refreshes);
+        refreshEl.className = `viz-chip ${refreshes > 1 ? 'viz-chip--bad' : 'viz-chip--net'}`;
+        const done = now >= data.axis;
+        const okNow = run.rows.filter((r) =>
+          r.marks.some((m) => m.kind === 'ok' && now >= m.at),
+        ).length;
+        okEl.textContent = `${okNow} of ${run.rows.length}`;
+        okEl.className = `viz-chip ${done && run.ok < run.rows.length ? 'viz-chip--bad' : 'viz-chip--sound'}`;
+        const out = run.serverMarks.some(
+          (m) => m.kind === 'bad' && now >= m.at,
+        );
+        sessionEl.textContent = out ? 'signed out' : 'signed in';
+        sessionEl.className = `viz-chip ${out ? 'viz-chip--bad' : 'viz-chip--sound'}`;
+      }
+
+      function frame(ts) {
+        if (since === null) since = ts - (now / data.axis) * DURATION_MS;
+        now = Math.min(data.axis, ((ts - since) / DURATION_MS) * data.axis);
+        render();
+        if (now < data.axis) {
+          raf = requestAnimationFrame(frame);
+          return;
+        }
+        raf = 0;
+        since = null;
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
+      function stop() {
+        cancelAnimationFrame(raf);
+        raf = 0;
+        since = null;
+      }
+
+      function play() {
+        if (raf) return;
+        if (now >= data.axis) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        raf = requestAnimationFrame(frame);
+      }
+
+      function reset() {
+        stop();
+        now = 0;
+        render();
+      }
+
+      function restAtEnd() {
+        stop();
+        now = data.axis;
+        render();
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
+      modeBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.mode === mode) return;
+          mode = btn.dataset.mode;
+          modeBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          build();
+          if (reduce) {
+            restAtEnd();
+            return;
+          }
+          reset();
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          play();
+        }),
+      );
+      countEl.addEventListener('input', () => {
+        count = Number(countEl.value);
+        countOut.textContent = String(count);
+        build();
+        restAtEnd();
+      });
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      build();
+      // Until it plays, and always with reduced motion, rest on the last frame.
+      now = data.axis;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-trt]').forEach(initRefresh);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .trt__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-4);
+    margin-bottom: var(--sp-3);
+  }
+  .trt__bar .viz-seg {
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+  .trt__count {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 10rem;
+    min-width: 0;
+  }
+  .trt__count input {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .trt__count b {
+    width: 1.2em;
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .trt__stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+  }
+  .trt__stats div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .trt__stats .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .trt__chart {
+    margin-top: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  }
+  .trt__axis,
+  .trt__chart :global(.trt__row) {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .trt__axis-track {
+    position: relative;
+    height: 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .trt__axis-track i {
+    position: absolute;
+    top: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-style: normal;
+    color: var(--fg-faint);
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+  .trt__axis-track i:first-child {
+    transform: none;
+  }
+  .trt__rows {
+    --pad: calc(6.5rem + var(--sp-2));
+    position: relative;
+    display: grid;
+    gap: 4px;
+    padding-top: 6px;
+  }
+  .trt__chart :global(.trt__name) {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .trt__chart :global(.trt__row--server .trt__name) {
+    color: var(--viz-net);
+    font-weight: 600;
+  }
+  .trt__chart :global(.trt__track) {
+    position: relative;
+    overflow: hidden;
+    height: 30px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--fg) 3%, transparent);
+  }
+  .trt__chart :global(.trt__row--server .trt__track) {
+    height: 38px;
+    background: color-mix(in srgb, var(--viz-net) 6%, transparent);
+  }
+  .trt__chart :global(.trt__seg) {
+    --c: var(--viz-net);
+    position: absolute;
+    top: 4px;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--c);
+  }
+  .trt__chart :global(.trt__seg--refresh) {
+    height: 8px;
+    background: repeating-linear-gradient(
+      90deg,
+      var(--viz-net) 0 3px,
+      color-mix(in srgb, var(--viz-net) 45%, transparent) 3px 5px
+    );
+  }
+  .trt__chart :global(.trt__seg--join) {
+    background: repeating-linear-gradient(
+      90deg,
+      var(--viz-meta) 0 6px,
+      transparent 6px 9px
+    );
+  }
+  .trt__chart :global(.trt__tag) {
+    position: absolute;
+    top: 15px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+  .trt__chart :global(.trt__mark) {
+    position: absolute;
+    top: 2px;
+    width: 12px;
+    height: 12px;
+    margin-left: -6px;
+    border-radius: 50%;
+    border: 2px solid var(--surface);
+    background: var(--viz-bad);
+  }
+  .trt__chart :global(.trt__mark--ok) {
+    background: var(--viz-sound);
+  }
+  .trt__chart :global(.trt__row--server .trt__mark) {
+    top: 13px;
+  }
+  .trt__chart :global(.trt__mtag) {
+    position: absolute;
+    top: 2px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 12px;
+    color: var(--viz-bad);
+    white-space: nowrap;
+  }
+  .trt__chart :global(.trt__mtag--ok) {
+    color: var(--viz-sound-text);
+  }
+  .trt__chart :global(.trt__row--server .trt__mtag) {
+    top: 1px;
+  }
+  .trt__chart :global(.trt__row--server .trt__mtag--low) {
+    top: 25px;
+  }
+  .trt__chart :global(.trt__head) {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(var(--pad) + (100% - var(--pad)) * var(--x, 0));
+    width: 0;
+    border-left: 1px dashed var(--fg-faint);
+    pointer-events: none;
+  }
+  .trt__legend {
+    margin-top: var(--sp-3);
+  }
+  .trt__legend .trt__legend-refresh {
+    background: repeating-linear-gradient(
+      90deg,
+      var(--viz-net) 0 3px,
+      color-mix(in srgb, var(--viz-net) 45%, transparent) 3px 5px
+    );
+  }
+
+  @media (max-width: 560px) {
+    .trt__axis,
+    .trt__chart :global(.trt__row) {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2px;
+    }
+    .trt__axis-pad {
+      display: none;
+    }
+    .trt__rows {
+      --pad: 0px;
+    }
+    .trt__stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .trt__stats div:last-child {
+      grid-column: 1 / -1;
+    }
+  }
+</style>

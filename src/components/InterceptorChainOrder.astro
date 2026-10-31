@@ -1,0 +1,681 @@
+---
+/**
+ * The interceptor chain from the article, run as an onion: the first
+ * interceptor in the array is the outermost layer, so it sees the request
+ * first and the response last. The reader moves layers in and out and the
+ * figure re-runs the chain against a scripted server, using the same rules as
+ * the Swift code (RetryInterceptor decides from the request it is given,
+ * AuthInterceptor reads the token per pass and replays once after a 401 with
+ * the token-compare check, IdempotencyKeyInterceptor only keys POST/PATCH).
+ *
+ * Nothing here is timed: the onion is a pure function of order and scenario.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '01',
+  caption = 'The same four interceptors in a different order send different requests. Retry reads the request it is given, so a key added inside it is invisible to it. Auth inside Retry reads the token on every attempt; outside, every attempt resends the token read before the first one. Logging outside Auth never sees the token, and outside Retry it writes one line per call instead of one per attempt.',
+} = Astro.props;
+
+const layers = [
+  {
+    id: 'log',
+    name: 'Logging',
+    job: 'writes a line when the response comes back',
+  },
+  {
+    id: 'key',
+    name: 'IdempotencyKey',
+    job: 'adds Idempotency-Key to POST and PATCH',
+  },
+  {
+    id: 'retry',
+    name: 'Retry',
+    job: 'up to 3 attempts, if the request is repeatable',
+  },
+  {
+    id: 'auth',
+    name: 'Auth',
+    job: 'adds Bearer token; on 401 refreshes and replays once',
+  },
+];
+const scenarios = [
+  { id: 'post', label: 'POST · 503, 503, 201' },
+  { id: 'rotate', label: 'GET · 503, token rotates in the wait' },
+  { id: 'expired', label: 'GET · token expired' },
+];
+---
+
+<VizFrame
+  fig={fig}
+  title="One interceptor chain, four layers, any order"
+  caption={caption}
+  class="ico"
+  data-ico
+>
+  <div class="ico__bar">
+    <div class="viz-seg" role="group" aria-label="Server behaviour">
+      {
+        scenarios.map((s, i) => (
+          <button
+            type="button"
+            aria-pressed={i === 0 ? 'true' : 'false'}
+            data-scenario={s.id}
+          >
+            {s.label}
+          </button>
+        ))
+      }
+    </div>
+    <button type="button" class="viz-btn" data-reset>recommended order</button>
+  </div>
+
+  <div class="ico__grid">
+    <div
+      class="ico__onion"
+      data-onion
+      aria-label="Interceptor chain, outermost first"
+    >
+    </div>
+
+    <div class="ico__side">
+      <div class="ico__stats viz-panel" aria-live="polite">
+        <div>
+          <span class="viz-label">caller receives</span>
+          <span class="viz-chip" data-out></span>
+        </div>
+        <div>
+          <span class="viz-label">requests sent</span>
+          <span class="viz-chip viz-chip--net" data-sent></span>
+        </div>
+        <div>
+          <span class="viz-label">token refreshes</span>
+          <span class="viz-chip viz-chip--net" data-refresh></span>
+        </div>
+      </div>
+
+      <div class="ico__log viz-panel">
+        <span class="viz-label">Logging writes</span>
+        <ol class="viz-mono" data-log></ol>
+      </div>
+
+      <ul class="ico__rules" data-rules aria-live="polite"></ul>
+    </div>
+  </div>
+
+  <div class="viz-legend ico__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-meta)"></i>interceptor layer</span>
+    <span><i style="--c:var(--viz-net)"></i>on the wire</span>
+    <span><i style="--c:var(--viz-sound)"></i>response used</span>
+    <span><i style="--c:var(--viz-level)"></i>trade-off</span>
+    <span><i style="--c:var(--viz-bad)"></i>ordering bug</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-ico-data
+    set:html={JSON.stringify({ layers })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const RECOMMENDED = ['log', 'key', 'retry', 'auth'];
+    const MAX_ATTEMPTS = 3;
+    const RETRY_ANY = [408, 429];
+    const RETRY_REPEATABLE = [500, 502, 503, 504];
+    const idempotent = (m) => ['GET', 'HEAD', 'PUT', 'DELETE'].includes(m);
+
+    /** Scripted servers. `respond` sees the request as it arrives on the wire. */
+    const SCENARIOS = {
+      post: {
+        method: 'POST',
+        path: '/v1/posts',
+        valid: 'A0',
+        session: 'A0',
+        respond: (_req, st) => [503, 503, 201][Math.min(st.attempt, 3) - 1],
+      },
+      rotate: {
+        method: 'GET',
+        path: '/v1/posts',
+        valid: 'A0',
+        session: 'A0',
+        respond: (req, st) =>
+          st.attempt === 1
+            ? 503
+            : req.headers.Authorization === `Bearer ${st.valid}`
+              ? 200
+              : 401,
+        // Another request refreshes the token while this one waits to retry.
+        onWait: (st) => {
+          st.valid = 'A1';
+          st.session = 'A1';
+        },
+      },
+      expired: {
+        method: 'GET',
+        path: '/v1/posts',
+        valid: 'A1',
+        session: 'A0',
+        respond: (req, st) =>
+          req.headers.Authorization === `Bearer ${st.valid}` ? 200 : 401,
+      },
+    };
+
+    function simulate(order, sc) {
+      const st = {
+        attempt: 0,
+        valid: sc.valid,
+        session: sc.session,
+        refreshes: 0,
+        keys: 0,
+        wire: [],
+        logs: [],
+      };
+      const with_ = (req, field, value) => ({
+        ...req,
+        headers: { ...req.headers, [field]: value },
+      });
+      const layers = {
+        log(req, next) {
+          const res = next(req);
+          st.logs.push({
+            text: `${req.method} ${req.path} ${res.status}`,
+            token: req.headers.Authorization,
+          });
+          return res;
+        },
+        key(req, next) {
+          if (idempotent(req.method) || req.headers['Idempotency-Key'])
+            return next(req);
+          st.keys += 1;
+          return next(with_(req, 'Idempotency-Key', `k${st.keys}`));
+        },
+        retry(req, next) {
+          const repeatable =
+            idempotent(req.method) || Boolean(req.headers['Idempotency-Key']);
+          for (let attempt = 1; ; attempt += 1) {
+            const res = next(req);
+            const again =
+              RETRY_ANY.includes(res.status) ||
+              (RETRY_REPEATABLE.includes(res.status) && repeatable);
+            if (attempt >= MAX_ATTEMPTS || !again) return res;
+            st.wire.push({ wait: true });
+            if (sc.onWait) sc.onWait(st);
+          }
+        },
+        auth(req, next) {
+          const token = st.session;
+          const res = next(with_(req, 'Authorization', `Bearer ${token}`));
+          if (res.status !== 401) return res;
+          if (st.session === token) {
+            st.refreshes += 1;
+            st.session = st.valid;
+          }
+          return next(with_(req, 'Authorization', `Bearer ${st.session}`));
+        },
+      };
+      const transport = (req) => {
+        st.attempt += 1;
+        const status = sc.respond(req, st);
+        st.wire.push({ n: st.attempt, headers: req.headers, status });
+        return { status };
+      };
+      const chain = [...order]
+        .reverse()
+        .reduce((next, id) => (req) => layers[id](req, next), transport);
+      const res = chain({ method: sc.method, path: sc.path, headers: {} });
+      return { status: res.status, ...st };
+    }
+
+    function rules(order, scId) {
+      const at = (id) => order.indexOf(id);
+      const out = [];
+      out.push(
+        at('key') < at('retry')
+          ? {
+              kind: 'ok',
+              hot: scId === 'post',
+              text: 'IdempotencyKey outside Retry: every attempt carries the same key, so the server can tell a retry from a new request.',
+            }
+          : {
+              kind: 'bad',
+              hot: scId === 'post',
+              text: 'IdempotencyKey inside Retry: Retry cannot see the key and treats the POST as unsafe, so it never retries. A retry that trusted a flag instead would send a new key each time, and the server would run the POST again.',
+            },
+      );
+      out.push(
+        at('retry') < at('auth')
+          ? {
+              kind: 'ok',
+              hot: scId === 'rotate',
+              text: 'Retry outside Auth: each attempt reads the current token.',
+            }
+          : {
+              kind: 'bad',
+              hot: scId === 'rotate',
+              text: 'Auth outside Retry: attempts after a wait resend the token read before the first one. If it was rotated meanwhile, that costs a 401 and a replay.',
+            },
+      );
+      out.push(
+        at('log') < at('auth')
+          ? {
+              kind: 'ok',
+              hot: scId === 'expired',
+              text: 'Logging outside Auth: the log never sees the token.',
+            }
+          : {
+              kind: 'warn',
+              hot: true,
+              text: 'Logging inside Auth: the log sees Authorization. Redact it, or move Logging out.',
+            },
+      );
+      out.push(
+        at('log') < at('retry')
+          ? {
+              kind: 'warn',
+              hot: false,
+              text: 'Logging outside Retry: one line per call, retries are invisible in the log.',
+            }
+          : {
+              kind: 'ok',
+              hot: false,
+              text: 'Logging inside Retry: one line per attempt.',
+            },
+      );
+      return out;
+    }
+
+    function initChain(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const { layers } = JSON.parse(
+        root.querySelector('[data-ico-data]').textContent,
+      );
+      const byId = Object.fromEntries(layers.map((l) => [l.id, l]));
+      const onionEl = root.querySelector('[data-onion]');
+      const outEl = root.querySelector('[data-out]');
+      const sentEl = root.querySelector('[data-sent]');
+      const refreshEl = root.querySelector('[data-refresh]');
+      const logEl = root.querySelector('[data-log]');
+      const rulesEl = root.querySelector('[data-rules]');
+      const scBtns = [...root.querySelectorAll('[data-scenario]')];
+
+      let order = [...RECOMMENDED];
+      let scId = 'post';
+      let focusAfter = null;
+
+      const el = (tag, cls, text) => {
+        const node = document.createElement(tag);
+        if (cls) node.className = cls;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      };
+
+      function move(index, delta) {
+        const to = index + delta;
+        if (to < 0 || to >= order.length) return;
+        const next = [...order];
+        [next[index], next[to]] = [next[to], next[index]];
+        focusAfter = { id: order[index], dir: delta < 0 ? 'out' : 'in' };
+        order = next;
+        render();
+      }
+
+      function wireList(result) {
+        const list = el('ol', 'ico__wire viz-mono');
+        result.wire.forEach((w) => {
+          if (w.wait) {
+            list.append(el('li', 'ico__wait', 'backoff wait'));
+            return;
+          }
+          const li = el('li', 'ico__hit');
+          li.dataset.ok = String(w.status < 300);
+          const head = el('span', 'ico__hit-head');
+          head.append(
+            el('b', '', `#${w.n} ${SCENARIOS[scId].method}`),
+            el('span', 'ico__status', String(w.status)),
+          );
+          const key = w.headers['Idempotency-Key'];
+          const auth = w.headers.Authorization;
+          const meta = el(
+            'span',
+            'ico__hit-meta',
+            [key ? `key ${key}` : 'no key', auth ? auth : 'no token'].join(
+              ' · ',
+            ),
+          );
+          li.append(head, meta);
+          list.append(li);
+        });
+        return list;
+      }
+
+      function render() {
+        const sc = SCENARIOS[scId];
+        const result = simulate(order, sc);
+
+        // Onion: nested layers, outermost first.
+        let host = onionEl;
+        host.replaceChildren();
+        order.forEach((id, i) => {
+          const layer = byId[id];
+          const box = el('section', 'ico__layer');
+          box.dataset.layer = id;
+          const head = el('div', 'ico__layer-head');
+          const name = el('span', 'ico__name', layer.name);
+          const ctrls = el('span', 'ico__ctrls');
+          const outBtn = el('button', 'ico__move', 'out');
+          outBtn.type = 'button';
+          outBtn.disabled = i === 0;
+          outBtn.setAttribute('aria-label', `Move ${layer.name} outward`);
+          outBtn.dataset.dir = 'out';
+          outBtn.addEventListener('click', () => move(i, -1));
+          const inBtn = el('button', 'ico__move', 'in');
+          inBtn.type = 'button';
+          inBtn.disabled = i === order.length - 1;
+          inBtn.setAttribute('aria-label', `Move ${layer.name} inward`);
+          inBtn.dataset.dir = 'in';
+          inBtn.addEventListener('click', () => move(i, 1));
+          ctrls.append(outBtn, inBtn);
+          head.append(
+            el('span', 'ico__depth viz-mono', String(i + 1)),
+            name,
+            ctrls,
+          );
+          box.append(head, el('p', 'ico__job', layer.job));
+          host.append(box);
+          host = box;
+        });
+        const core = el('section', 'ico__core');
+        core.append(
+          el('span', 'viz-label', 'URLSession · the server'),
+          wireList(result),
+        );
+        host.append(core);
+
+        if (focusAfter) {
+          const btn = onionEl.querySelector(
+            `[data-layer="${focusAfter.id}"] > .ico__layer-head [data-dir="${focusAfter.dir}"]`,
+          );
+          const target =
+            btn && !btn.disabled
+              ? btn
+              : onionEl.querySelector(
+                  `[data-layer="${focusAfter.id}"] > .ico__layer-head .ico__move:not(:disabled)`,
+                );
+          if (target) target.focus();
+          focusAfter = null;
+        }
+
+        const ok = result.status < 300;
+        outEl.textContent = ok
+          ? `${result.status} · value`
+          : `${result.status} · error`;
+        outEl.className = `viz-chip ${ok ? 'viz-chip--sound' : 'viz-chip--bad'}`;
+        const sent = result.wire.filter((w) => !w.wait).length;
+        sentEl.textContent = String(sent);
+        refreshEl.textContent = String(result.refreshes);
+
+        logEl.replaceChildren(
+          ...result.logs.map((line) => {
+            const li = el('li', 'ico__logline', line.text);
+            if (line.token) {
+              li.classList.add('is-leak');
+              li.append(el('span', '', ` · ${line.token}`));
+            }
+            return li;
+          }),
+        );
+
+        rulesEl.replaceChildren(
+          ...rules(order, scId).map((r) => {
+            const li = el('li', `ico__rule ico__rule--${r.kind}`, r.text);
+            li.classList.toggle('is-hot', r.hot);
+            return li;
+          }),
+        );
+      }
+
+      scBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          scId = btn.dataset.scenario;
+          scBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+      root.querySelector('[data-reset]').addEventListener('click', () => {
+        order = [...RECOMMENDED];
+        render();
+      });
+
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-ico]').forEach(initChain);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .ico__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .ico__bar .viz-seg {
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+
+  .ico__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: var(--sp-3);
+    align-items: start;
+  }
+
+  .ico__onion :global(.ico__layer) {
+    padding: 6px 6px 6px;
+    border: 1px solid color-mix(in srgb, var(--viz-meta) 45%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--viz-meta) 5%, var(--viz-panel));
+  }
+  .ico__onion :global(.ico__layer .ico__layer) {
+    margin-top: 6px;
+  }
+  .ico__onion :global(.ico__layer-head) {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .ico__onion :global(.ico__depth) {
+    flex: none;
+    width: 1.4em;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--viz-meta);
+  }
+  .ico__onion :global(.ico__name) {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .ico__onion :global(.ico__ctrls) {
+    display: inline-flex;
+    gap: 4px;
+    flex: none;
+  }
+  .ico__onion :global(.ico__move) {
+    min-width: 34px;
+    min-height: 26px;
+    padding: 2px 6px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--viz-meta);
+    background: var(--surface);
+    border: 1px solid color-mix(in srgb, var(--viz-meta) 45%, transparent);
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .ico__onion :global(.ico__move:hover:not(:disabled)) {
+    border-color: var(--viz-meta);
+  }
+  .ico__onion :global(.ico__move:focus-visible) {
+    outline: 2px solid var(--viz-meta);
+    outline-offset: 1px;
+  }
+  .ico__onion :global(.ico__move:disabled) {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .ico__onion :global(.ico__job) {
+    margin: 2px 0 0 calc(1.4em + 6px);
+    font-size: 11.5px;
+    line-height: 1.35;
+    color: var(--fg-muted);
+  }
+  .ico__onion :global(.ico__core) {
+    margin-top: 6px;
+    padding: 6px 8px 8px;
+    border: 1px dashed color-mix(in srgb, var(--viz-net) 55%, transparent);
+    border-radius: 8px;
+    background: var(--viz-panel);
+  }
+  .ico__onion :global(.ico__wire) {
+    display: grid;
+    gap: 4px;
+    margin-top: 4px;
+    font-size: 11px;
+  }
+  .ico__onion :global(.ico__hit) {
+    display: grid;
+    gap: 1px;
+    padding: 3px 6px;
+    border-left: 3px solid var(--viz-bad);
+    background: color-mix(in srgb, var(--viz-net) 6%, transparent);
+    border-radius: 0 6px 6px 0;
+  }
+  .ico__onion :global(.ico__hit[data-ok='true']) {
+    border-left-color: var(--viz-sound);
+  }
+  .ico__onion :global(.ico__hit-head) {
+    display: flex;
+    justify-content: space-between;
+    gap: 6px;
+    color: var(--viz-net);
+  }
+  .ico__onion :global(.ico__status) {
+    font-weight: 700;
+    color: var(--viz-bad);
+  }
+  .ico__onion :global(.ico__hit[data-ok='true'] .ico__status) {
+    color: var(--viz-sound-text);
+  }
+  .ico__onion :global(.ico__hit-meta) {
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+  }
+  .ico__onion :global(.ico__wait) {
+    padding-left: 9px;
+    font-size: 10.5px;
+    color: var(--viz-level);
+  }
+
+  .ico__side {
+    display: grid;
+    gap: var(--sp-3);
+    min-width: 0;
+  }
+  .ico__stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+  }
+  .ico__stats div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .ico__stats .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+  }
+  .ico__log {
+    padding: var(--sp-2) var(--sp-3);
+  }
+  .ico__log ol {
+    display: grid;
+    gap: 2px;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--fg);
+  }
+  .ico__log :global(.ico__logline) {
+    overflow-wrap: anywhere;
+  }
+  .ico__log :global(.ico__logline.is-leak span) {
+    color: var(--viz-level);
+    font-weight: 600;
+  }
+  .ico__rules {
+    display: grid;
+    gap: 6px;
+  }
+  .ico__rules :global(.ico__rule) {
+    --c: var(--viz-sound);
+    padding: 4px 0 4px 10px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--fg-muted);
+    border-left: 3px solid color-mix(in srgb, var(--c) 40%, transparent);
+  }
+  .ico__rules :global(.ico__rule--warn) {
+    --c: var(--viz-level);
+  }
+  .ico__rules :global(.ico__rule--bad) {
+    --c: var(--viz-bad);
+  }
+  .ico__rules :global(.ico__rule.is-hot) {
+    color: var(--fg);
+    border-left-color: var(--c);
+  }
+  .ico__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 720px) {
+    .ico__grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (max-width: 560px) {
+    .ico__onion :global(.ico__layer) {
+      padding: 5px 4px 5px 5px;
+    }
+    .ico__onion :global(.ico__job) {
+      margin-left: 0;
+    }
+  }
+</style>
