@@ -350,6 +350,8 @@ const showToc = tocEntries.length >= 3;
     font-size: var(--fs-3xl);
     line-height: 1.06;
     letter-spacing: -0.03em;
+    /* Long API names in titles, such as DispatchQueue.main, must wrap on phones. */
+    overflow-wrap: anywhere;
   }
   .article__lede {
     margin-top: var(--sp-5);
