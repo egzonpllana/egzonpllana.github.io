@@ -1,0 +1,517 @@
+---
+/**
+ * One turn of the main run loop, station by station, with the main-thread
+ * work items attached to the station that runs them. The reader switches the
+ * mode the run loop is running in and sees which items run and which wait.
+ *
+ * The order of the stations follows __CFRunLoopRun in CoreFoundation's
+ * CFRunLoop.c: before-timers and before-sources observers, blocks, version 0
+ * sources, the main dispatch queue's port, before-waiting observers, sleep,
+ * after-waiting observers, then the timer, dispatch or port that woke it.
+ *
+ * The rules for which item runs:
+ *   - Blocks and timers run only in the modes they were added for; an item
+ *     added for .common runs in every mode in the run loop's common set.
+ *   - The main queue is serviced only on the main thread and only while the
+ *     current mode is in the common set (CFRunLoop.c checks
+ *     CFSetContainsValue(rl->_commonModes, rlm->_name)).
+ *   - The Combine RunLoop scheduler queues with perform(_:), perform(_:with:
+ *     afterDelay:) and a .default Timer, all default mode.
+ * Every rule here matches a Swift 6 probe that ran the main run loop in a
+ * custom mode, first outside and then inside the common modes.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '01',
+  caption = 'Blocks and timers belong to modes: they run only while the run loop is in a mode they were added for, and an item added for .common runs in every mode of the common set. The main dispatch queue is not a run loop source of any one mode. The run loop drains it in every common mode, and UIKit puts its tracking mode in that set, so DispatchQueue.main and main-actor jobs keep running while the user scrolls.',
+} = Astro.props;
+
+type Door = 'blocks' | 'queue' | 'timers';
+type Reg = 'default' | 'common' | 'queue';
+interface Item {
+  code: string;
+  reg: Reg;
+  note: string;
+}
+interface Station {
+  name: string;
+  code: string;
+  text: string;
+  door?: Door;
+}
+interface Mode {
+  id: string;
+  label: string;
+  name: string;
+  common: boolean;
+  note: string;
+}
+
+const MODES: Mode[] = [
+  {
+    id: 'default',
+    label: '.default',
+    name: 'kCFRunLoopDefaultMode',
+    common: true,
+    note: 'The mode the main run loop runs in when nothing special is going on.',
+  },
+  {
+    id: 'tracking',
+    label: '.tracking',
+    name: 'UITrackingRunLoopMode',
+    common: true,
+    note: 'UIKit runs the main run loop in this mode while a scroll view or a control tracks a touch, and adds it to the common modes.',
+  },
+  {
+    id: 'custom',
+    label: 'custom mode',
+    name: 'RunLoop.Mode("MyMode")',
+    common: false,
+    note: 'A mode you run yourself with RunLoop.main.run(mode:before:) and never added to the common modes. Nothing in UIKit does this for you.',
+  },
+];
+
+const STATIONS: Station[] = [
+  {
+    name: 'Observers: timers and sources next',
+    code: 'kCFRunLoopBeforeTimers · BeforeSources',
+    text: 'Observers registered for this mode are told the loop is about to handle timers and sources.',
+  },
+  {
+    name: 'Blocks',
+    code: 'CFRunLoopPerformBlock',
+    text: 'Blocks queued with RunLoop.perform run here, but only the ones queued for the current mode. Combine’s RunLoop scheduler queues for .default.',
+    door: 'blocks',
+  },
+  {
+    name: 'Signalled sources',
+    code: 'version 0 sources',
+    text: 'Input sources that were signalled since the last turn fire, such as the one that delivers touch events.',
+  },
+  {
+    name: 'Main dispatch queue',
+    code: '_dispatch_main_queue_callback_4CF',
+    text: 'If the main queue has work, the loop drains it before sleeping, and again whenever its port wakes the thread. Only in a common mode.',
+    door: 'queue',
+  },
+  {
+    name: 'Observers: about to sleep',
+    code: 'kCFRunLoopBeforeWaiting',
+    text: 'The last callout before sleeping. Core Animation commits pending layer changes from an observer here.',
+  },
+  {
+    name: 'Sleep',
+    code: 'mach_msg',
+    text: 'The thread waits on this mode’s ports and timers, plus the main queue’s port in a common mode. No CPU is used.',
+  },
+  {
+    name: 'Wake up and handle it',
+    code: 'kCFRunLoopAfterWaiting',
+    text: 'Observers are told the thread woke. Then the loop handles what woke it: due timers of this mode, the main queue, or a port. A repeating timer that missed fire dates fires once, late.',
+    door: 'timers',
+  },
+];
+
+const ITEMS: Record<Door, Item[]> = {
+  blocks: [
+    {
+      code: '.receive(on: RunLoop.main)',
+      reg: 'default',
+      note: 'perform(_:), default mode',
+    },
+    {
+      code: 'RunLoop.main.perform { }',
+      reg: 'default',
+      note: 'default mode',
+    },
+    {
+      code: 'RunLoop.main.perform(inModes: [.common]) { }',
+      reg: 'common',
+      note: 'common modes',
+    },
+  ],
+  queue: [
+    {
+      code: 'DispatchQueue.main.async { }',
+      reg: 'queue',
+      note: 'main queue',
+    },
+    {
+      code: '.receive(on: DispatchQueue.main)',
+      reg: 'queue',
+      note: 'main queue',
+    },
+    {
+      code: 'Task { @MainActor in }',
+      reg: 'queue',
+      note: 'main actor, which enqueues on the main queue',
+    },
+  ],
+  timers: [
+    {
+      code: 'Timer.scheduledTimer(…)',
+      reg: 'default',
+      note: 'added for the default mode',
+    },
+    {
+      code: '.debounce(for:scheduler: RunLoop.main)',
+      reg: 'default',
+      note: 'perform(_:with:afterDelay:), default mode',
+    },
+    {
+      code: 'RunLoop.main.add(timer, forMode: .common)',
+      reg: 'common',
+      note: 'common modes',
+    },
+  ],
+};
+const TOTAL = Object.values(ITEMS).reduce((n, list) => n + list.length, 0);
+const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
+---
+
+<VizFrame
+  fig={fig}
+  title="One turn of the main run loop"
+  caption={caption}
+  class="rlt"
+  data-rlt
+>
+  <div class="rlt__bar">
+    <span class="viz-label">run loop mode</span>
+    <div class="viz-seg" role="group" aria-label="Run loop mode">
+      {
+        MODES.map((m, i) => (
+          <button
+            type="button"
+            aria-pressed={i === 0 ? 'true' : 'false'}
+            data-mode={m.id}
+          >
+            {m.label}
+          </button>
+        ))
+      }
+    </div>
+  </div>
+
+  <div class="rlt__mode viz-panel">
+    <span class="viz-chip viz-chip--meta" data-mode-name>{MODES[0].name}</span>
+    <span class="viz-chip" data-mode-common>in the common modes</span>
+    <p class="rlt__mode-note" data-mode-note>{MODES[0].note}</p>
+  </div>
+
+  <ol class="rlt__loop">
+    {
+      STATIONS.map((s, i) => (
+        <li class="rlt__station" data-door={s.door}>
+          <span class="rlt__num viz-mono">{pad(i + 1)}</span>
+          <div class="rlt__body">
+            <div class="rlt__head">
+              <span class="rlt__name">{s.name}</span>
+              <code class="rlt__code viz-mono">{s.code}</code>
+            </div>
+            <p class="rlt__text">{s.text}</p>
+            {s.door && (
+              <ul class="rlt__items">
+                {ITEMS[s.door].map((it) => (
+                  <li class="rlt__item" data-reg={it.reg}>
+                    <code class="rlt__item-code">{it.code}</code>
+                    <span class="rlt__item-note">{it.note}</span>
+                    <span class="rlt__state" data-state />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </li>
+      ))
+    }
+  </ol>
+  <p class="rlt__again viz-mono" aria-hidden="true">
+    <svg viewBox="0 0 16 16"
+      ><path d="M13 8a5 5 0 1 1-1.6-3.7"></path><path d="M13 2.5V5h-2.5"
+      ></path></svg
+    >
+    back to 01, until the mode times out or is stopped
+  </p>
+
+  <p class="rlt__sum viz-panel" data-sum aria-live="polite"></p>
+
+  <div class="viz-legend rlt__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>runs in this turn</span>
+    <span><i style="--c:var(--viz-bad)"></i>waits for another mode</span>
+    <span><i style="--c:var(--viz-meta)"></i>mode and run loop structure</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-rlt-data
+    set:html={JSON.stringify({ modes: MODES, total: TOTAL })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initTurn(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-rlt-data]').textContent,
+      );
+      const btns = [...root.querySelectorAll('[data-mode]')];
+      const items = [...root.querySelectorAll('[data-reg]')];
+      const nameEl = root.querySelector('[data-mode-name]');
+      const commonEl = root.querySelector('[data-mode-common]');
+      const noteEl = root.querySelector('[data-mode-note]');
+      const sumEl = root.querySelector('[data-sum]');
+
+      const runs = (reg, mode) =>
+        reg === 'default' ? mode.id === 'default' : mode.common;
+
+      function render(mode) {
+        nameEl.textContent = mode.name;
+        commonEl.textContent = mode.common
+          ? 'in the common modes'
+          : 'not in the common modes';
+        commonEl.className = `viz-chip ${mode.common ? 'viz-chip--meta' : 'viz-chip--bad'}`;
+        noteEl.textContent = mode.note;
+        let ran = 0;
+        items.forEach((li) => {
+          const ok = runs(li.dataset.reg, mode);
+          li.classList.toggle('is-held', !ok);
+          li.querySelector('[data-state]').textContent = ok ? 'runs' : 'waits';
+          if (ok) ran += 1;
+        });
+        const held = data.total - ran;
+        const until =
+          mode.id === 'custom'
+            ? 'wait until the run loop leaves this mode'
+            : 'wait for the next turn in .default';
+        sumEl.textContent =
+          held === 0
+            ? `${mode.label}: all ${data.total} work items run.`
+            : `${mode.label}: ${ran} of ${data.total} work items run; ${held} ${until}.`;
+        sumEl.classList.toggle('is-bad', held > 0);
+      }
+
+      btns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          btns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render(data.modes.find((m) => m.id === btn.dataset.mode));
+        }),
+      );
+
+      render(data.modes[0]);
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-rlt]').forEach(initTurn);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .rlt__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .rlt__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+
+  .rlt__mode {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    padding: var(--sp-3);
+    margin-bottom: var(--sp-4);
+  }
+  .rlt__mode .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .rlt__mode-note {
+    flex: 1 1 100%;
+    margin: 2px 0 0;
+    font-size: var(--fs-xs);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+
+  .rlt__loop {
+    position: relative;
+    display: grid;
+    gap: 0;
+  }
+  .rlt__station {
+    position: relative;
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: var(--sp-3);
+    padding-bottom: var(--sp-3);
+  }
+  /* The rail that joins the stations into one loop. */
+  .rlt__station::before {
+    content: '';
+    position: absolute;
+    top: 24px;
+    bottom: 0;
+    left: 14px;
+    width: 2px;
+    background: color-mix(in srgb, var(--viz-meta) 35%, transparent);
+  }
+  .rlt__num {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 24px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--viz-meta);
+    background: var(--viz-panel);
+    border: 1px solid color-mix(in srgb, var(--viz-meta) 45%, transparent);
+    border-radius: 6px;
+  }
+  .rlt__body {
+    min-width: 0;
+    padding-top: 2px;
+  }
+  .rlt__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 10px;
+  }
+  .rlt__name {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .rlt__code {
+    font-size: 10.5px;
+    color: var(--fg-faint);
+    background: none;
+    border: 0;
+    padding: 0;
+    overflow-wrap: anywhere;
+  }
+  .rlt__text {
+    margin: 3px 0 0;
+    font-size: var(--fs-xs);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+
+  .rlt__items {
+    display: grid;
+    gap: 6px;
+    margin-top: var(--sp-2) !important;
+  }
+  .rlt__item {
+    --c: var(--viz-sound);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 2px 10px;
+    padding: 6px 10px;
+    background: color-mix(in srgb, var(--c) 8%, var(--viz-panel));
+    border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+    border-left-width: 3px;
+    border-radius: 8px;
+    transition:
+      background 0.2s var(--ease),
+      border-color 0.2s var(--ease);
+  }
+  .rlt__item.is-held {
+    --c: var(--viz-bad);
+    border-style: dashed;
+    border-left-style: solid;
+  }
+  .rlt__item-code {
+    grid-column: 1;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--fg);
+    background: none;
+    border: 0;
+    padding: 0;
+    overflow-wrap: anywhere;
+  }
+  .rlt__item.is-held .rlt__item-code {
+    color: var(--fg-muted);
+  }
+  .rlt__item-note {
+    grid-column: 1;
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+  .rlt__state {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--c);
+  }
+  .rlt__item:not(.is-held) .rlt__state {
+    color: var(--viz-sound-text);
+  }
+
+  .rlt__again {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 0 4px;
+    font-size: 11px;
+    color: var(--viz-meta);
+  }
+  .rlt__again svg {
+    width: 20px;
+    height: 20px;
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .rlt__sum {
+    margin: var(--sp-4) 0 0;
+    padding: 8px 12px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--fg);
+  }
+  .rlt__sum.is-bad {
+    border-color: color-mix(in srgb, var(--viz-bad) 50%, transparent);
+  }
+  .rlt__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rlt__item {
+      transition: none;
+    }
+  }
+</style>

@@ -1,0 +1,691 @@
+---
+/**
+ * A stopwatch publishes its elapsed time every 150 ms from a background
+ * thread while the user scrolls. One lane per way of getting work onto the
+ * main thread, drawn against the run loop's mode: default, then
+ * UITrackingRunLoopMode while the finger is down, then default again.
+ *
+ * The rules come from a Swift 6 probe that ran the main run loop in a custom
+ * mode added to the common modes (the way UIKit treats its tracking mode):
+ *   - receive(on: RunLoop.main) held every value until the mode was default
+ *     again, then delivered all of them in one burst, in order;
+ *   - receive(on: DispatchQueue.main) and Task { @MainActor } delivered each
+ *     value as it was sent;
+ *   - a repeating Timer added for .default skipped its fire dates and fired
+ *     once, late; the same Timer added for .common kept firing.
+ * The gesture lengths and the 150 ms / 200 ms periods are illustrative.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '02',
+  caption = 'The stopwatch sends a value every 150 ms from a background thread. While the finger is down the main run loop is in UITrackingRunLoopMode. Values received on RunLoop.main queue up and arrive together when the mode is .default again, so the label jumps; nothing is dropped. Values received on DispatchQueue.main arrive as they are sent. A repeating timer added for .default skips its fire dates and fires once when the scroll ends.',
+} = Astro.props;
+
+/** Milliseconds on the time axis. */
+const AXIS = 3000;
+const SEND_EVERY = 150;
+const TIMER_EVERY = 200;
+const DOWN = 600;
+const GESTURES = [
+  { id: 'flick', label: 'flick', ms: 450 },
+  { id: 'scroll', label: '1.2 s scroll', ms: 1200 },
+  { id: 'long', label: '2 s scroll', ms: 2000 },
+];
+const DEFAULT_GESTURE = 'scroll';
+const LANES = [
+  {
+    id: 'sent',
+    name: 'values sent',
+    code: 'subject.send(_:)',
+    kind: 'sent',
+  },
+  {
+    id: 'dispatch',
+    name: 'DispatchQueue.main',
+    code: '.receive(on: DispatchQueue.main)',
+    kind: 'queue',
+  },
+  {
+    id: 'runloop',
+    name: 'RunLoop.main',
+    code: '.receive(on: RunLoop.main)',
+    kind: 'default',
+  },
+  {
+    id: 'timerCommon',
+    name: 'Timer, .common',
+    code: 'RunLoop.main.add(t, forMode: .common)',
+    kind: 'timerCommon',
+  },
+  {
+    id: 'timerDefault',
+    name: 'Timer, .default',
+    code: 'Timer.scheduledTimer(…)',
+    kind: 'timerDefault',
+  },
+];
+const ticks = [0, 500, 1000, 1500, 2000, 2500, 3000];
+---
+
+<VizFrame
+  fig={fig}
+  title="A scroll gesture against five ways onto the main thread"
+  caption={caption}
+  class="sdt"
+  data-sdt
+>
+  <div slot="tools">
+    <AnimControls label="Scroll" />
+  </div>
+
+  <div class="sdt__bar">
+    <span class="viz-label">gesture</span>
+    <div class="viz-seg" role="group" aria-label="Gesture length">
+      {
+        GESTURES.map((g) => (
+          <button
+            type="button"
+            aria-pressed={g.id === DEFAULT_GESTURE ? 'true' : 'false'}
+            data-gesture={g.id}
+          >
+            {g.label}
+          </button>
+        ))
+      }
+    </div>
+  </div>
+
+  <div class="sdt__labels">
+    <div class="sdt__screen viz-panel">
+      <span class="viz-label">label via DispatchQueue.main</span>
+      <b class="sdt__time viz-mono" data-label-dispatch>0.00</b>
+      <span class="sdt__lag viz-mono" aria-hidden="true"></span>
+    </div>
+    <div class="sdt__screen viz-panel" data-screen-runloop>
+      <span class="viz-label">label via RunLoop.main</span>
+      <b class="sdt__time viz-mono" data-label-runloop>0.00</b>
+      <span class="sdt__lag viz-mono" data-lag></span>
+    </div>
+  </div>
+
+  <div class="sdt__chart viz-panel">
+    <div class="sdt__row sdt__row--axis" aria-hidden="true">
+      <span class="sdt__name"></span>
+      <span class="sdt__track sdt__axis">
+        {
+          ticks.map((t) => (
+            <i style={`left:${(t / AXIS) * 100}%`}>
+              {t / 1000}
+              {t === 0 ? ' s' : ''}
+            </i>
+          ))
+        }
+      </span>
+    </div>
+    <div class="sdt__row">
+      <span class="sdt__name">
+        <span class="sdt__lane-name">run loop mode</span>
+      </span>
+      <span class="sdt__track sdt__mode" data-mode-track>
+        <span class="sdt__band" data-band>
+          <span class="viz-mono">.tracking</span>
+        </span>
+      </span>
+    </div>
+    <ol class="sdt__lanes">
+      {
+        LANES.map((l) => (
+          <li class="sdt__row" data-lane={l.id} data-kind={l.kind}>
+            <span class="sdt__name">
+              <span class="sdt__lane-name">{l.name}</span>
+              <code class="sdt__lane-code">{l.code}</code>
+            </span>
+            <span class="sdt__track" data-track />
+          </li>
+        ))
+      }
+    </ol>
+    <span class="sdt__head" data-head aria-hidden="true"></span>
+  </div>
+
+  <div class="sdt__stats viz-panel" aria-live="polite">
+    <div>
+      <span class="viz-label">during the scroll</span>
+      <span class="viz-chip viz-chip--bad" data-stat-held>0 held</span>
+    </div>
+    <div>
+      <span class="viz-label">when it ends</span>
+      <span class="viz-chip viz-chip--level" data-stat-burst>0 at once</span>
+    </div>
+    <div>
+      <span class="viz-label">.default timer</span>
+      <span class="viz-chip viz-chip--bad" data-stat-skipped>0 skipped</span>
+    </div>
+  </div>
+
+  <div class="viz-legend sdt__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-net)"></i>sent from a background thread</span>
+    <span><i style="--c:var(--viz-sound)"></i>runs on the main thread</span>
+    <span><i style="--c:var(--viz-bad)"></i>held, or a skipped fire</span>
+    <span><i style="--c:var(--viz-meta)"></i>tracking mode</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-sdt-data
+    set:html={JSON.stringify({
+      axis: AXIS,
+      sendEvery: SEND_EVERY,
+      timerEvery: TIMER_EVERY,
+      down: DOWN,
+      gestures: GESTURES,
+      gesture: DEFAULT_GESTURE,
+    })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const DURATION_MS = 6000;
+    const fmt = (ms) => (ms / 1000).toFixed(2);
+
+    /** Every event on every lane for one gesture length. */
+    function plan(data, up) {
+      const down = data.down;
+      const inTracking = (t) => t >= down && t < up;
+      const lanes = {
+        sent: [],
+        dispatch: [],
+        runloop: [],
+        timerCommon: [],
+        timerDefault: [],
+      };
+      for (let t = data.sendEvery; t <= data.axis; t += data.sendEvery) {
+        lanes.sent.push({ at: t, kind: 'sent', value: t });
+        lanes.dispatch.push({ at: t, kind: 'run', value: t });
+        if (inTracking(t)) {
+          lanes.runloop.push({ at: t, kind: 'held', value: t, until: up });
+        } else {
+          lanes.runloop.push({ at: t, kind: 'run', value: t });
+        }
+      }
+      const held = lanes.runloop.filter((e) => e.kind === 'held');
+      if (held.length) {
+        lanes.runloop.push({
+          at: up,
+          kind: 'burst',
+          value: held[held.length - 1].value,
+          count: held.length,
+        });
+      }
+      let skipped = 0;
+      let late = false;
+      for (let t = data.timerEvery; t <= data.axis; t += data.timerEvery) {
+        lanes.timerCommon.push({ at: t, kind: 'run' });
+        if (inTracking(t)) {
+          lanes.timerDefault.push({ at: t, kind: 'skip' });
+          skipped += 1;
+          late = true;
+        } else {
+          lanes.timerDefault.push({ at: t, kind: 'run' });
+        }
+      }
+      if (late) lanes.timerDefault.push({ at: up, kind: 'late' });
+      // Delivery order: at the moment tracking ends, the held values run
+      // before anything sent at that same moment.
+      const rank = (e) => (e.kind === 'burst' || e.kind === 'late' ? 0 : 1);
+      Object.values(lanes).forEach((events) =>
+        events.sort((a, b) => a.at - b.at || rank(a) - rank(b)),
+      );
+      return { lanes, held: held.length, skipped, down, up };
+    }
+
+    function initTimeline(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-sdt-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const btns = [...root.querySelectorAll('[data-gesture]')];
+      const band = root.querySelector('[data-band]');
+      const head = root.querySelector('[data-head]');
+      const labelDispatch = root.querySelector('[data-label-dispatch]');
+      const labelRunloop = root.querySelector('[data-label-runloop]');
+      const screenRunloop = root.querySelector('[data-screen-runloop]');
+      const lagEl = root.querySelector('[data-lag]');
+      const heldEl = root.querySelector('[data-stat-held]');
+      const burstEl = root.querySelector('[data-stat-burst]');
+      const skippedEl = root.querySelector('[data-stat-skipped]');
+      const tracks = {};
+      root.querySelectorAll('[data-lane]').forEach((li) => {
+        tracks[li.dataset.lane] = li.querySelector('[data-track]');
+      });
+
+      let gesture = data.gestures.find((g) => g.id === data.gesture);
+      let model = null;
+      let marks = [];
+      let now = 0;
+      let raf = 0;
+      let since = null;
+      const pct = (ms) => `${(Math.min(ms, data.axis) / data.axis) * 100}%`;
+
+      function build() {
+        model = plan(data, data.down + gesture.ms);
+        band.style.left = pct(model.down);
+        band.style.width = `calc(${pct(model.up)} - ${pct(model.down)})`;
+        marks = [];
+        Object.entries(model.lanes).forEach(([lane, events]) => {
+          const track = tracks[lane];
+          const tails = events
+            .filter((e) => e.kind === 'held')
+            .map((e) => {
+              const tail = document.createElement('b');
+              tail.className = 'sdt__tail';
+              tail.style.left = pct(e.at);
+              tail.style.width = `calc(${pct(e.until)} - ${pct(e.at)})`;
+              marks.push({ el: tail, at: e.at });
+              return tail;
+            });
+          const dots = events.map((e) => {
+            const el = document.createElement('i');
+            el.className = `sdt__ev sdt__ev--${e.kind}`;
+            el.style.left = pct(e.at);
+            if (e.kind === 'burst') el.textContent = `×${e.count}`;
+            marks.push({ el, at: e.at });
+            return el;
+          });
+          track.replaceChildren(...tails, ...dots);
+        });
+        heldEl.textContent = `${model.held} held`;
+        burstEl.textContent = model.held
+          ? `${model.held} at once`
+          : 'nothing queued';
+        skippedEl.textContent = `${model.skipped} skipped`;
+      }
+
+      /** The newest value a lane has delivered by time t. */
+      function shown(lane, t) {
+        let value = 0;
+        model.lanes[lane].forEach((e) => {
+          if (e.at <= t && (e.kind === 'run' || e.kind === 'burst')) {
+            value = e.value;
+          }
+        });
+        return value;
+      }
+
+      function render() {
+        marks.forEach((m) => m.el.classList.toggle('is-on', now >= m.at));
+        head.style.setProperty('--x', String(now / data.axis));
+        const d = shown('dispatch', now);
+        const r = shown('runloop', now);
+        labelDispatch.textContent = fmt(d);
+        labelRunloop.textContent = fmt(r);
+        const lag = d - r;
+        lagEl.textContent = lag > 0 ? `${fmt(lag)} s behind` : '';
+        screenRunloop.classList.toggle('is-stale', lag > 0);
+      }
+
+      const total = () => data.axis;
+
+      function frame(ts) {
+        if (since === null) since = ts - (now / total()) * DURATION_MS;
+        now = Math.min(total(), ((ts - since) / DURATION_MS) * total());
+        render();
+        if (now < total()) {
+          raf = requestAnimationFrame(frame);
+          return;
+        }
+        raf = 0;
+        since = null;
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
+      function stop() {
+        cancelAnimationFrame(raf);
+        raf = 0;
+        since = null;
+      }
+
+      function play() {
+        if (raf) return;
+        if (now >= total()) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        raf = requestAnimationFrame(frame);
+      }
+
+      function reset() {
+        stop();
+        now = 0;
+        render();
+      }
+
+      btns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.gesture === gesture.id) return;
+          gesture = data.gestures.find((g) => g.id === btn.dataset.gesture);
+          btns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          build();
+          if (reduce) {
+            stop();
+            now = total();
+            render();
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          reset();
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          play();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      build();
+      // Until it plays, and always with reduced motion, rest on the last frame.
+      now = total();
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-sdt]').forEach(initTimeline);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .sdt__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .sdt__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+
+  .sdt__labels {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .sdt__screen {
+    display: grid;
+    gap: 2px;
+    padding: var(--sp-2) var(--sp-3);
+    transition: border-color 0.2s var(--ease);
+  }
+  .sdt__time {
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+  }
+  .sdt__lag {
+    min-height: 1.3em;
+    font-size: 11px;
+    color: var(--viz-bad);
+  }
+  .sdt__screen.is-stale {
+    border-color: color-mix(in srgb, var(--viz-bad) 55%, transparent);
+  }
+  .sdt__screen.is-stale .sdt__time {
+    color: var(--fg-muted);
+  }
+
+  .sdt__chart {
+    --name-w: 14.5rem;
+    position: relative;
+    padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  }
+  .sdt__lanes {
+    display: grid;
+    gap: 6px;
+    margin-top: 6px !important;
+  }
+  .sdt__row {
+    display: grid;
+    grid-template-columns: var(--name-w) minmax(0, 1fr);
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .sdt__name {
+    display: grid;
+    min-width: 0;
+  }
+  .sdt__lane-name {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fg);
+    white-space: nowrap;
+  }
+  .sdt__lane-code {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-faint);
+    background: none;
+    border: 0;
+    padding: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sdt__track {
+    position: relative;
+    height: 26px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--fg) 3%, transparent);
+  }
+  .sdt__axis {
+    height: 18px;
+    background: none;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+  }
+  .sdt__axis i {
+    position: absolute;
+    top: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-style: normal;
+    color: var(--fg-faint);
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+  .sdt__axis i:first-child {
+    transform: none;
+  }
+  .sdt__axis i:last-child {
+    transform: translateX(-100%);
+  }
+  .sdt__mode {
+    height: 22px;
+    margin-top: 6px;
+  }
+  .sdt__band {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--viz-meta);
+    background: color-mix(in srgb, var(--viz-meta) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--viz-meta) 50%, transparent);
+    border-radius: 6px;
+    white-space: nowrap;
+  }
+
+  .sdt__chart :global(.sdt__ev) {
+    --c: var(--viz-sound);
+    position: absolute;
+    top: 50%;
+    width: 8px;
+    height: 8px;
+    margin: -4px 0 0 -4px;
+    border-radius: 50%;
+    background: var(--c);
+    opacity: 0.12;
+    transition: opacity 0.15s var(--ease);
+  }
+  .sdt__chart :global(.sdt__ev.is-on) {
+    opacity: 1;
+  }
+  .sdt__chart :global(.sdt__ev--sent) {
+    --c: var(--viz-net);
+    width: 3px;
+    height: 14px;
+    margin: -7px 0 0 -1.5px;
+    border-radius: 2px;
+  }
+  .sdt__chart :global(.sdt__ev--held) {
+    --c: var(--viz-bad);
+    background: var(--viz-panel);
+    border: 2px solid var(--c);
+  }
+  .sdt__chart :global(.sdt__tail) {
+    position: absolute;
+    top: 50%;
+    height: 0;
+    border-top: 1.5px dashed color-mix(in srgb, var(--viz-bad) 55%, transparent);
+    opacity: 0.12;
+    pointer-events: none;
+  }
+  .sdt__chart :global(.sdt__tail.is-on) {
+    opacity: 0.8;
+  }
+  .sdt__chart :global(.sdt__ev--burst) {
+    --c: var(--viz-level);
+    display: grid;
+    place-items: center;
+    width: auto;
+    min-width: 22px;
+    height: 18px;
+    margin: -9px 0 0 -11px;
+    padding: 0 4px;
+    border-radius: 9px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-style: normal;
+    font-weight: 700;
+    color: var(--viz-panel);
+    z-index: 1;
+  }
+  .sdt__chart :global(.sdt__ev--skip) {
+    --c: var(--viz-bad);
+    width: 10px;
+    height: 10px;
+    margin: -5px 0 0 -5px;
+    background:
+      linear-gradient(
+        45deg,
+        transparent 42%,
+        var(--c) 42% 58%,
+        transparent 58%
+      ),
+      linear-gradient(
+        -45deg,
+        transparent 42%,
+        var(--c) 42% 58%,
+        transparent 58%
+      );
+    border-radius: 0;
+  }
+  .sdt__chart :global(.sdt__ev--late) {
+    --c: var(--viz-level);
+    width: 12px;
+    height: 12px;
+    margin: -6px 0 0 -6px;
+    border: 2px solid var(--viz-panel);
+    z-index: 1;
+  }
+
+  .sdt__head {
+    --pad: calc(var(--sp-3) + var(--name-w) + var(--sp-2));
+    position: absolute;
+    top: var(--sp-2);
+    bottom: var(--sp-3);
+    left: calc(var(--pad) + (100% - var(--pad) - var(--sp-3)) * var(--x, 0));
+    width: 0;
+    border-left: 1px dashed var(--fg-faint);
+    pointer-events: none;
+  }
+
+  .sdt__stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .sdt__stats div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .sdt__stats .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+  }
+  .sdt__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 560px) {
+    .sdt__chart {
+      --name-w: 0px;
+    }
+    .sdt__row {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2px;
+    }
+    .sdt__row--axis .sdt__name {
+      display: none;
+    }
+    .sdt__head {
+      --pad: var(--sp-3);
+    }
+    .sdt__time {
+      font-size: 18px;
+    }
+    .sdt__stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .sdt__stats div:last-child {
+      grid-column: 1 / -1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sdt__chart :global(.sdt__ev),
+    .sdt__screen {
+      transition: none;
+    }
+  }
+</style>

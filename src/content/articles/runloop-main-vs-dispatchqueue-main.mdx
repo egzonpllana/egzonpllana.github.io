@@ -1,0 +1,377 @@
+---
+title: 'The important difference between RunLoop.main and DispatchQueue.main'
+description: 'Why values received on RunLoop.main freeze while the user scrolls and DispatchQueue.main keeps delivering. Re-checked against CoreFoundation’s run loop source, the Swift runtime and Swift 6 probes: run loop modes, who drains the main queue, where main-actor work enters, timers, and what subscribe(on:) actually moves.'
+date: 2024-10-09
+updated: 2026-10-30
+tags: ['Swift', 'Combine', 'iOS', 'Concurrency', 'SwiftUI']
+heroImage: '../../assets/covers/runloop-main-vs-dispatchqueue-main.png'
+---
+
+import StatTiles from '../../components/StatTiles.astro';
+import RunLoopTurnModes from '../../components/RunLoopTurnModes.astro';
+import ScrollDeliveryTimeline from '../../components/ScrollDeliveryTimeline.astro';
+import SubscribeOnThreadMap from '../../components/SubscribeOnThreadMap.astro';
+
+`RunLoop.main` and `DispatchQueue.main` both run your code on the main thread, so it is easy to treat them as two spellings of the same thing. They are two different queues in front of the same thread. The main run loop runs a block you hand it only while it is in the mode the block was queued for, and Combine's `RunLoop` scheduler queues everything for the default mode. While the user drags a scroll view, UIKit runs the main run loop in a different mode, so those blocks wait until the scroll is over. The main dispatch queue is not tied to one mode. The run loop drains it in every mode of its "common" set, and UIKit puts its scrolling mode in that set.
+
+I learned this the slow way, after hours of debugging why UI updates driven by a Combine publisher paused whenever I scrolled the content around them, mostly in SwiftUI views. The publisher was fine. The pipeline ended in `.receive(on: RunLoop.main)`.
+
+The first version of this article gave the right advice, use `DispatchQueue.main` for UI, with the wrong explanation in places. It said `RunLoop.main` is the run loop "of the current thread"; it is the main thread's run loop, whichever thread asks for it. It said values can be "missed"; they are held and then delivered all at once. It said `DispatchQueue.main` "does not depend on run loop modes"; it depends on the mode being one of the common modes, which UIKit's modes are. And its closing section said `subscribe(on:)` moves a subject's upstream work to a background thread. It does not, and in that example it can drop the first value. This version re-checks every claim against Core Foundation's run loop source, the Swift runtime and small Swift 6 programs. Swift and Combine are the worked example. The run loop rules are the same for Objective-C and for anything else built on Core Foundation.
+
+---
+
+## A run loop is a loop that sleeps
+
+The main thread does not spin waiting for work. It sleeps until something needs it, such as a touch, a timer or a message on a port, handles that, and goes back to sleep. The run loop is that loop. `UIApplicationMain` starts it on the main thread and it runs for the life of the app.
+
+In each turn the run loop services four kinds of work:
+
+- **Input sources.** Port-based sources wake the thread when a message arrives. Custom ("version 0") sources are signalled by code and fire on the next turn. UIKit's touch handling arrives this way.
+- **Timers.** `Timer` and `CADisplayLink` are run loop timers: the run loop fires them when their date comes.
+- **Blocks.** `RunLoop.perform(_:)` (`CFRunLoopPerformBlock` underneath) queues a closure for the next turn.
+- **The main dispatch queue**, on the main thread only. The next section is about how.
+
+Observers are called at fixed points of each turn: before timers, before sources, before sleeping and after waking. UIKit and Core Animation hang their own work there; Core Animation commits pending layer changes from a before-sleeping observer.
+
+### Modes
+
+A mode is a named set of sources, timers and observers. The run loop always runs in exactly one mode, and in a turn it only services what belongs to that mode. Everything else stays queued until the run loop runs in a mode it belongs to.
+
+The three that matter on iOS:
+
+- **`.default`** (`kCFRunLoopDefaultMode`): the mode the main run loop is in most of the time.
+- **`.tracking`** (`UITrackingRunLoopMode`): UIKit runs the main run loop in this mode while it tracks a touch in a scroll view or a control.
+- **`.common`** (`kCFRunLoopCommonModes`): not a mode the run loop runs in, but a set of modes.
+
+Adding a timer or a block for `.common` adds it to every mode in the run loop's common set. Core Foundation starts the set with only the default mode, and frameworks add their own. On the iOS 27.1 simulator, the main run loop's set was exactly `UITrackingRunLoopMode` and `kCFRunLoopDefaultMode`.
+
+The point of modes is to let the system choose what runs while it is busy with something that has to stay smooth. During a scroll, UIKit only wants the work that keeps the scroll going, plus whatever someone explicitly opted in through `.common`.
+
+<RunLoopTurnModes />
+
+Start in `.default`: every work item runs. Switch to `.tracking`: the items added only for the default mode wait, and everything on the main dispatch queue keeps running. The custom mode at the end is the edge case that explains the rule: a mode that is not in the common set does not drain the main queue either.
+
+> **In plain words:** the main run loop runs in one mode at a time. Blocks and timers belong to modes. While the user scrolls, the mode is `UITrackingRunLoopMode`, and anything that only belongs to the default mode waits.
+
+---
+
+## Who drains `DispatchQueue.main`
+
+The main queue is a serial GCD queue whose blocks have to run on the main thread. GCD cannot hand them to one of its worker threads, so in an app the run loop does it. libdispatch gives Core Foundation a port for the main queue. Calling `async` on the main queue sends a message to that port, the message wakes the run loop, and the run loop calls back into libdispatch to drain the queue.
+
+The rule for when it does that is one line in `__CFRunLoopRun`, in the open-source copy of Core Foundation:
+
+```c
+if (libdispatchQSafe && (CFRunLoopGetMain() == rl) && CFSetContainsValue(rl->_commonModes, rlm->_name))
+    dispatchPort = _dispatch_get_main_queue_port_4CF();
+```
+
+Three conditions: the run loop is running on the main thread (`libdispatchQSafe` checks `pthread_main_np()`), it is the main run loop, and **the current mode is in the common set**. `UITrackingRunLoopMode` is, so the main queue keeps draining during a scroll. A mode outside the set does not drain it.
+
+`libdispatchQSafe` has one more condition: the run loop must not have been entered from inside a main-queue block. The main queue is serial, so a block on it cannot start the next one. I checked: a block on the main queue that spins `RunLoop.main.run(until:)` for 300 ms sees blocks queued with `RunLoop.perform` run at once, while a block it queued on the main queue runs only after the outer block returns, at 306 ms.
+
+### The main actor uses the same queue
+
+On Apple platforms, Swift's main actor runs its jobs on the main dispatch queue. In the Swift runtime, `swift_dispatchEnqueueMain` takes `dispatch_get_main_queue()` and enqueues the job on it. So these all enter the main thread through the same door as `DispatchQueue.main.async`:
+
+- `Task { @MainActor in … }`
+- `await MainActor.run { … }`
+- calling a `@MainActor` async function from another isolation
+- a `@MainActor` function resuming after an `await`
+
+Each of those is a job on the main queue, and runs during a scroll like any other main-queue block. Three things reach main-actor code without enqueuing anything: a synchronous call from code that is already on the main actor, `MainActor.assumeIsolated` (a check, not a hop), and `Task.immediate`, new in Swift 6.2 ([SE-0472](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0472-task-start-synchronously-on-caller-context.md)), which starts running synchronously when the caller is already on the main actor and only goes through the queue after its first suspension.
+
+> **In plain words:** the main queue is drained by the main run loop, in every mode of the common set. UIKit's tracking mode is in that set, so `DispatchQueue.main.async` and main-actor jobs run while the user scrolls.
+
+---
+
+## What the two Combine schedulers do with your value
+
+`receive(on:)` hands each value to a `Scheduler`. The two schedulers in question implement that very differently.
+
+`RunLoop`'s conformance lived in Apple's Foundation overlay, which was open source in the Swift repository up to Swift 5.3 (`Schedulers+RunLoop.swift`):
+
+- `schedule(options:_:)`, used by `receive(on:)`, calls `self.perform(action)`. `RunLoop.perform(_:)` queues the block **for the default mode**; swift-corelibs-foundation spells it out as `perform(inModes: [.default], block: block)`.
+- `schedule(after:…)`, used by `debounce`, `delay` and `throttle`, calls `perform(_:with:afterDelay:)`, which sets up a timer in the default mode.
+- The repeating form creates a `Timer` and adds it with `forMode: .default`.
+- `RunLoop.SchedulerOptions` has no members, so there is no option to ask for another mode.
+
+`DispatchQueue`'s conformance calls `async`, `asyncAfter` and a `DispatchSourceTimer` on the queue. For `DispatchQueue.main`, all three land on the main queue.
+
+`RunLoop.main` is the main thread's run loop no matter which thread reads it. `RunLoop.current` is the calling thread's. Both schedulers deliver on the main thread. The difference is only when.
+
+<ScrollDeliveryTimeline />
+
+Three things in Fig 02 are easy to miss. Nothing is dropped: values received on `RunLoop.main` are held and then delivered in order, all in the same turn, so the label jumps from the value before the scroll to the latest one. The longer the gesture, the further behind it is. And the `.default` timer does not catch up. When a repeating timer misses fire dates, it fires once, late, and its next fire date stays on the original schedule, as `Timer`'s documentation describes.
+
+> **In plain words:** `receive(on: RunLoop.main)` queues each value as a default-mode block, so while the user scrolls nothing arrives, and when the scroll ends everything arrives at once. `receive(on: DispatchQueue.main)` queues each value on the main queue, which keeps draining.
+
+---
+
+## Proving it without a phone
+
+The scroll is not needed to show this, only a run loop in another mode. I wrote a macOS command-line program, built in Swift 6 language mode, that runs the main run loop in `.default` for 300 ms, then in a custom mode until 900 ms, then in `.default` again. A background thread sends five values 150 ms apart through a `PassthroughSubject`, which has one `RunLoop.main` subscriber, one `DispatchQueue.main` subscriber and one `debounce(for: .milliseconds(50), scheduler: RunLoop.main)` subscriber. For each value, it also starts a `Task { @MainActor in }` and queues a `RunLoop.main.perform`. Two repeating timers, one added for `.default` and one for `.common`, fire every 200 ms.
+
+I ran it twice. The first time the custom mode was outside the common set. The second time I added it with `CFRunLoopAddCommonMode`, which is how UIKit treats `UITrackingRunLoopMode`. This is the second run, trimmed:
+
+```text
+  160 ms  RunLoop.main value 1          [kCFRunLoopDefaultMode]
+  160 ms  DispatchQueue.main value 1    [kCFRunLoopDefaultMode]
+  304 ms  enter tracking
+  320 ms  DispatchQueue.main value 2    [ProbeTrackingMode]
+  320 ms  Task @MainActor 2             [ProbeTrackingMode]
+  404 ms  Timer in .common              [ProbeTrackingMode]
+  477 ms  DispatchQueue.main value 3    [ProbeTrackingMode]
+  ...
+  789 ms  DispatchQueue.main value 5    [ProbeTrackingMode]
+  908 ms  back to .default
+  908 ms  RunLoop.main value 2          [kCFRunLoopDefaultMode]
+  908 ms  RunLoop.main value 3          [kCFRunLoopDefaultMode]
+  908 ms  RunLoop.main value 4          [kCFRunLoopDefaultMode]
+  908 ms  RunLoop.main value 5          [kCFRunLoopDefaultMode]
+  908 ms  Timer in .default             [kCFRunLoopDefaultMode]
+  908 ms  debounce(RunLoop) 5           [kCFRunLoopDefaultMode]
+```
+
+<StatTiles
+  tiles={[
+    {
+      label: 'RunLoop.main',
+      value: 0,
+      sub: 'values delivered in 600 ms of tracking',
+    },
+    {
+      label: 'DispatchQueue.main',
+      value: 4,
+      sub: 'values delivered in the same 600 ms',
+    },
+    {
+      label: 'after tracking',
+      value: 4,
+      suffix: ' at once',
+      sub: 'RunLoop.main values, all at 908 ms',
+    },
+    {
+      label: '.default timer',
+      value: 3,
+      suffix: ' skipped',
+      sub: 'fire dates, then one late fire',
+    },
+  ]}
+/>
+
+The blocks queued with `RunLoop.main.perform` behaved exactly like the `RunLoop.main` subscriber, which is what the scheduler source says they are. `Task { @MainActor in }` behaved exactly like `DispatchQueue.main`. The debounced subscriber saw only value 5, at 908 ms: its timer is a default-mode timer too, so even the settled value waited for the mode to change.
+
+In the first run, with the custom mode outside the common set, everything waited: the `DispatchQueue.main` values, the main-actor tasks and the `.common` timer arrived at 905 ms together with the rest. That is the `CFSetContainsValue(rl->_commonModes, …)` check in practice.
+
+A custom mode is a stand-in, so I repeated the test inside a minimal UIKit app on the iOS 27.1 simulator, with UIKit's own mode: a default-mode timer ran the main run loop in `RunLoop.Mode.tracking` for 270 ms while a background thread sent values. The main run loop's common set held exactly two modes, `UITrackingRunLoopMode` and `kCFRunLoopDefaultMode`. The `DispatchQueue.main` values, the main-actor tasks and the `.common` timer ran in `UITrackingRunLoopMode`. The `RunLoop.main` values and the `.default` timer waited, and arrived together when the run loop was back in the default mode.
+
+> **In plain words:** a mode in the common set lets the main queue, main-actor jobs and `.common` timers through and holds default-mode blocks and timers. A mode outside the set holds everything.
+
+---
+
+## The fix, in a Swift 6 view model
+
+The original code subscribed from a SwiftUI view's `.onAppear` and stored the subscription in the view. Moving it into the view model ties the subscription to the model's lifetime, and receiving on the main queue keeps the label moving while the user scrolls:
+
+```swift
+import Combine
+import Foundation
+
+protocol StopwatchServiceProtocol {
+    var lapTimePublisher: AnyPublisher<Double, Never> { get }
+}
+
+final class StopwatchService: StopwatchServiceProtocol {
+    private let lapTimeSubject = PassthroughSubject<Double, Never>()
+
+    var lapTimePublisher: AnyPublisher<Double, Never> {
+        lapTimeSubject.eraseToAnyPublisher()
+    }
+
+    func recordLap(_ seconds: Double) {
+        lapTimeSubject.send(seconds)
+    }
+}
+
+@MainActor
+final class StopwatchViewModel: ObservableObject {
+    @Published private(set) var lapTime: Double = 0
+
+    init(stopwatch: any StopwatchServiceProtocol) {
+        stopwatch.lapTimePublisher
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$lapTime)
+    }
+}
+```
+
+`assign(to:)` with the `@Published` property's publisher needs no `AnyCancellable`; Combine cancels it when the view model is deinitialized.
+
+When the value has to go through a method, the `sink` closure is where Swift 6 adds something:
+
+```swift
+@MainActor
+final class LapListViewModel: ObservableObject {
+    @Published private(set) var laps: [Double] = []
+    private var cancellables = Set<AnyCancellable>()
+
+    init(stopwatch: any StopwatchServiceProtocol) {
+        stopwatch.lapTimePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] lap in
+                self?.append(lap)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func append(_ lap: Double) {
+        laps.append(lap)
+    }
+}
+```
+
+The closure is written in a `@MainActor` initializer and passed to a parameter that is not `@Sendable`, so it is isolated to the main actor. Combine was not built with Swift 6's concurrency checking, so for an isolated closure passed into it, Swift 6 inserts a runtime check at the top of the closure ([SE-0423](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0423-dynamic-actor-isolation.md)). I ran this class three ways, with a value sent from a background thread. With `receive(on: DispatchQueue.main)` and with `receive(on: RunLoop.main)`, the value arrived on the main thread. Without `receive(on:)`, the process stopped with `EXC_BREAKPOINT` in `dispatch_assert_queue_fail`, called from the closure.
+
+So in Swift 6 language mode the scheduler choice is about timing, but forgetting the hop altogether is a crash instead of a silent data race. Both main-thread schedulers pass the check. This matters more since Swift 6.2: [SE-0466](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md) lets a module make the main actor its default isolation, and the app templates in Xcode 26 and 27 set `SWIFT_DEFAULT_ACTOR_ISOLATION` to `MainActor`. Every class in such a target that does not opt out is a `@MainActor` class, and every closure written in it gets the check. A class with no annotation at all, compiled with `-default-isolation MainActor`, trapped the same way when its sink ran on a background queue.
+
+> **In plain words:** use `DispatchQueue.main` for anything the user is looking at. In Swift 6, a main-actor closure that Combine calls from another thread is a crash, so the hop is no longer optional.
+
+---
+
+## Timers and display links have the same switch
+
+`Timer.scheduledTimer` "creates a timer and schedules it on the current run loop in the default mode", in the words of its documentation. That is the most common way to drive a stopwatch, and it stops while the user scrolls, for the same reason as `receive(on: RunLoop.main)`. Create the timer yourself and add it for `.common`:
+
+```swift
+@MainActor
+final class StopwatchClock: ObservableObject {
+    @Published private(set) var elapsed: Duration = .zero
+    private let clock = ContinuousClock()
+    private var startedAt: ContinuousClock.Instant?
+    private var timer: Timer?
+
+    func start() {
+        startedAt = clock.now
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refresh()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func refresh() {
+        guard let startedAt else { return }
+        elapsed = startedAt.duration(to: clock.now)
+    }
+}
+```
+
+The timer's block is `@Sendable`, so it cannot call a main-actor method directly. The timer is on the main run loop, so the block runs on the main thread, and `MainActor.assumeIsolated` holds; it traps instead of racing if that ever stops being true.
+
+The clock matters as much as the mode. A stopwatch that counts ticks is wrong after the first skipped fire date, and Fig 02 shows that skipped fire dates are not made up. A stopwatch that reads the time on every tick is at worst one frame stale.
+
+The same switch exists everywhere a run loop is involved:
+
+- Combine's timer takes the mode: `Timer.publish(every: 1.0 / 30.0, on: .main, in: .common)`.
+- `CADisplayLink` is added with `link.add(to: .main, forMode: .common)`; added for `.default`, it stops during a scroll like any other default-mode timer.
+- A block that should run during a scroll can be queued with `RunLoop.main.perform(inModes: [.common]) { … }`.
+
+> **In plain words:** anything you add to the main run loop for the default mode stops while the user scrolls. Add it for `.common` when it drives something the user is watching.
+
+---
+
+## `subscribe(on:)` is not the other half of `receive(on:)`
+
+The first version ended with this pipeline, and said that `subscribe(on:)` makes the subscription "and any upstream processing" run on a background thread:
+
+```swift
+viewModel.stopwatchLapTimePublisher
+    .subscribe(on: DispatchQueue.global(qos: .background))
+    .receive(on: DispatchQueue.main)
+    .sink { newLapTime in
+        print("New lap time received: \(newLapTime)")
+    }
+    .store(in: &cancellables)
+```
+
+`subscribe(on:)` moves three calls to the scheduler: the subscribe call, and the subscription's `request` and `cancel`. It moves work only for a publisher that does its work in one of those calls. The publisher here is a `PassthroughSubject`, which does no work there. It emits from inside `send(_:)`, on whatever thread calls `send`.
+
+There is a worse effect. `subscribe(on:)` attaches the subscription asynchronously, so for a short while after `sink` returns, the subject has no subscriber. I sent one value immediately after subscribing and a second one 200 ms later. The subscription and the demand request ran on a background thread, the first value was never delivered, and the second arrived on the main thread, because that is where `send` was called.
+
+<SubscribeOnThreadMap />
+
+`subscribe(on:)` does what the first version described for publishers that start their work when they are subscribed, such as `Deferred` and `Future`. Swift 6 adds one condition:
+
+```swift
+nonisolated protocol LapStoreProtocol: Sendable {
+    func readAll() -> [Double]
+}
+
+@MainActor
+final class LapHistoryViewModel: ObservableObject {
+    @Published private(set) var history: [Double] = []
+
+    init(store: any LapStoreProtocol) {
+        Deferred { @Sendable in
+            Just(store.readAll()) // runs on the queue subscribe(on:) names
+        }
+        .subscribe(on: DispatchQueue.global(qos: .userInitiated))
+        .receive(on: DispatchQueue.main)
+        .assign(to: &$history)
+    }
+}
+```
+
+Without `@Sendable`, the `Deferred` closure is written in a main-actor initializer and is isolated to the main actor, so it gets the same runtime check as the `sink` above. `subscribe(on:)` then runs it on a background queue, and the process traps. I ran both versions: with `@Sendable` the store was read on a background thread and the result arrived on the main thread; without it, `EXC_BREAKPOINT`. The `nonisolated` on the protocol is for targets whose default isolation is the main actor. Without it, `readAll()` would be a main-actor method and the `@Sendable` closure could not call it.
+
+The QoS changed too. `.background` is the class for work the user is not waiting for, such as indexing or backups, and Apple's energy guide describes its work as taking minutes to hours. Work whose result the user is waiting to see is `.userInitiated`.
+
+> **In plain words:** `subscribe(on:)` moves subscribing and requesting. It moves work only for publishers that start their work there, and it can make a subject miss the values sent right after you subscribe. `receive(on:)` is the operator that decides where your code runs.
+
+---
+
+## When `RunLoop.main` is the right choice
+
+The two schedulers are not good and bad. `RunLoop.main` is a deliberate way to say "not while the user is interacting". Work that should not compete with a scroll, and whose result is not visible during it, can wait for the default mode. That is a legitimate decision as long as it is one.
+
+The place where it is most often chosen by accident is `debounce(for:scheduler: RunLoop.main)`, which is common in search-field examples. While the user types, it makes no difference. But the debounce timer is a default-mode timer, as the probe showed, so results do not arrive while the user is scrolling the list they are searching.
+
+---
+
+## Takeaways
+
+> **Two queues, one thread.** `RunLoop.main` and `DispatchQueue.main` both run on the main thread. They decide differently when.
+
+> **The run loop runs in one mode at a time.** Blocks and timers belong to modes. Combine's `RunLoop` scheduler puts everything in the default mode, and UIKit leaves the default mode while the user scrolls.
+
+> **The main queue drains in every common mode.** UIKit's tracking mode is one of them, so `DispatchQueue.main` and main-actor jobs keep running during a scroll. A mode outside the common set holds them too.
+
+> **Held, not dropped.** Values received on `RunLoop.main` during a scroll arrive all at once when it ends. Operators like `debounce` collapse them.
+
+> **Swift concurrency uses the main queue.** `Task { @MainActor in }` and `await MainActor.run` behave like `DispatchQueue.main.async`.
+
+> **In Swift 6, a missing hop is a crash.** A main-actor closure that Combine calls from another thread traps, and with main-actor default isolation that is every closure in your app target.
+
+> **Timers have the same switch.** Add timers and display links for `.common` when the user is watching what they drive, and compute elapsed time from a clock.
+
+> **`subscribe(on:)` moves subscribing, not sending.** A subject emits on the thread that calls `send`, and can miss values sent right after an asynchronous subscribe.
+
+---
+
+## References
+
+**Apple** — [Threading Programming Guide: Run Loops](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/RunLoopManagement/RunLoopManagement.html) · [`RunLoop`](https://developer.apple.com/documentation/foundation/runloop) · [`RunLoop.Mode.common`](https://developer.apple.com/documentation/foundation/runloop/mode/common) · [`UITrackingRunLoopMode`](https://developer.apple.com/documentation/uikit/uitrackingrunloopmode) · [`Timer`](https://developer.apple.com/documentation/foundation/timer) · [`Timer.scheduledTimer`](<https://developer.apple.com/documentation/foundation/timer/scheduledtimer(withtimeinterval:repeats:block:)>) · [Energy Efficiency Guide: Quality of Service classes](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/EnergyGuide-iOS/PrioritizeWorkWithQoS.html)
+
+**Combine** — [`Scheduler`](https://developer.apple.com/documentation/combine/scheduler) · [`receive(on:options:)`](<https://developer.apple.com/documentation/combine/publisher/receive(on:options:)>) · [`subscribe(on:options:)`](<https://developer.apple.com/documentation/combine/publisher/subscribe(on:options:)>) · [`assign(to:)`](<https://developer.apple.com/documentation/combine/publisher/assign(to:)>)
+
+**Source** — [`CFRunLoop.c`](https://github.com/swiftlang/swift-corelibs-foundation/blob/main/Sources/CoreFoundation/CFRunLoop.c) and [`RunLoop.swift`](https://github.com/swiftlang/swift-corelibs-foundation/blob/main/Sources/Foundation/RunLoop.swift) in swift-corelibs-foundation · [`Schedulers+RunLoop.swift`](https://github.com/apple/swift/blob/swift-5.3-RELEASE/stdlib/public/Darwin/Foundation/Schedulers%2BRunLoop.swift) and [`Schedulers+DispatchQueue.swift`](https://github.com/apple/swift/blob/swift-5.3-RELEASE/stdlib/public/Darwin/Dispatch/Schedulers%2BDispatchQueue.swift) in the Swift 5.3 overlays · [`DispatchGlobalExecutor.cpp`](https://github.com/swiftlang/swift/blob/main/stdlib/public/Concurrency/DispatchGlobalExecutor.cpp) in the Swift runtime
+
+**Swift Evolution** — [SE-0423: Dynamic actor isolation enforcement](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0423-dynamic-actor-isolation.md) · [SE-0466: Control default actor isolation inference](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md) · [SE-0472: Starting tasks synchronously from caller context](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0472-task-start-synchronously-on-caller-context.md)

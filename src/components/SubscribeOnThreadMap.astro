@@ -1,0 +1,359 @@
+---
+/**
+ * Which thread runs each stage of
+ *   upstream.subscribe(on: DispatchQueue.global()).receive(on: DispatchQueue.main).sink { }
+ * for two kinds of upstream. subscribe(on:) moves the subscription and the
+ * demand requests; it moves the work only for a publisher that does its work
+ * when it is subscribed or asked for values, such as Deferred or Future.
+ * A subject emits on whatever thread calls send(_:), and because the
+ * subscription is attached asynchronously, a value sent right after sink(_:)
+ * has no subscriber yet and is dropped.
+ *
+ * Every row matches a Swift 6 probe run on macOS 26 that logged
+ * Thread.isMainThread at each stage.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '03',
+  caption = 'subscribe(on:) decides where the subscription is attached and where demand is requested. A subject does no work there: it emits on whatever thread calls send, and a value sent before the asynchronous subscription is in place has nobody to go to. Deferred builds its publisher when it is subscribed, so its work does move to the background queue. receive(on:) is what moves values to the main thread in both cases.',
+} = Astro.props;
+
+type Thread = 'main' | 'bg' | 'lost';
+interface Row {
+  stage: string;
+  code: string;
+  thread: Thread;
+  note: string;
+}
+interface Upstream {
+  id: string;
+  label: string;
+  rows: Row[];
+}
+
+const UPSTREAMS: Upstream[] = [
+  {
+    id: 'subject',
+    label: 'PassthroughSubject',
+    rows: [
+      {
+        stage: 'Subscription attached',
+        code: 'receive(subscription:)',
+        thread: 'bg',
+        note: 'subscribe(on:) moves this to the background queue, asynchronously.',
+      },
+      {
+        stage: 'Demand requested',
+        code: 'request(.unlimited)',
+        thread: 'bg',
+        note: 'Also moved by subscribe(on:).',
+      },
+      {
+        stage: 'send(1) right after sink',
+        code: 'subject.send(1)',
+        thread: 'lost',
+        note: 'The subscription is not attached yet, so the subject has no subscriber. The value is gone.',
+      },
+      {
+        stage: 'send(2) later, from main',
+        code: 'subject.send(2)',
+        thread: 'main',
+        note: 'A subject emits on the caller’s thread. subscribe(on:) does not move send.',
+      },
+      {
+        stage: 'Value in sink',
+        code: '.receive(on: DispatchQueue.main)',
+        thread: 'main',
+        note: 'receive(on:) is the operator that decides this.',
+      },
+    ],
+  },
+  {
+    id: 'deferred',
+    label: 'Deferred { work }',
+    rows: [
+      {
+        stage: 'Publisher built',
+        code: 'Deferred { … }',
+        thread: 'bg',
+        note: 'Deferred runs its closure when it is subscribed, and subscribe(on:) moved the subscribe call, so the expensive work runs here.',
+      },
+      {
+        stage: 'Subscription attached',
+        code: 'receive(subscription:)',
+        thread: 'bg',
+        note: 'The publisher the closure returned attaches its subscription on the same queue.',
+      },
+      {
+        stage: 'Demand requested',
+        code: 'request(.unlimited)',
+        thread: 'bg',
+        note: 'Also moved by subscribe(on:).',
+      },
+      {
+        stage: 'Value emitted',
+        code: 'Just(result)',
+        thread: 'bg',
+        note: 'Just emits in response to the request, on the same queue.',
+      },
+      {
+        stage: 'Value in sink',
+        code: '.receive(on: DispatchQueue.main)',
+        thread: 'main',
+        note: 'receive(on:) hops back to the main thread.',
+      },
+    ],
+  },
+];
+---
+
+<VizFrame
+  fig={fig}
+  title="What subscribe(on:) moves, and what it doesn’t"
+  caption={caption}
+  class="sot"
+  data-sot
+>
+  <div class="sot__bar">
+    <span class="viz-label">upstream</span>
+    <div class="viz-seg" role="group" aria-label="Upstream publisher">
+      {
+        UPSTREAMS.map((u, i) => (
+          <button
+            type="button"
+            aria-pressed={i === 0 ? 'true' : 'false'}
+            data-upstream={u.id}
+          >
+            {u.label}
+          </button>
+        ))
+      }
+    </div>
+  </div>
+
+  <pre
+    class="sot__code viz-panel"><code>upstream
+    .subscribe(on: DispatchQueue.global(qos: .userInitiated))
+    .receive(on: DispatchQueue.main)
+    .sink {"{ … }"}</code></pre>
+
+  <div class="sot__table viz-panel">
+    <div class="sot__row sot__row--head" aria-hidden="true">
+      <span class="viz-label">stage</span>
+      <span class="viz-label sot__col">main</span>
+      <span class="viz-label sot__col"
+        ><span class="sot__wide">background</span><span class="sot__narrow"
+          >bg</span
+        ></span
+      >
+    </div>
+    {
+      UPSTREAMS.map((u, i) => (
+        <ol class="sot__rows" data-rows={u.id} hidden={i !== 0}>
+          {u.rows.map((r) => (
+            <li class="sot__row" data-thread={r.thread}>
+              <span class="sot__stage">
+                <b>{r.stage}</b>
+                <code>{r.code}</code>
+                <span class="sot__note">{r.note}</span>
+              </span>
+              <span class="sot__cell sot__col" data-cell="main">
+                {r.thread === 'main' && <i class="sot__dot">main</i>}
+                {r.thread === 'lost' && <i class="sot__dot">lost</i>}
+              </span>
+              <span class="sot__cell sot__col" data-cell="bg">
+                {r.thread === 'bg' && <i class="sot__dot">bg</i>}
+              </span>
+            </li>
+          ))}
+        </ol>
+      ))
+    }
+  </div>
+
+  <div class="viz-legend sot__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>main thread</span>
+    <span><i style="--c:var(--viz-net)"></i>background queue</span>
+    <span><i style="--c:var(--viz-bad)"></i>dropped</span>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initMap(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+      const btns = [...root.querySelectorAll('[data-upstream]')];
+      const lists = [...root.querySelectorAll('[data-rows]')];
+      btns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          btns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          lists.forEach((l) => {
+            l.hidden = l.dataset.rows !== btn.dataset.upstream;
+          });
+        }),
+      );
+    }
+
+    const boot = () => document.querySelectorAll('[data-sot]').forEach(initMap);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .sot__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .sot__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+
+  .sot__code {
+    margin: 0 0 var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--fg);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .sot__code code {
+    font: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+
+  .sot__table {
+    padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  }
+  .sot__rows {
+    display: grid;
+  }
+  .sot__row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 68px 92px;
+    align-items: stretch;
+    gap: var(--sp-2);
+  }
+  .sot__row--head {
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sot__col {
+    text-align: center;
+  }
+  .sot__rows .sot__row {
+    padding-block: var(--sp-2);
+    border-bottom: 1px solid var(--border);
+  }
+  .sot__rows .sot__row:last-child {
+    border-bottom: 0;
+  }
+
+  .sot__stage {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .sot__stage b {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .sot__stage code {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-faint);
+    background: none;
+    border: 0;
+    padding: 0;
+    overflow-wrap: anywhere;
+  }
+  .sot__note {
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+    color: var(--fg-muted);
+  }
+
+  .sot__cell {
+    position: relative;
+    display: grid;
+    place-items: center;
+  }
+  /* The thread lanes run down the table behind the markers. */
+  .sot__cell::before {
+    content: '';
+    position: absolute;
+    top: calc(-1 * var(--sp-2));
+    bottom: calc(-1 * var(--sp-2));
+    left: 50%;
+    width: 2px;
+    margin-left: -1px;
+    background: color-mix(in srgb, var(--c) 22%, transparent);
+  }
+  .sot__cell[data-cell='main'] {
+    --c: var(--viz-sound);
+  }
+  .sot__cell[data-cell='bg'] {
+    --c: var(--viz-net);
+  }
+  .sot__row[data-thread='lost'] .sot__cell[data-cell='main'] {
+    --c: var(--viz-bad);
+  }
+  .sot__dot {
+    position: relative;
+    padding: 2px 8px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-style: normal;
+    font-weight: 600;
+    color: var(--c);
+    background: color-mix(in srgb, var(--c) 12%, var(--viz-panel));
+    border: 1px solid color-mix(in srgb, var(--c) 50%, transparent);
+    border-radius: 999px;
+  }
+  .sot__cell[data-cell='main'] .sot__dot {
+    color: var(--viz-sound-text);
+  }
+  .sot__row[data-thread='lost'] .sot__dot {
+    color: var(--viz-bad);
+    border-style: dashed;
+    text-decoration: line-through;
+  }
+  .sot__legend {
+    margin-top: var(--sp-3);
+  }
+
+  .sot__narrow {
+    display: none;
+  }
+  @media (max-width: 560px) {
+    .sot__wide {
+      display: none;
+    }
+    .sot__narrow {
+      display: inline;
+    }
+    .sot__row {
+      grid-template-columns: minmax(0, 1fr) 52px 52px;
+      gap: 6px;
+    }
+    .sot__dot {
+      padding: 2px 6px;
+    }
+  }
+</style>
