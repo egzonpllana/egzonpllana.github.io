@@ -1,0 +1,554 @@
+---
+title: 'EventHorizon - A thread-safe networking layer in Swift with Sendable and async-await'
+description: 'EventHorizon is my open-source Swift networking package. This version follows one request through it, checks its thread-safety claim against the Swift 6 compiler, and records what a re-check found: the package builds only in Swift 5 mode, cancellation never reaches a request, and its shared request ledger keeps every id and can deadlock.'
+date: 2025-04-09
+updated: 2026-10-30
+tags: ['iOS', 'Swift', 'Networking', 'Concurrency', 'async-await', 'Sendable']
+heroImage: '../../assets/covers/eventhorizon-thread-safe-networking-swift.png'
+repoUrl: 'https://github.com/egzonpllana/event-horizon-ios'
+---
+
+import StatTiles from '../../components/StatTiles.astro';
+import RequestPipelineWalk from '../../components/RequestPipelineWalk.astro';
+import SendableBoundaryMap from '../../components/SendableBoundaryMap.astro';
+import TaskLedgerSandbox from '../../components/TaskLedgerSandbox.astro';
+import RetryBackoffBudget from '../../components/RetryBackoffBudget.astro';
+
+A networking layer has one job: turn "I want the posts" into either posts or an error the caller can act on. The caller should not need to know about URLs, headers, status codes, retries or JSON. Everything between the call and the answer is the layer's business, and so is making sure that fifty of those calls can run at the same time without stepping on each other.
+
+EventHorizon is the layer I wrote for my own apps and open-sourced as a Swift package. The name comes from the boundary around a black hole that nothing crosses without being pulled in: every request and response passes through the package's pipeline. It is small. An endpoint describes a request, a client runs it through interceptors and a `URLSession`, and the result comes back as a decoded type or an `APIClientError`.
+
+The first version of this article listed its features and called it thread-safe and built for Swift 6. Re-reading the package source in October 2026, version 3.1.0, and running it against the Swift 6.4 compiler and a set of probes, I found that the request path holds up, and that several of the claims around it do not. The package builds in Swift 5 language mode, so the compiler has never checked the thread safety it declares. In Swift 6 mode it has 7 errors. `cancelRequest(with:)` cancels nothing, and cancelling the caller does not stop the request. The ledger of requests that every client shares keeps every id it has ever seen, and `cancelAllRequests()` deadlocks once that ledger is not empty. The unit-testing example called methods that do not exist.
+
+This version walks one request through the package, shows which values cross between isolation domains and why they must be `Sendable`, and corrects the rest. Swift is the worked example. The questions apply to any HTTP client: what is shared between concurrent requests, what is copied, and what happens when the caller stops waiting.
+
+<StatTiles
+  tiles={[
+    {
+      label: 'Swift 6 mode',
+      value: 7,
+      suffix: ' errors',
+      sub: 'in the package, which ships in Swift 5 mode',
+    },
+    {
+      label: 'cancelRequest(with:)',
+      value: 0,
+      suffix: ' cancelled',
+      sub: 'the stored task never casts back',
+    },
+    {
+      label: 'ledger after 1,000 calls',
+      value: 1000,
+      suffix: ' entries',
+      sub: 'kept for the life of the process',
+    },
+    {
+      label: 'worst case, default retry',
+      value: 54,
+      suffix: ' s',
+      sub: 'four 10 s timeouts and 14 s of sleep',
+    },
+  ]}
+/>
+
+---
+
+## The three pieces
+
+EventHorizon splits a request into a description, a pipeline and a transport:
+
+- **Description: `APIEndpointProtocol`.** Method, URL parts, headers, query and body. A value; it does nothing on its own.
+- **Pipeline: `APIClient`, behind `APIClientProtocol`.** Turns an endpoint into a `URLRequest`, runs the interceptors, retries, validates the status, decodes and maps errors.
+- **Transport: `NetworkSessionProtocol`.** One method, `data(for:) async throws -> (Data, URLResponse)`. `NetworkSession` implements it with a `URLSession`.
+
+The split is what makes the layer testable and replaceable. A repository depends on `APIClientProtocol`, the client depends on `NetworkSessionProtocol`, and either can be swapped for a fake. The package targets iOS 15, macOS 12, watchOS 8 and tvOS 15, and is added with Swift Package Manager:
+
+```swift
+.package(url: "https://github.com/egzonpllana/event-horizon-ios", from: "3.1.0")
+```
+
+Two newer pieces sit next to the client: `prepareRequest(_:)` returns a request with all interceptors applied, for handing to a background `URLSession`, and `DefaultRemoteFallbackExecutor` runs a remote call with a local fallback and tells you which one answered. I come back to the second one under cancellation.
+
+> **In plain words:** an endpoint says what to ask, the client decides how, and the session does the asking. Each of the three can be replaced on its own.
+
+---
+
+## Describing a request
+
+An endpoint is a value with seven properties. The protocol extension builds the `URLRequest` from them: `baseURL + apiVersion + path` as one string, the query items, the method, the headers and the body. An enum with one case per route is the usual shape:
+
+```swift
+import EventHorizon
+import Foundation
+
+struct PostDTO: Decodable, Sendable {
+    let id: Int
+    let title: String
+}
+
+struct NewPostDTO: Encodable, Sendable {
+    let title: String
+    let body: String
+}
+
+enum APIEndpoint: APIEndpointProtocol {
+    case posts(page: Int)
+    case createPost(NewPostDTO)
+    case uploadAvatar(jpeg: Data, boundary: String = UUID().uuidString)
+
+    var baseURL: String { "https://api.example.com" }
+    var apiVersion: String { "/v1" }
+
+    var path: String {
+        switch self {
+        case .posts, .createPost: "/posts"
+        case .uploadAvatar: "/me/avatar"
+        }
+    }
+
+    var method: HTTPMethod {
+        switch self {
+        case .posts: .get
+        case .createPost, .uploadAvatar: .post
+        }
+    }
+
+    var headers: [String: String] {
+        guard let body else { return [:] }
+        return ["Content-Type": body.contentType]
+    }
+
+    var urlParams: [String: any CustomStringConvertible] {
+        switch self {
+        case .posts(let page): ["page": page]
+        case .createPost, .uploadAvatar: [:]
+        }
+    }
+
+    var body: HTTPBody? {
+        switch self {
+        case .posts:
+            nil
+        case .createPost(let post):
+            (try? JSONEncoder().encode(post)).map(HTTPBody.json)
+        case .uploadAvatar(let jpeg, let boundary):
+            .multipartFormData(
+                MultipartFormData(
+                    boundary: boundary,
+                    fileData: jpeg,
+                    fileName: "avatar.jpg",
+                    mimeType: ImageMimeType.jpeg.asString,
+                    parameters: [:]
+                )
+            )
+        }
+    }
+}
+```
+
+Four details in that code are there because the default request builder does not handle them:
+
+- **Content-Type is yours to set.** `HTTPBody` knows its content type (`application/json`, `application/octet-stream`, or `multipart/form-data; boundary=…`), but the builder never writes it. Without the `headers` line above, a JSON body goes out with no `Content-Type`.
+- **The multipart boundary must be stable.** `body` is a computed property and is read twice, once for the header and once for the bytes. A boundary made with `UUID()` inside `body` would differ between the two, and the server could not split the parts. Storing it in the case fixes that.
+- **Query order is not stable.** `urlParams` is a dictionary, and Swift seeds its hashing per process ([SE-0206](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0206-hashable-enhancements.md)), so `?a=1&b=2` in one launch can be `?b=2&a=1` in the next. Servers do not care. Anything keyed by the exact URL does: `URLCache`, request signatures, snapshot tests.
+- **An encoding failure becomes a missing body.** `try?` turns it into `nil`. For DTOs made of strings and numbers it cannot fail; for anything with custom encoding, encode before building the case.
+
+If the parts do not form a URL, the call throws `APIClientError.invalidURL` before anything else happens (the upload overload throws `urlRequestIsEmpty` instead).
+
+> **In plain words:** the endpoint is plain data. The package joins it into a request but leaves the content type, the boundary and the parameter order to you.
+
+---
+
+## One request, end to end
+
+The client is created once and shared. These are the interceptors I use in the rest of the article:
+
+```swift
+let apiClient = APIClient(
+    interceptors: [
+        AuthInterceptor(tokenProvider: { TokenVault.accessToken }),
+        HeaderInjectorInterceptor(headers: ["Accept": "application/json"]),
+        RetryInterceptor(maxRetries: 2),
+        LoggingInterceptor(),
+    ]
+)
+
+// A typed request: the type comes from the call site.
+let posts: [PostDTO] = try await apiClient.request(APIEndpoint.posts(page: 1))
+
+// A request whose body you do not need.
+try await apiClient.request(APIEndpoint.createPost(NewPostDTO(title: "Hello", body: "First post")))
+```
+
+`TokenVault` stands for wherever your app keeps its token; the closure has to be `@Sendable`, which matters later. With no `session:` argument the client makes a `NetworkSession` with 10-second request and resource timeouts. Every `request` overload also takes an `id:`. Without one, the client uses a fresh UUID.
+
+Between the `await` and the answer, a call goes through ten stations in `APIClient.performRequest`. The order matters more than any single station, because it decides what each hook can see. Token refreshers see a response before the other interceptors do. Response interceptors run before the retry decision, so a logger sees every attempt. A retry starts again from the request the endpoint built, not from the one that was sent, so every interceptor runs again and a token refreshed in the meantime is used.
+
+<RequestPipelineWalk />
+
+At the last station, everything that went wrong is turned into one error type. I ran each case against a stub session to get the exact result:
+
+- `URLError.timedOut` becomes `APIClientError.timeout`.
+- Any other `URLError` (offline, DNS, TLS, cancelled) becomes `.networkError(URLError)`.
+- A status outside 200...299 with a body of `{"error": "…"}` becomes `.serverMessage`, carrying the message and the status.
+- A status outside 200...299 with any other body, `{"message": "…"}` included, becomes `.statusCode(Int)`.
+- A response that is not HTTP becomes `.invalidResponse(Data)`.
+- A 2xx body that does not decode, including an empty 204 for a typed call, becomes `.requestFailed(DecodingError)`.
+- An `APIClientError` thrown by an interceptor, such as `.networkUnavailable`, passes through unchanged.
+- An id that was already used throws `.taskFinished`, `.taskInProgress` or `.taskCanceled`.
+- Anything else becomes `.requestFailed(error)`.
+
+The `serverMessage` row only works if your server puts its message under `"error"`. That is a fixed choice inside the client, not something an endpoint can configure. `error.mapTo(_:)` then turns a server message into your own error type and passes every other error through unchanged.
+
+> **In plain words:** the client is a fixed sequence of steps around one `await` on the session. Interceptors decide what goes in and comes out at each step, and every failure leaves as an `APIClientError`.
+
+---
+
+## Interceptors
+
+An interceptor is a pair of hooks: one gets the outgoing request and returns a changed copy, the other gets the response and data and may replace them. The protocol has a synchronous and an asynchronous version of each. The client only calls the asynchronous ones, whose default implementations call the synchronous ones. The synchronous ones have no defaults, so every interceptor implements them, even one that only needs the asynchronous pair. Interceptors run in array order on the way out and in the same order on the way back, not in reverse as in a middleware stack.
+
+The package ships six interceptors:
+
+- **`AuthInterceptor`** sets `Authorization: Bearer …` from a `@Sendable () -> String?` closure, called on every attempt.
+- **`HeaderInjectorInterceptor`** adds fixed headers with `addValue`, so a header the endpoint already set gets a second, comma-joined value.
+- **`RequestTimeoutInterceptor`** sets the request's `timeoutInterval`. The session's resource timeout still caps the whole transfer.
+- **`RetryInterceptor`** holds the retry policy. The client looks it up by concrete type and runs the loop itself.
+- **`NetworkAwareInterceptor`** asks your `NetworkMonitorProtocol` whether the network is up. If not, it waits 0.5 s, asks again, then throws `.networkUnavailable`. The package ships the protocol, not a monitor.
+- **`LoggingInterceptor`** prints the method, URL, every header, the body and the response in DEBUG builds.
+
+The seventh, a token refresher, is yours to write against `TokenRefreshingInterceptorProtocol`. It sees each response first and can ask for one retry with a new token.
+
+Two notes on logging. `LoggingInterceptor` prints every header, `Authorization` included, unmasked. And the client already logs every request and response through its own logger, with the `Authorization` value cut to 20 characters: `Bearer ` plus the first 13 characters of the token. Both only print in DEBUG builds, but a DEBUG build is what a tester's device runs, and those consoles get pasted into bug reports.
+
+A custom interceptor that reads its token from an actor uses the asynchronous hook:
+
+```swift
+actor SessionTokens {
+    private(set) var accessToken: String?
+    func update(_ token: String?) { accessToken = token }
+}
+
+struct BearerTokenInterceptor: NetworkInterceptorProtocol {
+    let tokens: SessionTokens
+
+    // Required by the protocol. APIClient calls the async pair below.
+    func intercept(request: URLRequest) -> URLRequest { request }
+    func intercept(response: URLResponse?, data: Data?) -> (URLResponse?, Data?) { (response, data) }
+
+    func interceptAsync(request: URLRequest) async throws -> URLRequest {
+        guard let token = await tokens.accessToken else { return request }
+        var request = request
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+}
+```
+
+Token refresh needs one more piece. When ten requests are in flight and the token expires, all ten get a 401 within milliseconds, and a refresher that refreshes for each of them sends ten refresh calls, nine of which invalidate the token the first one just got. The client keeps each request from refreshing more than once, but it cannot know that the ten are waiting on the same thing. The refresher has to share one refresh between them, which is the same trick as sharing a fetch: store the in-flight `Task` before the first `await`.
+
+```swift
+protocol TokenRefreshing: Sendable {
+    /// Returns true when a new access token is stored.
+    func refresh() async -> Bool
+}
+
+struct RefreshOn401Interceptor: TokenRefreshingInterceptorProtocol {
+    let refresher: any TokenRefreshing
+
+    func intercept(request: URLRequest) -> URLRequest { request }
+    func intercept(response: URLResponse?, data: Data?) -> (URLResponse?, Data?) { (response, data) }
+
+    func interceptAsync(response: URLResponse?, data: Data?) async -> (InterceptorAction, URLResponse?, Data?) {
+        guard (response as? HTTPURLResponse)?.statusCode == 401, await refresher.refresh() else {
+            return (.proceed, response, data)
+        }
+        return (.retryWithUpdatedToken, response, data)
+    }
+}
+
+actor CoalescingTokenRefresher: TokenRefreshing {
+    private let refreshToken: @Sendable () async throws -> Void
+    private var inFlight: Task<Bool, Never>?
+
+    init(refreshToken: @escaping @Sendable () async throws -> Void) {
+        self.refreshToken = refreshToken
+    }
+
+    func refresh() async -> Bool {
+        if let inFlight { return await inFlight.value }
+        let task = Task { [refreshToken] in (try? await refreshToken()) != nil }
+        inFlight = task
+        defer { inFlight = nil }
+        return await task.value
+    }
+}
+```
+
+The refresher is asked about every response at depth 0, not just 401s, so the status check is its job. When it answers `.retryWithUpdatedToken`, the client runs the whole pipeline once more from the original request at depth 1, where refreshers are no longer asked. A token that is rejected twice fails with the second 401 instead of looping.
+
+> **In plain words:** interceptors are small functions over a copy of the request or response, run in a fixed order. Anything that must happen once for many requests, like a token refresh, has to be shared by the interceptor itself.
+
+---
+
+## Where "thread-safe" comes from
+
+A data race is two threads touching the same memory at the same time, with at least one of them writing. The result depends on timing: a torn value, a crash in a dictionary, or nothing at all until the one launch where it matters. Swift 6 rules this out at compile time by giving every piece of code an isolation domain, such as the main actor, another actor, or "nonisolated", and allowing a value to move from one domain to another only if it is safe to share. That is what `Sendable` means. Value types made of `Sendable` parts are `Sendable`. Classes are, only if they are immutable or protect their state. Closures are, only if marked `@Sendable` and everything they capture is ([SE-0302](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0302-concurrent-value-and-concurrent-closures.md)). A non-`Sendable` value may still move if the sender can be proven never to touch it again ([SE-0414](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0414-region-based-isolation.md), [SE-0430](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0430-transferring-parameters-and-results.md)).
+
+One EventHorizon call involves three domains: your caller, usually on the main actor; a `Task` the client creates for each request; and `URLSession`'s own queues. A fourth group of objects is shared by every request at once: the client, its interceptors, the session and the task manager. Thread safety is a question about each value that crosses between them.
+
+<SendableBoundaryMap />
+
+The design holds up. A request is a chain of values: the endpoint becomes a `URLRequest`, a struct, and each interceptor gets and returns a copy, so two requests cannot see each other's headers. Interceptors must be `Sendable`, so the ones you write cannot have unprotected mutable state. The decoded value must be `Sendable` to come back to the caller. Errors are `Sendable` because `Error` is. I ran 500 concurrent calls through one client and a stub session, and all 500 returned.
+
+What the design does not have is a compiler behind it. The package's manifest says `swift-tools-version: 5.5`, which builds it in Swift 5 language mode. Language mode is chosen per module, so the package works in a Swift 6 app, but none of its own `Sendable` declarations have been checked. Built in Swift 6 mode, the 3.1.0 sources fail with 7 errors: the client's logger is not `Sendable`, the closure the client hands to `Task {}` captures a non-`Sendable` endpoint, a private generic helper drops the `Sendable` requirement on `T` three times, and the task manager casts its stored tasks to `Task<Any, any Error>` twice. The task manager is `@unchecked Sendable` with an `NSLock`, and `@unchecked` is a promise the compiler takes on trust. One of its methods, `configure(logger:)`, writes without taking the lock. It is called by every new `APIClient` on the one shared manager, while other clients' requests read the logger under the lock. Thread Sanitizer did not catch it in a 2,000-iteration stress run of mine, so it is a latent race, not one I have seen fail, but no lock means no guarantee.
+
+Your side of the boundary is checked, and that brings two surprises. The package's own `AuthTokenStoreProviding` protocol is not `Sendable`, so the obvious `AuthInterceptor(tokenProvider: { store.accessToken })` with a stored `any AuthTokenStoreProviding` does not compile in a Swift 6 module. And Swift 6.2 changed the defaults. New app projects in Xcode 26 and later isolate everything to the main actor by default ([SE-0466](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md)), which makes a DTO's `Decodable` conformance main-actor-isolated ([SE-0470](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0470-isolated-conformances.md)). An isolated conformance cannot satisfy a generic parameter that is also `Sendable`, and `request<T: Decodable & Sendable>` is exactly that:
+
+```text
+error: main actor-isolated conformance of 'PostDTO' to 'Decodable' cannot
+satisfy conformance requirement for a 'Sendable' type parameter
+```
+
+DTOs and endpoints are data, not UI state, so they should opt out of the main-actor default:
+
+```swift
+nonisolated struct PostDTO: Decodable, Sendable {
+    let id: Int
+    let title: String
+}
+```
+
+With `nonisolated` on the DTO and on the endpoint type, the same call compiles with no warnings under the Swift 6.2 defaults.
+
+> **In plain words:** the request path is safe because almost everything in it is a copied value. The package declares that well, but builds in a mode where the compiler does not check it, and the checker finds 7 places where the declarations are not quite true.
+
+---
+
+## What every request shares: the ledger
+
+Concurrent callers share more than the client. Every `APIClient` registers its requests in `APIClientTaskManager.shared`, a singleton with a private initializer, so there is one ledger for the whole process, whatever the number of clients. For each id it keeps the request's `Task` and a status. It exists for two features: refusing a reused id, and cancelling by id.
+
+Neither works as described, and the reason is the unstructured `Task`. A structured child task, such as one from `async let` or a task group, is cancelled when its parent is. A task created with `Task { }` has no parent: cancelling the code that awaits its `value` does not cancel it ([SE-0304](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0304-structured-concurrency.md)). The client runs each request in such a task, so the only way to stop one is to call `cancel()` on that handle. The ledger keeps the handle, but as `any Sendable`, and cancellation casts it back to `Task<Any, any Error>`. A `Task<[PostDTO], any Error>` is not a `Task<Any, any Error>`: generic types in Swift do not convert to each other because their parameters do. The cast fails for every request, and the manager logs `No task found for id … or task is not in the correct state, state: queued`.
+
+I measured each path with a stub session that takes one second and honours cancellation:
+
+- **`cancelRequest(with:)`** after 100 ms: the request ran to the end, 1.06 s, and returned its value. The session never saw a cancellation.
+- **Cancelling the caller's task** after 100 ms: the same, 1.07 s, value returned to a caller that had been cancelled. In SwiftUI that is every `.task { }` whose view disappeared.
+- **1,000 sequential requests** grew the ledger by exactly 1,000 entries. Finished requests are marked `.finished` and never removed; a public cleanup method exists, and nothing in the package calls it.
+- **Two concurrent calls with the same id** both went to the network in 4 of 200 trials. The status check and the insert take the lock separately, and both callers can read `.unknown` in between. The other 196 got `.taskInProgress`.
+- **`cancelAllRequests()`** after one completed request never returned. It takes the `NSLock` and, while holding it, calls `cancelTask(for:)`, which takes the same lock. `NSLock` is not recursive, so the thread waits for itself. A request started afterwards blocked too, because it needs the lock to check its id. Called from the main thread, that is a frozen app.
+
+<TaskLedgerSandbox />
+
+The newest feature inherits the problem. `DefaultRemoteFallbackExecutor` races the remote call against a timeout in a task group, which is the right tool, and cancels the loser. But a task group does not return until all its children have finished, and the remote child is waiting on the client's uncancellable task. With a 0.2 s timeout around a request that takes 2 s, the executor returned the fallback after 2.12 s.
+
+The fix is small. Keep a cancel closure per id instead of a typed handle, check and insert under one lock, remove the entry when the request ends, run the closures outside the lock, and forward the caller's cancellation into the request task:
+
+```swift
+final class RequestRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancellers: [String: @Sendable () -> Void] = [:]
+
+    /// Check and insert under one lock, so two callers cannot both claim an id.
+    func insert(_ id: String, cancel: @escaping @Sendable () -> Void) throws {
+        try lock.withLock {
+            guard cancellers[id] == nil else { throw APIClientError.taskInProgress }
+            cancellers[id] = cancel
+        }
+    }
+
+    func remove(_ id: String) {
+        lock.withLock { _ = cancellers.removeValue(forKey: id) }
+    }
+
+    /// Runs the cancel closure outside the lock.
+    func cancel(_ id: String) {
+        let cancel = lock.withLock { cancellers[id] }
+        cancel?()
+    }
+
+    func cancelAll() {
+        let all = lock.withLock { Array(cancellers.values) }
+        all.forEach { $0() }
+    }
+}
+
+func execute<T: Sendable>(
+    id: String,
+    registry: RequestRegistry,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    let task = Task { try await operation() }
+    do {
+        try registry.insert(id) { task.cancel() }
+    } catch {
+        task.cancel()
+        throw error
+    }
+    defer { registry.remove(id) }
+
+    return try await withTaskCancellationHandler {
+        try await task.value
+    } onCancel: {
+        task.cancel()
+    }
+}
+```
+
+`@unchecked Sendable` is still a promise, but now a checkable one: every access to `cancellers` is inside `withLock`. Tested in Swift 6 mode, cancelling by id and cancelling the caller both ended a 2-second operation within 100 ms with `CancellationError`, and the id was free again afterwards. On a real `URLSession`, cancelling the task makes `data(for:)` throw `URLError.cancelled`, which the client's mapping should turn into `CancellationError` rather than `.networkError`, so callers can tell "I stopped" from "the network failed". With the deployment target at iOS 18, `Mutex` from the Synchronization module would replace both the lock and the `@unchecked`.
+
+> **In plain words:** the client starts each request as a task nobody else owns, then loses the handle it would need to stop it. Keep a way to cancel each request, forget it when the request ends, and pass the caller's cancellation through.
+
+---
+
+## Retries
+
+A retry is a bet that the next attempt will go differently. It pays off for an overloaded server or a dropped connection, and costs time for anything else. The policy decides which failures are worth the bet and how long to wait between bets.
+
+The client reads the policy from the first `RetryInterceptor` in its array, matched by concrete type, so a custom retry interceptor would be ignored. It retries a response whose status is in `retryableStatusCodes` (500, 502, 503 and 504 by default) and five `URLError` codes: `.timedOut`, `.networkConnectionLost`, `.notConnectedToInternet`, `.cannotConnectToHost` and `.cannotFindHost`. Before retry *n* it sleeps `min(baseDelay × 2^n, maxDelay)`, with *n* counted from 1, so with the defaults (3 retries, 1 s base, 30 s cap) the waits are 2, 4 and 8 seconds, not 1, 2 and 4.
+
+<RetryBackoffBudget />
+
+Measured with a stub session that answered 503 every time and a 50 ms base, the four attempts went out at 0.00, 0.10, 0.31 and 0.72 s, and the caller got `.statusCode(503)`. Every attempt carried `X-Retry-Count: 0`, because the header is computed from the original request, which never has one. Four more things about the policy are worth knowing before you rely on it:
+
+- **No jitter.** Every client computes the same waits. After an outage, the clients that failed together retry together, in waves about 2, 6 and 14 seconds after the failure. Randomising each wait ("full jitter") spreads them out ([AWS: exponential backoff and jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/)).
+- **`Retry-After` is ignored.** A 503 that says when to come back ([RFC 9110 §10.2.3](https://www.rfc-editor.org/rfc/rfc9110#section-10.2.3)) gets the fixed schedule instead.
+- **POST is retried like GET.** My probe sent the same POST three times on 502. A 502 does not say whether the first one was processed, so a retried "create" can create twice. Only idempotent methods are safe to repeat blindly ([RFC 9110 §9.2.2](https://www.rfc-editor.org/rfc/rfc9110#section-9.2.2)); for anything else the server needs an idempotency key.
+- **Offline is retried.** `.notConnectedToInternet` is on the list, so a device in airplane mode waits through the whole schedule before the screen can say so. `NetworkAwareInterceptor` placed first in the array avoids that, because it throws before the loop starts.
+
+> **In plain words:** the retry loop is simple and predictable, which is its strength and its problem: every client waits the same, for any method, even when the answer cannot change.
+
+---
+
+## Uploads with progress
+
+The third `request` overload takes an `UploadProgressDelegateProtocol`, a `URLSessionTaskDelegate`, and returns the raw response data. The package ships `UploadProgressDelegate`, which turns `didSendBodyData` into a fraction:
+
+```swift
+@MainActor
+final class AvatarUploadViewModel: ObservableObject {
+    @Published private(set) var progress = 0.0
+    private let apiClient: any APIClientProtocol
+
+    init(apiClient: any APIClientProtocol) {
+        self.apiClient = apiClient
+    }
+
+    func upload(_ jpeg: Data) async throws {
+        let delegate = UploadProgressDelegate { [weak self] fraction in
+            // Called on the URLSession delegate queue, not the main thread.
+            Task { @MainActor in self?.progress = fraction }
+        }
+        try await apiClient.request(APIEndpoint.uploadAvatar(jpeg: jpeg), progressDelegate: delegate)
+    }
+}
+```
+
+The comment in the package says the handler is called on the main thread. It is called on the session's delegate queue, which `URLSession` creates as a serial operation queue when none is given. The handler is `@Sendable`, so Swift 6 makes you hop to the main actor yourself, as above.
+
+How the client gets progress matters more. When a delegate is passed, the client does not use the session you injected. It creates a new `NetworkSession` with a 30-second timeout and the delegate, for this one call. I checked with a counting stub session: an upload with a progress delegate made zero calls to it and went to the real network. So an upload skips whatever the injected session carries, such as certificate pinning, a `URLProtocol` mock, custom headers in the configuration or your timeouts, and the "direct access to URLSession for SSL pinning, mocking and unit testing" in the first version of this article does not apply to it. The new session is also never invalidated, and a `URLSession` keeps a strong reference to its delegate until it is invalidated, which [Apple's documentation](https://developer.apple.com/documentation/foundation/urlsession/init(configuration:delegate:delegatequeue:)) describes as a leak. Since iOS 15, `URLSession`'s `upload(for:from:delegate:)` and `data(for:delegate:)` take a delegate for one task on an existing session, which would keep both the progress and the injected session.
+
+> **In plain words:** progress works, on a background queue, but each upload gets its own short-lived `URLSession` that ignores the one you configured and is never cleaned up.
+
+---
+
+## Testing
+
+The first version of this article tested a view model with `MockAPIClient`, calling `setMockResponse(_:for:)` and `setShouldThrowError(_:)`. Neither method exists. `MockAPIClient` is an actor whose canned responses are internal properties, and the compiler will not let a test mutate an actor's property from outside, `@testable import` or not.
+
+The seam that does work is the transport. A stub `NetworkSessionProtocol` runs the real client, so the test covers the interceptors, the status check, the error mapping and the decoding, not a mock of them:
+
+```swift
+struct StubSession: NetworkSessionProtocol {
+    let status: Int
+    let body: Data
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        guard
+            let url = request.url,
+            let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)
+        else { throw URLError(.badURL) }
+        return (body, response)
+    }
+}
+```
+
+```swift
+import EventHorizon
+import Foundation
+import Testing
+
+@Test func errorBodyBecomesServerMessage() async throws {
+    let client = APIClient(
+        session: StubSession(status: 404, body: Data(#"{"error":"Post not found"}"#.utf8))
+    )
+
+    let error = await #expect(throws: APIClientError.self) {
+        let _: [PostDTO] = try await client.request(APIEndpoint.posts(page: 1))
+    }
+
+    guard case .serverMessage(let message, let statusCode) = error else {
+        Issue.record("Expected serverMessage, got \(String(describing: error))")
+        return
+    }
+    #expect(message == "Post not found")
+    #expect(statusCode == 404)
+}
+```
+
+For a view model, a stub of your own repository protocol is simpler still, and keeps the networking package out of the view model's tests altogether. To test the real `URLSession` path, the package's own tests show the third option: a `URLProtocol` subclass registered in an ephemeral configuration and passed in with `NetworkSession(session:)`.
+
+> **In plain words:** fake the transport, not the client. The real client is cheap to run, and most of the bugs live in it.
+
+---
+
+## Honest downsides
+
+- **The safety is declared, not checked.** Swift 5 language mode accepts code that Swift 6 rejects, and `@unchecked Sendable` hides the one place with a lock. The design is right; nothing proves it.
+- **Cancellation is decorative.** Neither cancelling by id nor cancelling the caller reaches the network, and cancelling everything can freeze the app.
+- **One ledger for the whole process.** Every client shares it, it never shrinks, and the last client created decides its logger.
+- **The error body shape is fixed.** Only `{"error": "…"}` becomes a message. An API that uses `message`, `detail` or RFC 9457 problem details gets bare status codes.
+- **Uploads leave the configured session behind.** Pinning, mocks and timeouts do not apply to them.
+- **Retries ignore the method and the server.** POST is repeated, `Retry-After` is ignored, and there is no jitter.
+
+---
+
+## What I would change next
+
+- **Build the package in Swift 6 mode.** Make `EHLoggerProtocol`, `APIEndpointProtocol` and `AuthTokenStoreProviding` refine `Sendable`, put the `Sendable` constraint back on the internal generics, and let the compiler find the rest.
+- **Replace the ledger with the registry above,** one per client, injected through a protocol like the rest of the package, removing entries when requests end and forwarding the caller's cancellation. Map `URLError.cancelled` to `CancellationError`.
+- **Use per-task delegates for progress** on the injected session, and drop the throwaway sessions.
+- **Make the retry policy a protocol,** with jitter, `Retry-After`, and retries limited to idempotent methods unless the endpoint opts in.
+- **Let the endpoint say how its errors look,** with a decoder for the error body, and set `Content-Type` from `HTTPBody` when the endpoint does not.
+- **Delete `MockAPIClient`** from the library target, or give it a public API that a test can call.
+
+---
+
+## Takeaways
+
+> **Declaring `Sendable` is not the same as being checked.** Language mode is chosen per module. A package built in Swift 5 mode can say all the right things and still have errors the Swift 6 compiler would catch.
+
+> **Copies are what make a request pipeline safe.** A `URLRequest` that each step receives and returns by value cannot be changed by another request. Shared state is where to look for races.
+
+> **An unstructured task needs someone to cancel it.** `Task { }` does not inherit cancellation. Keep a handle that can be cancelled, forward the caller's cancellation with `withTaskCancellationHandler`, and forget the handle when the work ends.
+
+> **Never call back into your own lock.** `NSLock` is not recursive. Collect what you need under the lock and act on it after releasing.
+
+> **Check and insert under one lock.** Two separate critical sections leave a window between them, and concurrent callers find it.
+
+> **Retries are a policy, not a loop.** Which methods, which failures, how long, and how much randomness all need a decision. Doubling from one fixed number is only the last of these.
+
+> **Under Swift 6.2 defaults, data types should be `nonisolated`.** Otherwise their conformances are main-actor-isolated and cannot cross into generic code that requires `Sendable`.
+
+---
+
+## References
+
+**The package** — [EventHorizon on GitHub](https://github.com/egzonpllana/event-horizon-ios) (3.1.0) · [Example app using it](https://github.com/egzonpllana/network-layer-swift-6) · [What an event horizon is](https://www.space.com/black-holes-event-horizon-explained.html)
+
+**Swift** — [SE-0302: Sendable and @Sendable closures](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0302-concurrent-value-and-concurrent-closures.md) · [SE-0304: Structured concurrency](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0304-structured-concurrency.md) (unstructured tasks, cancellation) · [SE-0414: Region based isolation](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0414-region-based-isolation.md) · [SE-0430: sending parameters and results](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0430-transferring-parameters-and-results.md) · [SE-0466: Default actor isolation](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md) · [SE-0470: Isolated conformances](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0470-isolated-conformances.md) · [SE-0206: Hashable enhancements](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0206-hashable-enhancements.md) (per-process hash seeding) · [Swift 6 migration guide](https://www.swift.org/migration/documentation/migrationguide/) (language mode per module)
+
+**Apple** — [`URLSession` initializer with a delegate](https://developer.apple.com/documentation/foundation/urlsession/init(configuration:delegate:delegatequeue:)) (delegate queue, strong delegate reference) · [`upload(for:from:delegate:)`](https://developer.apple.com/documentation/foundation/urlsession/upload(for:from:delegate:)) · [`withTaskCancellationHandler`](https://developer.apple.com/documentation/swift/withtaskcancellationhandler(operation:oncancel:isolation:)) · [`NSLock`](https://developer.apple.com/documentation/foundation/nslock)
+
+**HTTP** — [RFC 9110 §9.2.2: idempotent methods](https://www.rfc-editor.org/rfc/rfc9110#section-9.2.2) · [RFC 9110 §10.2.3: Retry-After](https://www.rfc-editor.org/rfc/rfc9110#section-10.2.3) · [Timeouts, retries and backoff with jitter (AWS Builders' Library)](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/)

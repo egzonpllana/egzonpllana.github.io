@@ -1,0 +1,585 @@
+---
+/**
+ * The values that move between isolation domains during one EventHorizon
+ * request, and what each one needs to be safe to move. "As shipped" is what
+ * the package declares in its Swift 5 language mode build (tools 5.5).
+ * "Swift 6 mode" is what the compiler says when the same sources, or a
+ * consumer module, are built in Swift 6 language mode.
+ *
+ * Diagnostics are copied from Swift 6.4 (Xcode 27.1) builds of 3.1.0: the
+ * package itself produces 7, listed against the rows they belong to.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '02',
+  caption = 'Every arrow between domains is a value that one domain hands to another while the other may be running. Swift 6 mode allows that only for Sendable values, or for values the sender gives up. The package declares the right protocols for most of them; the compiler has never checked the rest, because the package builds in Swift 5 mode.',
+} = Astro.props;
+
+type Domain = 'caller' | 'task' | 'session' | 'shared';
+type Verdict = 'ok' | 'gap' | 'yours';
+interface Traveler {
+  id: string;
+  name: string;
+  route: string;
+  domains: Domain[];
+  declared: string;
+  why: string;
+  verdict: Verdict;
+  swift6: string;
+  diag?: string;
+}
+
+const domains: { id: Domain; name: string; sub: string }[] = [
+  { id: 'caller', name: 'Caller', sub: 'your code, often @MainActor' },
+  { id: 'task', name: 'Request Task', sub: 'one per call, nonisolated' },
+  { id: 'session', name: 'URLSession', sub: 'its own queues' },
+];
+const shared = [
+  'APIClient',
+  'interceptors',
+  'session',
+  'APIClientTaskManager.shared',
+];
+
+const travelers: Traveler[] = [
+  {
+    id: 'endpoint',
+    name: 'any APIEndpointProtocol',
+    route: 'caller → request Task',
+    domains: ['caller', 'task'],
+    declared: 'APIEndpointProtocol is not Sendable.',
+    why: 'The endpoint is captured by the closure that the client runs in a new Task, and read there again when decoding fails, to log it.',
+    verdict: 'gap',
+    swift6:
+      'The package fails to compile: the closure handed to Task {} captures a non-Sendable endpoint and a non-Sendable closure.',
+    diag: "APIClient.swift:121: passing closure as a 'sending' parameter risks causing data races between code in the current isolation context and concurrent execution of the closure",
+  },
+  {
+    id: 'request',
+    name: 'URLRequest',
+    route: 'request Task → interceptors → URLSession',
+    domains: ['task', 'session', 'shared'],
+    declared: 'A Foundation struct that is Sendable.',
+    why: 'Each interceptor receives a copy and returns a copy. Nothing about one request is visible to another.',
+    verdict: 'ok',
+    swift6:
+      'Accepted. Value semantics are what make the interceptor chain safe.',
+  },
+  {
+    id: 'value',
+    name: 'T: Decodable & Sendable',
+    route: 'request Task → caller',
+    domains: ['task', 'caller'],
+    declared:
+      'The public request methods require Sendable. The private executeRequest<T> they call does not.',
+    why: 'The decoded value is made on the request Task and returned to whoever awaited it, usually the main actor.',
+    verdict: 'gap',
+    swift6:
+      'The public constraint is right and enforced in your module. Inside the package the generic helper drops it. Under Swift 6.2 main-actor default isolation, your DTOs must be nonisolated to satisfy it.',
+    diag: "APIClient.swift:121, 122, 129: type 'T' does not conform to the 'Sendable' protocol",
+  },
+  {
+    id: 'error',
+    name: 'APIClientError',
+    route: 'request Task → caller',
+    domains: ['task', 'caller'],
+    declared:
+      'Error refines Sendable. The payloads (Data, URLError, any Error) are Sendable.',
+    why: 'Thrown on the request Task, caught by the caller.',
+    verdict: 'ok',
+    swift6: 'Accepted.',
+  },
+  {
+    id: 'client',
+    name: 'APIClient',
+    route: 'shared by every caller',
+    domains: ['caller', 'task', 'shared'],
+    declared:
+      'A final class with let properties, Sendable through APIClientProtocol.',
+    why: 'One client is usually created at launch and called from every screen at once.',
+    verdict: 'gap',
+    swift6:
+      'Rejected. Its logger is any EHLoggerProtocol, a protocol without Sendable. Making the protocol Sendable fixes it.',
+    diag: "APIClient.swift:10: stored property 'logger' of 'Sendable'-conforming class 'APIClient' has non-Sendable type 'any EHLoggerProtocol'",
+  },
+  {
+    id: 'interceptors',
+    name: '[any NetworkInterceptorProtocol]',
+    route: 'shared, run by every request at once',
+    domains: ['task', 'shared'],
+    declared: 'NetworkInterceptorProtocol refines Sendable.',
+    why: 'Fifty requests in flight run the same interceptor instances concurrently.',
+    verdict: 'yours',
+    swift6:
+      'Enforced where you write interceptors: a class with a var stored property does not compile in a Swift 6 module.',
+    diag: "stored property 'count' of 'Sendable'-conforming class 'CountingInterceptor' is mutable",
+  },
+  {
+    id: 'ledger',
+    name: 'Task<T, any Error> handles',
+    route: 'request Task → shared task manager',
+    domains: ['task', 'shared'],
+    declared:
+      '@unchecked Sendable class with an NSLock. Handles are stored as any Sendable and cast back to Task<Any, any Error>.',
+    why: 'The manager is a process-wide singleton. Every request of every client writes to it.',
+    verdict: 'gap',
+    swift6:
+      '@unchecked turns off the class check, so only the cast is flagged. configure(logger:) writes without the lock, which no diagnostic can see.',
+    diag: "APIClientTaskManager.swift:45, 46: type 'Any' does not conform to the 'Sendable' protocol",
+  },
+  {
+    id: 'progress',
+    name: '@Sendable (Double) -> Void',
+    route: 'URLSession delegate queue → caller',
+    domains: ['session', 'caller'],
+    declared: 'The progress handler is @Sendable.',
+    why: 'URLSession calls the delegate on its own serial queue. The source comment says the main thread; it is not.',
+    verdict: 'ok',
+    swift6:
+      'Accepted. The handler must hop to the main actor itself before touching UI state.',
+  },
+  {
+    id: 'token',
+    name: '@Sendable () -> String?',
+    route: 'called on the request Task',
+    domains: ['task', 'caller'],
+    declared:
+      'AuthInterceptor’s token provider is @Sendable. AuthTokenStoreProviding is not Sendable.',
+    why: 'The provider runs once per attempt, on whichever request Task is running.',
+    verdict: 'yours',
+    swift6:
+      'Capturing the package’s own token store protocol in the provider does not compile in a Swift 6 module.',
+    diag: "capture of 'store' with non-Sendable type 'any AuthTokenStoreProviding' in a '@Sendable' closure",
+  },
+];
+
+const verdictText: Record<Verdict, { shipped: string; six: string }> = {
+  ok: { shipped: 'declared', six: 'accepted' },
+  gap: { shipped: 'not checked', six: 'error in the package' },
+  yours: { shipped: 'declared', six: 'checked in your code' },
+};
+---
+
+<VizFrame
+  fig={fig}
+  title="What crosses between isolation domains, and who checks it"
+  caption={caption}
+  class="sbm"
+  data-sbm
+>
+  <div class="sbm__bar">
+    <div class="viz-seg" role="group" aria-label="Compiler">
+      <button type="button" aria-pressed="true" data-mode="shipped"
+        >as shipped, Swift 5 mode</button
+      >
+      <button type="button" aria-pressed="false" data-mode="six"
+        >Swift 6 mode</button
+      >
+    </div>
+    <span class="viz-mono sbm__count" data-count></span>
+  </div>
+
+  <div class="sbm__domains" aria-hidden="true">
+    {
+      domains.map((d) => (
+        <div class="sbm__domain viz-panel" data-domain={d.id}>
+          <b>{d.name}</b>
+          <span>{d.sub}</span>
+        </div>
+      ))
+    }
+    <div class="sbm__shared viz-panel" data-domain="shared">
+      <span class="viz-label">shared by every request</span>
+      <span class="sbm__shared-list">
+        {shared.map((s) => <code>{s}</code>)}
+      </span>
+    </div>
+  </div>
+
+  <div class="sbm__grid">
+    <ul class="sbm__list" aria-label="Values that cross">
+      {
+        travelers.map((t, i) => (
+          <li>
+            <button
+              type="button"
+              class:list={['sbm__item', `sbm__item--${t.verdict}`]}
+              aria-pressed={i === 0 ? 'true' : 'false'}
+              data-item={t.id}
+              data-domains={t.domains.join(',')}
+            >
+              <code class="sbm__name">{t.name}</code>
+              <span class="sbm__route">{t.route}</span>
+              <span
+                class="sbm__verdict"
+                data-shipped={verdictText[t.verdict].shipped}
+                data-six={verdictText[t.verdict].six}
+              >
+                {verdictText[t.verdict].shipped}
+              </span>
+            </button>
+          </li>
+        ))
+      }
+    </ul>
+
+    <div class="sbm__detail viz-panel" aria-live="polite">
+      {
+        travelers.map((t, i) => (
+          <div data-detail={t.id} hidden={i !== 0}>
+            <code class="sbm__detail-name">{t.name}</code>
+            <p>
+              <span class="viz-label">why it crosses</span>
+              {t.why}
+            </p>
+            <p>
+              <span class="viz-label">what the package declares</span>
+              {t.declared}
+            </p>
+            <p class="sbm__six" data-six-only hidden>
+              <span class="viz-label">in Swift 6 mode</span>
+              {t.swift6}
+            </p>
+            {t.diag && (
+              <code
+                class:list={[
+                  'sbm__diag',
+                  { 'sbm__diag--yours': t.verdict === 'yours' },
+                ]}
+                data-six-only
+                hidden
+              >
+                {t.diag}
+              </code>
+            )}
+          </div>
+        ))
+      }
+    </div>
+  </div>
+
+  <div class="viz-legend sbm__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-net)"></i>domain the value moves between</span
+    >
+    <span><i style="--c:var(--viz-level)"></i>accepted by the checker</span>
+    <span><i style="--c:var(--viz-meta)"></i>checked in your module</span>
+    <span><i style="--c:var(--viz-bad)"></i>error in the package</span>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initBoundaryMap(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const items = [...root.querySelectorAll('[data-item]')];
+      const details = [...root.querySelectorAll('[data-detail]')];
+      const domainEls = [...root.querySelectorAll('[data-domain]')];
+      const modeBtns = [...root.querySelectorAll('[data-mode]')];
+      const countEl = root.querySelector('[data-count]');
+      const detailEl = root.querySelector('.sbm__detail');
+      const gridEl = root.querySelector('.sbm__grid');
+      const narrow = window.matchMedia('(max-width: 720px)');
+
+      let mode = 'shipped';
+      let selected = items[0].dataset.item;
+
+      function render() {
+        root.dataset.mode = mode;
+        items.forEach((btn) => {
+          const on = btn.dataset.item === selected;
+          btn.setAttribute('aria-pressed', String(on));
+          const v = btn.querySelector('.sbm__verdict');
+          v.textContent = mode === 'six' ? v.dataset.six : v.dataset.shipped;
+        });
+        details.forEach((d) => {
+          d.hidden = d.dataset.detail !== selected;
+          d.querySelectorAll('[data-six-only]').forEach(
+            (el) => (el.hidden = mode !== 'six'),
+          );
+        });
+        const current = items.find((b) => b.dataset.item === selected);
+        // Narrow screens: show the detail right under the chosen row.
+        const host = narrow.matches ? current.parentElement : gridEl;
+        if (detailEl.parentElement !== host) host.append(detailEl);
+        const lit = (current.dataset.domains || '').split(',');
+        domainEls.forEach((el) =>
+          el.classList.toggle('is-lit', lit.includes(el.dataset.domain)),
+        );
+        const errors = items.filter((b) =>
+          b.classList.contains('sbm__item--gap'),
+        ).length;
+        countEl.textContent =
+          mode === 'six'
+            ? `${errors} of ${items.length} rows fail in the package`
+            : 'the compiler does not check the package';
+      }
+
+      items.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          selected = btn.dataset.item;
+          render();
+        }),
+      );
+      modeBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          mode = btn.dataset.mode;
+          modeBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+
+      narrow.addEventListener('change', render);
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-sbm]').forEach(initBoundaryMap);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .sbm__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .sbm__bar .viz-seg {
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+  .sbm__count {
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+
+  .sbm__domains {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-2);
+  }
+  .sbm__domain,
+  .sbm__shared {
+    display: grid;
+    gap: 2px;
+    padding: var(--sp-2) var(--sp-3);
+    border-style: dashed;
+    transition:
+      border-color 0.25s var(--ease),
+      background 0.25s var(--ease);
+  }
+  .sbm__domain b {
+    font-size: var(--fs-sm);
+    color: var(--fg);
+  }
+  .sbm__domain span {
+    font-size: 11.5px;
+    color: var(--fg-faint);
+  }
+  .sbm__shared {
+    grid-column: 1 / -1;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+  }
+  .sbm__shared-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+  }
+  .sbm__shared-list code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+  .sbm__domains .is-lit {
+    border-style: solid;
+    border-color: var(--viz-net);
+    background: color-mix(in srgb, var(--viz-net) 8%, var(--viz-panel));
+  }
+
+  .sbm__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: var(--sp-3);
+    margin-top: var(--sp-3);
+    align-items: start;
+  }
+  .sbm__list {
+    display: grid;
+    gap: 4px;
+  }
+  .sbm__item {
+    --c: var(--viz-level);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px var(--sp-2);
+    width: 100%;
+    padding: 6px 10px;
+    text-align: left;
+    color: inherit;
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--c);
+    border-radius: 8px;
+    cursor: pointer;
+    font: inherit;
+    transition:
+      background 0.2s var(--ease),
+      border-color 0.2s var(--ease);
+  }
+  .sbm__item:hover {
+    border-color: var(--border-strong);
+    border-left-color: var(--c);
+  }
+  .sbm__item:focus-visible {
+    outline: 2px solid var(--viz-meta);
+    outline-offset: 2px;
+  }
+  .sbm__item[aria-pressed='true'] {
+    background: color-mix(in srgb, var(--c) 9%, var(--viz-panel));
+    border-color: color-mix(in srgb, var(--c) 50%, transparent);
+    border-left-color: var(--c);
+  }
+  :global(.sbm[data-mode='six']) .sbm__item--gap {
+    --c: var(--viz-bad);
+  }
+  :global(.sbm[data-mode='six']) .sbm__item--yours {
+    --c: var(--viz-meta);
+  }
+  .sbm__name {
+    grid-column: 1;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--fg);
+    background: none;
+    border: 0;
+    padding: 0;
+    overflow-wrap: anywhere;
+  }
+  .sbm__route {
+    grid-column: 1;
+    font-size: 11.5px;
+    color: var(--fg-faint);
+  }
+  .sbm__verdict {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    padding: 2px 8px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--c);
+    border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+
+  .sbm__detail {
+    position: sticky;
+    top: var(--sp-4);
+    padding: var(--sp-3);
+  }
+  .sbm__detail-name {
+    display: block;
+    margin-bottom: var(--sp-2);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    background: none;
+    border: 0;
+    padding: 0;
+    overflow-wrap: anywhere;
+  }
+  .sbm__detail p {
+    display: grid;
+    gap: 2px;
+    margin: 0 0 var(--sp-2);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+  .sbm__detail p.sbm__six {
+    color: var(--fg);
+  }
+  .sbm__diag {
+    display: block;
+    padding: var(--sp-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--viz-bad);
+    background: color-mix(in srgb, var(--viz-bad) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--viz-bad) 35%, transparent);
+    border-radius: 6px;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+  .sbm__diag--yours {
+    color: var(--viz-meta);
+    background: color-mix(in srgb, var(--viz-meta) 8%, transparent);
+    border-color: color-mix(in srgb, var(--viz-meta) 35%, transparent);
+  }
+  .sbm__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 720px) {
+    .sbm__grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .sbm__detail {
+      position: static;
+      margin: 4px 0 var(--sp-2);
+    }
+  }
+  @media (max-width: 560px) {
+    .sbm__domains {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 4px;
+    }
+    .sbm__domain {
+      padding: 6px 8px;
+    }
+    .sbm__domain span {
+      font-size: 10.5px;
+    }
+    .sbm__shared {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .sbm__item {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .sbm__verdict {
+      grid-column: 1;
+      grid-row: auto;
+      justify-self: start;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sbm__domain,
+    .sbm__shared,
+    .sbm__item {
+      transition: none;
+    }
+  }
+</style>

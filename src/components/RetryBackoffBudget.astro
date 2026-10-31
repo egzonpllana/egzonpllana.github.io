@@ -1,0 +1,403 @@
+---
+/**
+ * How long a caller waits before EventHorizon gives up, for a failure that
+ * repeats on every attempt. The arithmetic is APIClient.performRequest in
+ * 3.1.0: maxRetries from the first RetryInterceptor, delay before retry n is
+ * min(baseDelay × 2^n, maxDelay) with n counted from 1, no jitter, and the
+ * request interceptors run again before each attempt (X-Retry-Count stays 0).
+ *
+ * Attempt lengths: a timeout lasts the client's default 10-second session
+ * timeout; the 503 and offline durations are illustrative.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '04',
+  caption = 'The waits double from twice the base delay and are the same for every client, so clients that failed together retry together. A timeout on every attempt is the worst case: with the defaults, four 10-second attempts and 14 s of sleeping before the caller sees .timeout. Being offline is retried too. POST requests are retried like GET.',
+} = Astro.props;
+
+const failures = [
+  {
+    id: 'timeout',
+    label: 'times out',
+    attempt: 10,
+    error: '.timeout',
+    note: 'URLError.timedOut after the 10 s session timeout',
+  },
+  {
+    id: 'status',
+    label: '503 every time',
+    attempt: 0.3,
+    error: '.statusCode(503)',
+    note: 'a 503 with no {"error"} body, about 300 ms each',
+  },
+  {
+    id: 'offline',
+    label: 'offline',
+    attempt: 0.05,
+    error: '.networkError(URLError -1009)',
+    note: 'URLError.notConnectedToInternet, almost at once',
+  },
+];
+const bases = [0.5, 1, 2];
+const MAX_DELAY = 30;
+---
+
+<VizFrame
+  fig={fig}
+  title="The retry budget: what a repeating failure costs the caller"
+  caption={caption}
+  class="rbb"
+  data-rbb
+>
+  <div class="rbb__controls">
+    <div class="rbb__control">
+      <span class="viz-label">each attempt</span>
+      <div class="viz-seg" role="group" aria-label="Failure on each attempt">
+        {
+          failures.map((f, i) => (
+            <button
+              type="button"
+              aria-pressed={i === 0 ? 'true' : 'false'}
+              data-failure={f.id}
+            >
+              {f.label}
+            </button>
+          ))
+        }
+      </div>
+    </div>
+    <div class="rbb__control">
+      <span class="viz-label">base delay</span>
+      <div class="viz-seg" role="group" aria-label="Base delay">
+        {
+          bases.map((b) => (
+            <button
+              type="button"
+              aria-pressed={b === 1 ? 'true' : 'false'}
+              data-base={b}
+            >
+              {b} s
+            </button>
+          ))
+        }
+      </div>
+    </div>
+    <label class="rbb__control rbb__range">
+      <span class="viz-label">max retries</span>
+      <input
+        type="range"
+        min="0"
+        max="5"
+        step="1"
+        value="3"
+        data-retries
+        aria-label="Maximum retries"
+      />
+      <b class="viz-mono" data-retries-out>3</b>
+    </label>
+  </div>
+
+  <div class="rbb__stats viz-panel" aria-live="polite">
+    <div>
+      <span class="viz-label">requests sent</span>
+      <span class="viz-chip viz-chip--net" data-stat-attempts></span>
+    </div>
+    <div>
+      <span class="viz-label">asleep</span>
+      <span class="viz-chip viz-chip--level" data-stat-sleep></span>
+    </div>
+    <div>
+      <span class="viz-label">caller waits</span>
+      <span class="viz-chip viz-chip--level" data-stat-total></span>
+    </div>
+    <div>
+      <span class="viz-label">then catches</span>
+      <span class="viz-chip viz-chip--bad" data-stat-error></span>
+    </div>
+  </div>
+
+  <div class="rbb__chart viz-panel">
+    <div class="rbb__track" data-track aria-hidden="true"></div>
+    <div class="rbb__axis viz-mono" aria-hidden="true">
+      <span>0 s</span>
+      <span data-axis-end></span>
+    </div>
+    <ol class="rbb__steps viz-mono" data-steps></ol>
+  </div>
+
+  <p class="rbb__note" data-note></p>
+
+  <div class="viz-legend rbb__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-net)"></i>attempt on the wire</span>
+    <span><i style="--c:var(--viz-level)"></i>backoff sleep</span>
+    <span><i style="--c:var(--viz-bad)"></i>final error</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-rbb-data
+    set:html={JSON.stringify({ failures, maxDelay: MAX_DELAY })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const fmt = (s) =>
+      s >= 10 || Number.isInteger(s)
+        ? `${Math.round(s * 10) / 10} s`
+        : `${Math.round(s * 100) / 100} s`;
+
+    function plan(failure, base, retries, maxDelay) {
+      const parts = [];
+      for (let attempt = 0; attempt <= retries; attempt += 1) {
+        parts.push({ kind: 'attempt', n: attempt + 1, secs: failure.attempt });
+        if (attempt < retries) {
+          const delay = Math.min(base * 2 ** (attempt + 1), maxDelay);
+          parts.push({
+            kind: 'sleep',
+            n: attempt + 1,
+            secs: delay,
+            capped: base * 2 ** (attempt + 1) > maxDelay,
+          });
+        }
+      }
+      return parts;
+    }
+
+    function initBudget(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-rbb-data]').textContent,
+      );
+      const failureBtns = [...root.querySelectorAll('[data-failure]')];
+      const baseBtns = [...root.querySelectorAll('[data-base]')];
+      const retriesEl = root.querySelector('[data-retries]');
+      const retriesOut = root.querySelector('[data-retries-out]');
+      const trackEl = root.querySelector('[data-track]');
+      const stepsEl = root.querySelector('[data-steps]');
+      const axisEnd = root.querySelector('[data-axis-end]');
+      const noteEl = root.querySelector('[data-note]');
+      const attemptsEl = root.querySelector('[data-stat-attempts]');
+      const sleepEl = root.querySelector('[data-stat-sleep]');
+      const totalEl = root.querySelector('[data-stat-total]');
+      const errorEl = root.querySelector('[data-stat-error]');
+
+      let failure = data.failures[0];
+      let base = 1;
+      let retries = 3;
+
+      function render() {
+        const parts = plan(failure, base, retries, data.maxDelay);
+        const total = parts.reduce((sum, p) => sum + p.secs, 0);
+        const asleep = parts
+          .filter((p) => p.kind === 'sleep')
+          .reduce((sum, p) => sum + p.secs, 0);
+
+        trackEl.replaceChildren(
+          ...parts.map((p) => {
+            const seg = document.createElement('i');
+            seg.className = `rbb__seg rbb__seg--${p.kind}`;
+            seg.style.flexGrow = String(p.secs);
+            return seg;
+          }),
+          Object.assign(document.createElement('b'), {
+            className: 'rbb__end',
+          }),
+        );
+        axisEnd.textContent = fmt(total);
+
+        stepsEl.replaceChildren(
+          ...parts.map((p) => {
+            const li = document.createElement('li');
+            li.className = `rbb__step rbb__step--${p.kind}`;
+            const what = document.createElement('span');
+            const len = document.createElement('b');
+            if (p.kind === 'attempt') {
+              what.textContent = `attempt ${p.n} · X-Retry-Count: 0`;
+            } else {
+              what.textContent = `sleep before retry ${p.n} = min(${base} × 2^${p.n}, ${data.maxDelay})${p.capped ? ', capped' : ''}`;
+            }
+            len.textContent = fmt(p.secs);
+            li.append(what, len);
+            return li;
+          }),
+        );
+
+        attemptsEl.textContent = String(retries + 1);
+        sleepEl.textContent = fmt(asleep);
+        totalEl.textContent = fmt(total);
+        totalEl.className = `viz-chip ${total > 30 ? 'viz-chip--bad' : 'viz-chip--level'}`;
+        errorEl.textContent = failure.error;
+        noteEl.textContent = `Each attempt: ${failure.note}.`;
+      }
+
+      failureBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          failure = data.failures.find((f) => f.id === btn.dataset.failure);
+          failureBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+      baseBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          base = Number(btn.dataset.base);
+          baseBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+      retriesEl.addEventListener('input', () => {
+        retries = Number(retriesEl.value);
+        retriesOut.textContent = String(retries);
+        render();
+      });
+
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-rbb]').forEach(initBudget);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .rbb__controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--sp-3) var(--sp-4);
+    margin-bottom: var(--sp-3);
+  }
+  .rbb__control {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+  .rbb__control .viz-seg {
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+  .rbb__range {
+    grid-template-columns: minmax(0, 1fr) auto;
+    flex: 1 1 10rem;
+    align-items: center;
+  }
+  .rbb__range .viz-label {
+    grid-column: 1 / -1;
+  }
+  .rbb__range b {
+    width: 1.2em;
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .rbb__stats {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+  }
+  .rbb__stats div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .rbb__stats .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .rbb__chart {
+    margin-top: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .rbb__track {
+    display: flex;
+    gap: 2px;
+    height: 22px;
+  }
+  .rbb__track :global(.rbb__seg) {
+    flex-basis: 0;
+    min-width: 3px;
+    border-radius: 4px;
+  }
+  .rbb__track :global(.rbb__seg--attempt) {
+    background: var(--viz-net);
+  }
+  .rbb__track :global(.rbb__seg--sleep) {
+    background: repeating-linear-gradient(
+      90deg,
+      var(--viz-level) 0 5px,
+      color-mix(in srgb, var(--viz-level) 25%, transparent) 5px 8px
+    );
+  }
+  .rbb__track :global(.rbb__end) {
+    flex: none;
+    width: 6px;
+    border-radius: 3px;
+    background: var(--viz-bad);
+  }
+  .rbb__axis {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .rbb__steps {
+    display: grid;
+    gap: 2px;
+    margin-top: var(--sp-3);
+    font-size: 11px;
+  }
+  .rbb__steps :global(.rbb__step) {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    padding: 2px 8px;
+    border-left: 3px solid var(--viz-net);
+    color: var(--fg-muted);
+  }
+  .rbb__steps :global(.rbb__step span) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .rbb__steps :global(.rbb__step b) {
+    flex: none;
+    color: var(--fg);
+  }
+  .rbb__steps :global(.rbb__step--sleep) {
+    border-left-color: var(--viz-level);
+  }
+
+  .rbb__note {
+    margin: var(--sp-3) 0 0;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+  .rbb__legend {
+    margin-top: var(--sp-2);
+  }
+
+  @media (max-width: 560px) {
+    .rbb__stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+</style>

@@ -1,0 +1,620 @@
+---
+/**
+ * A sandbox for EventHorizon's request ledger, APIClientTaskManager.shared.
+ * Each button does what the named call does in 3.1.0, as measured in a
+ * Swift 6.4 probe against the package source:
+ *
+ * - cancelRequest(with:) casts the stored Task<T, any Error> to
+ *   Task<Any, any Error>; the cast fails for every T, so nothing is cancelled.
+ * - Cancelling the caller does not reach the unstructured Task the client
+ *   created, so the request runs to the end.
+ * - Two calls with the same id can both read .unknown before either stores
+ *   its Task (4 of 200 trials in the probe); the second handle replaces the
+ *   first.
+ * - cancelAllRequests() takes the NSLock and calls cancelTask(for:), which
+ *   takes it again. With anything in the ledger the thread never returns and
+ *   every later call that needs the lock waits behind it.
+ *
+ * "With the fix" runs the registry from the article: entries removed on
+ * completion, cancel closures run outside the lock, caller cancellation
+ * forwarded with withTaskCancellationHandler.
+ *
+ * The request duration is illustrative.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '03',
+  caption = 'Send a few requests, then try to stop one. In 3.1.0 the ledger keeps every id it has ever seen, neither kind of cancellation reaches the request, and cancelAllRequests() blocks forever once the ledger is not empty, holding the lock every later request needs. With the fix, the ledger holds only what is in flight and both cancellations end the request with CancellationError.',
+} = Astro.props;
+---
+
+<VizFrame
+  fig={fig}
+  title="The shared request ledger: cancelling, and what it keeps"
+  caption={caption}
+  class="tls"
+  data-tls
+>
+  <div class="tls__bar">
+    <div class="viz-seg" role="group" aria-label="Implementation">
+      <button type="button" aria-pressed="true" data-mode="shipped"
+        >EventHorizon 3.1.0</button
+      >
+      <button type="button" aria-pressed="false" data-mode="fixed"
+        >with the fix</button
+      >
+    </div>
+    <button type="button" class="viz-btn" data-act="reset">reset</button>
+  </div>
+
+  <div class="tls__actions" role="group" aria-label="Calls">
+    <button type="button" class="viz-btn" data-act="send">request()</button>
+    <button type="button" class="viz-btn" data-act="cancel"
+      >cancelRequest(with: id)</button
+    >
+    <button type="button" class="viz-btn" data-act="caller"
+      >cancel the caller’s Task</button
+    >
+    <button type="button" class="viz-btn" data-act="dup"
+      >two calls, one id</button
+    >
+    <button type="button" class="viz-btn" data-act="all"
+      >cancelAllRequests()</button
+    >
+  </div>
+
+  <div class="tls__stats viz-panel">
+    <div>
+      <span class="viz-label">in flight</span>
+      <span class="viz-chip viz-chip--net" data-stat-flight>0</span>
+    </div>
+    <div>
+      <span class="viz-label">ledger entries</span>
+      <span class="viz-chip viz-chip--level" data-stat-ledger>0</span>
+    </div>
+    <div>
+      <span class="viz-label">NSLock</span>
+      <span class="viz-chip viz-chip--meta" data-stat-lock>free</span>
+    </div>
+  </div>
+
+  <div class="tls__cols">
+    <div class="tls__panel viz-panel">
+      <span class="viz-label">calls</span>
+      <ol class="tls__rows" data-rows aria-live="polite"></ol>
+      <p class="tls__empty" data-empty>
+        No calls yet. Send a request, then try to stop it.
+      </p>
+    </div>
+    <div class="tls__panel viz-panel">
+      <span class="viz-label">APIClientTaskManager.shared</span>
+      <ul class="tls__ledger viz-mono" data-ledger></ul>
+      <p class="tls__empty" data-ledger-empty>[:]</p>
+    </div>
+  </div>
+
+  <p class="tls__log viz-mono" data-log aria-live="polite"></p>
+
+  <div class="viz-legend tls__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-net)"></i>on the wire</span>
+    <span><i style="--c:var(--viz-sound)"></i>value delivered</span>
+    <span><i style="--c:var(--viz-level)"></i>kept in the ledger</span>
+    <span><i style="--c:var(--viz-meta)"></i>cancelled cleanly</span>
+    <span><i style="--c:var(--viz-bad)"></i>ignored, lost or blocked</span>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const DURATION_MS = 4200;
+    const TICK_MS = 100;
+    const MAX_ROWS = 6;
+
+    function initLedger(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const rowsEl = root.querySelector('[data-rows]');
+      const emptyEl = root.querySelector('[data-empty]');
+      const ledgerEl = root.querySelector('[data-ledger]');
+      const ledgerEmptyEl = root.querySelector('[data-ledger-empty]');
+      const logEl = root.querySelector('[data-log]');
+      const flightEl = root.querySelector('[data-stat-flight]');
+      const ledgerStat = root.querySelector('[data-stat-ledger]');
+      const lockEl = root.querySelector('[data-stat-lock]');
+      const modeBtns = [...root.querySelectorAll('[data-mode]')];
+
+      let mode = 'shipped';
+      let calls = [];
+      let ledger = new Map();
+      let lockHeld = false;
+      let counter = 0;
+      let timer = 0;
+      let visible = true;
+
+      const inFlight = () => calls.filter((c) => c.state === 'flight');
+      const latestFlight = () => inFlight().slice(-1)[0];
+
+      function log(text, bad) {
+        logEl.textContent = text;
+        logEl.classList.toggle('is-bad', Boolean(bad));
+      }
+
+      function nextId() {
+        counter += 1;
+        return `r${counter}`;
+      }
+
+      function addCall(id, extra) {
+        const call = {
+          id,
+          progress: 0,
+          state: 'flight',
+          caller: 'awaiting',
+          note: '',
+          bad: false,
+          callerCancelled: false,
+          ...extra,
+        };
+        calls.push(call);
+        return call;
+      }
+
+      function finish(call) {
+        if (mode === 'shipped' && lockHeld) {
+          call.state = 'blocked';
+          call.caller = 'never resumes';
+          call.note =
+            'response arrived; setTaskStatus(for:) waits for the lock';
+          call.bad = true;
+          return;
+        }
+        call.state = 'done';
+        call.progress = 1;
+        call.caller = call.callerCancelled
+          ? 'got [PostDTO] anyway'
+          : 'got [PostDTO]';
+        if (mode === 'shipped') ledger.set(call.id, 'finished');
+        else ledger.delete(call.id);
+      }
+
+      function cancelCleanly(call, why) {
+        call.state = 'cancelled';
+        call.caller = 'CancellationError';
+        call.note = why;
+        call.bad = false;
+        ledger.delete(call.id);
+      }
+
+      function tick() {
+        if (!visible) return;
+        let changed = false;
+        inFlight().forEach((call) => {
+          call.progress = Math.min(1, call.progress + TICK_MS / DURATION_MS);
+          if (call.progress >= 1) finish(call);
+          changed = true;
+        });
+        if (changed) render();
+        if (!inFlight().length) {
+          clearInterval(timer);
+          timer = 0;
+        }
+      }
+
+      function ensureTimer() {
+        if (!timer && inFlight().length) timer = setInterval(tick, TICK_MS);
+      }
+
+      const actions = {
+        send() {
+          const id = nextId();
+          if (mode === 'shipped' && lockHeld) {
+            addCall(id, {
+              state: 'blocked',
+              caller: 'never resumes',
+              note: 'getTaskStatus(for:) waits for the lock',
+              bad: true,
+            });
+            log(
+              `request ${id} is stuck before it starts: the lock is still held.`,
+              true,
+            );
+            return;
+          }
+          addCall(id);
+          ledger.set(id, mode === 'shipped' ? 'queued' : 'in flight');
+          log(
+            mode === 'shipped'
+              ? `request ${id} registered as queued and sent.`
+              : `request ${id} registered with its cancel closure and sent.`,
+          );
+        },
+        cancel() {
+          const call = latestFlight();
+          if (!call) {
+            log('Nothing in flight. Send a request first.');
+            return;
+          }
+          if (mode === 'shipped' && lockHeld) {
+            log('cancelTask(for:) waits for the lock too.', true);
+            return;
+          }
+          if (mode === 'shipped') {
+            call.note =
+              'cast to Task<Any, any Error> failed: nothing cancelled';
+            call.bad = true;
+            log(
+              `No task found for id ${call.id} or task is not in the correct state, state: queued`,
+              true,
+            );
+            return;
+          }
+          cancelCleanly(call, 'cancel closure ran: URLError.cancelled');
+          log(`${call.id} cancelled and removed from the ledger.`);
+        },
+        caller() {
+          const call = inFlight()
+            .filter((c) => !c.callerCancelled)
+            .slice(-1)[0];
+          if (!call) {
+            log('No caller is waiting. Send a request first.');
+            return;
+          }
+          if (mode === 'shipped') {
+            call.callerCancelled = true;
+            call.caller = 'cancelled, still waiting';
+            call.note = 'unstructured Task: cancellation does not reach it';
+            call.bad = true;
+            log(
+              `The caller of ${call.id} is cancelled. Task.isCancelled is true there and false inside the request.`,
+              true,
+            );
+            return;
+          }
+          cancelCleanly(call, 'withTaskCancellationHandler forwarded it');
+          log(
+            `The caller of ${call.id} was cancelled, and so was the request.`,
+          );
+        },
+        dup() {
+          const id = nextId();
+          if (mode === 'shipped' && lockHeld) {
+            actions.send();
+            return;
+          }
+          if (mode === 'shipped') {
+            addCall(id, { note: 'read .unknown, sent' });
+            addCall(id, {
+              note: 'also read .unknown, sent; its handle replaced the first',
+              bad: true,
+            });
+            ledger.set(id, 'queued');
+            log(
+              `Both calls for ${id} passed the check before either stored its Task. My probe hit this in 4 of 200 trials; the other 196 threw .taskInProgress.`,
+              true,
+            );
+            return;
+          }
+          addCall(id, { note: 'claimed the id' });
+          ledger.set(id, 'in flight');
+          calls.push({
+            id,
+            progress: 0,
+            state: 'rejected',
+            caller: 'APIClientError.taskInProgress',
+            note: 'check and insert happen under one lock',
+            bad: false,
+          });
+          log(
+            `The second call for ${id} was rejected before it sent anything.`,
+          );
+        },
+        all() {
+          if (mode === 'fixed') {
+            const live = inFlight();
+            live.forEach((c) =>
+              cancelCleanly(c, 'cancelAll() ran its closure'),
+            );
+            log(
+              live.length
+                ? `cancelAll() cancelled ${live.length} request${live.length > 1 ? 's' : ''} and returned.`
+                : 'cancelAll() returned. Nothing was in flight.',
+            );
+            return;
+          }
+          if (lockHeld) {
+            log('The first cancelAllRequests() is still blocked.', true);
+            return;
+          }
+          if (!ledger.size) {
+            log(
+              'cancelAllRequests() returned: the ledger was empty, so it never re-entered the lock.',
+            );
+            return;
+          }
+          lockHeld = true;
+          log(
+            'cancelAllTasks() holds the lock and calls cancelTask(for:), which asks for the same NSLock. NSLock is not recursive: the calling thread waits forever.',
+            true,
+          );
+        },
+        reset() {
+          calls = [];
+          ledger = new Map();
+          lockHeld = false;
+          counter = 0;
+          clearInterval(timer);
+          timer = 0;
+          log('');
+        },
+      };
+
+      function render() {
+        const shown = calls.slice(-MAX_ROWS);
+        rowsEl.replaceChildren(
+          ...shown.map((c) => {
+            const li = document.createElement('li');
+            li.className = `tls__row is-${c.state}`;
+            li.classList.toggle('is-bad', Boolean(c.bad));
+            const head = document.createElement('span');
+            head.className = 'tls__row-head';
+            const id = document.createElement('b');
+            id.textContent = c.id;
+            const caller = document.createElement('span');
+            caller.className = 'tls__caller';
+            caller.textContent = c.caller;
+            head.append(id, caller);
+            const track = document.createElement('span');
+            track.className = 'tls__track';
+            const fill = document.createElement('i');
+            fill.style.width = `${Math.round(c.progress * 100)}%`;
+            track.append(fill);
+            const note = document.createElement('span');
+            note.className = 'tls__note';
+            note.textContent = c.note;
+            li.append(head, track, note);
+            return li;
+          }),
+        );
+        emptyEl.hidden = calls.length > 0;
+
+        const entries = [...ledger.entries()];
+        const tail = entries.slice(-8);
+        ledgerEl.replaceChildren(
+          ...tail.map(([id, status]) => {
+            const li = document.createElement('li');
+            li.className = `tls__entry is-${status.replace(' ', '-')}`;
+            li.textContent =
+              status === 'in flight'
+                ? `"${id}": { task.cancel() }`
+                : `"${id}": .${status}`;
+            return li;
+          }),
+        );
+        if (entries.length > tail.length) {
+          const more = document.createElement('li');
+          more.className = 'tls__entry is-more';
+          more.textContent = `+ ${entries.length - tail.length} more`;
+          ledgerEl.prepend(more);
+        }
+        ledgerEmptyEl.hidden = entries.length > 0;
+
+        flightEl.textContent = String(inFlight().length);
+        ledgerStat.textContent = String(entries.length);
+        const keptFinished = entries.filter(([, s]) => s === 'finished').length;
+        ledgerStat.className = `viz-chip ${keptFinished ? 'viz-chip--bad' : 'viz-chip--level'}`;
+        lockEl.textContent = lockHeld ? 'held forever' : 'free';
+        lockEl.className = `viz-chip ${lockHeld ? 'viz-chip--bad' : 'viz-chip--meta'}`;
+      }
+
+      root.querySelectorAll('[data-act]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          actions[btn.dataset.act]();
+          render();
+          ensureTimer();
+        }),
+      );
+
+      modeBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.mode === mode) return;
+          mode = btn.dataset.mode;
+          modeBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          actions.reset();
+          render();
+        }),
+      );
+
+      // Hold the simulated clock while the figure is off screen.
+      root.addEventListener('viz:inview', (e) => {
+        visible = Boolean(e.detail);
+      });
+
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-tls]').forEach(initLedger);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .tls__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .tls__bar .viz-seg {
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+  .tls__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: var(--sp-3);
+  }
+
+  .tls__stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+  }
+  .tls__stats div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .tls__cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+    gap: var(--sp-3);
+    margin-top: var(--sp-3);
+  }
+  .tls__panel {
+    display: grid;
+    align-content: start;
+    gap: var(--sp-2);
+    min-width: 0;
+    padding: var(--sp-3);
+  }
+  .tls__empty {
+    margin: 0;
+    font-size: var(--fs-sm);
+    color: var(--fg-faint);
+  }
+
+  .tls__rows {
+    display: grid;
+    gap: 8px;
+  }
+  .tls__rows :global(.tls__row) {
+    --c: var(--viz-net);
+    display: grid;
+    gap: 3px;
+  }
+  .tls__rows :global(.tls__row.is-done) {
+    --c: var(--viz-sound);
+  }
+  .tls__rows :global(.tls__row.is-cancelled),
+  .tls__rows :global(.tls__row.is-rejected) {
+    --c: var(--viz-meta);
+  }
+  .tls__rows :global(.tls__row.is-bad) {
+    --c: var(--viz-bad);
+  }
+  .tls__rows :global(.tls__row-head) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 2px 8px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+  }
+  .tls__rows :global(.tls__row-head b) {
+    color: var(--fg);
+  }
+  .tls__rows :global(.tls__caller) {
+    color: var(--c);
+    font-weight: 600;
+  }
+  .tls__rows :global(.tls__track) {
+    position: relative;
+    height: 6px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--fg) 6%, transparent);
+    overflow: hidden;
+  }
+  .tls__rows :global(.tls__track i) {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 3px;
+    background: var(--c);
+    transition: width 0.1s linear;
+  }
+  .tls__rows :global(.tls__row.is-blocked .tls__track i) {
+    background: repeating-linear-gradient(
+      90deg,
+      var(--c) 0 6px,
+      transparent 6px 9px
+    );
+  }
+  .tls__rows :global(.tls__note) {
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--fg-muted);
+  }
+  .tls__rows :global(.tls__row.is-bad .tls__note) {
+    color: var(--viz-bad);
+  }
+
+  .tls__ledger {
+    display: grid;
+    gap: 3px;
+  }
+  .tls__ledger :global(.tls__entry) {
+    padding: 2px 6px;
+    font-size: 11px;
+    color: var(--viz-level);
+    border-left: 2px solid var(--viz-level);
+    background: color-mix(in srgb, var(--viz-level) 7%, transparent);
+    overflow-wrap: anywhere;
+  }
+  .tls__ledger :global(.tls__entry.is-finished) {
+    color: var(--viz-bad);
+    border-left-color: var(--viz-bad);
+    background: color-mix(in srgb, var(--viz-bad) 7%, transparent);
+  }
+  .tls__ledger :global(.tls__entry.is-more) {
+    color: var(--fg-faint);
+    border-left-color: var(--border-strong);
+    background: none;
+  }
+
+  .tls__log {
+    margin: var(--sp-3) 0 0;
+    min-height: 3em;
+    padding-left: var(--sp-3);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--fg);
+    border-left: 3px solid var(--viz-meta);
+    overflow-wrap: anywhere;
+  }
+  .tls__log.is-bad {
+    border-left-color: var(--viz-bad);
+  }
+  .tls__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 560px) {
+    .tls__cols {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .tls__actions .viz-btn {
+      flex: 1 1 auto;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tls__rows :global(.tls__track i) {
+      transition: none;
+    }
+  }
+</style>

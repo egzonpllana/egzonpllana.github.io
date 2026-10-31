@@ -1,0 +1,699 @@
+---
+/**
+ * One call to EventHorizon's APIClient, walked station by station through
+ * APIClient.performRequest in 3.1.0. Each scenario is the path the source
+ * takes for one kind of server answer: the stations are fixed, the order and
+ * the loop-backs come from the code (retry re-runs the request interceptors
+ * on the original request; a token refresh re-enters at depth 1; thrown
+ * errors skip the refresh and response hooks).
+ *
+ * The client is the one from the article: Auth, HeaderInjector,
+ * RetryInterceptor(maxRetries: 2) and Logging, plus a token refresher, so
+ * the default retry delays are 2 s and 4 s.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '01',
+  caption = 'The stations are the order of operations in APIClient.performRequest. A retry goes back to the request interceptors and runs them on the request the endpoint built, so a new token is picked up. A token refresh runs the whole pipeline once more at depth 1. A thrown error skips the response hooks and goes straight to the retry check and the error mapping.',
+} = Astro.props;
+
+type Kind = 'meta' | 'net' | 'level' | 'sound';
+interface Station {
+  name: string;
+  code: string;
+  kind: Kind;
+}
+interface Step {
+  s: number;
+  note: string;
+  text: string;
+  bad?: boolean;
+  sleep?: number;
+  out?: { text: string; bad?: boolean };
+}
+interface Scenario {
+  id: string;
+  label: string;
+  steps: Step[];
+}
+
+const stations: Station[] = [
+  { name: 'Build the request', code: 'endpoint.urlRequest', kind: 'meta' },
+  { name: 'Claim the id', code: 'APIClientTaskManager', kind: 'meta' },
+  {
+    name: 'Request interceptors',
+    code: 'interceptAsync(request:)',
+    kind: 'meta',
+  },
+  { name: 'Transport', code: 'session.data(for:)', kind: 'net' },
+  {
+    name: 'Token refresh',
+    code: 'TokenRefreshingInterceptorProtocol',
+    kind: 'meta',
+  },
+  {
+    name: 'Response interceptors',
+    code: 'interceptAsync(response:data:)',
+    kind: 'meta',
+  },
+  { name: 'Retry check', code: 'RetryInterceptor', kind: 'level' },
+  { name: 'Validate the status', code: '200...299', kind: 'level' },
+  { name: 'Decode', code: 'JSONDecoder', kind: 'sound' },
+  { name: 'Return', code: 'T or APIClientError', kind: 'sound' },
+];
+
+const start: Step[] = [
+  {
+    s: 0,
+    note: 'GET /v1/posts?page=1',
+    text: 'The endpoint value becomes a URLRequest: base URL, version and path joined as strings, query items, headers and body. A URL that cannot be built throws invalidURL here, before anything else runs.',
+  },
+  {
+    s: 1,
+    note: 'unknown, then queued',
+    text: 'The id, a fresh UUID unless you pass one, is looked up in the task manager that every client shares. Unknown ids pass. The work starts in its own Task, registered as queued.',
+  },
+  {
+    s: 2,
+    note: 'Authorization, Accept, X-Retry-Count: 0',
+    text: 'Each interceptor gets the request in array order and returns a changed copy. URLRequest is a value type, so an interceptor working on one request cannot touch another.',
+  },
+];
+
+const success = (text: string): Step[] => [
+  {
+    s: 4,
+    note: '.proceed',
+    text: 'Token refreshers see the raw response before anyone else. A 200 needs nothing from them.',
+  },
+  {
+    s: 5,
+    note: 'unchanged',
+    text: 'The other interceptors see the response in the same array order as the request, not reversed, and may replace the data or the response.',
+  },
+  {
+    s: 6,
+    note: '200: not retryable',
+    text: 'The status is compared with the retry interceptor’s codes: 500, 502, 503 and 504 by default.',
+  },
+  {
+    s: 7,
+    note: 'inside 200...299',
+    text: 'A response that is not HTTP, or a status outside 200...299, would throw here.',
+  },
+  {
+    s: 8,
+    note: 'decode([PostDTO].self)',
+    text: 'The body is decoded into the type the call site asked for. A DecodingError would come back wrapped as requestFailed.',
+  },
+  {
+    s: 9,
+    note: 'id marked finished',
+    text,
+    out: { text: '[PostDTO]' },
+  },
+];
+
+const scenarios: Scenario[] = [
+  {
+    id: 'ok',
+    label: '200 OK',
+    steps: [
+      ...start,
+      {
+        s: 3,
+        note: '200 with a JSON body',
+        text: 'The one suspension that leaves the process. The client awaits the injected session, by default a NetworkSession with 10-second timeouts.',
+      },
+      ...success(
+        'The value goes back to the caller. The id is marked finished and stays in the shared manager, so it can never be used again.',
+      ),
+    ],
+  },
+  {
+    id: 'retry',
+    label: '503, then 200',
+    steps: [
+      ...start,
+      {
+        s: 3,
+        note: '503 Service Unavailable',
+        text: 'The server is overloaded. That is a response, not an error: the session call succeeds.',
+      },
+      {
+        s: 4,
+        note: '.proceed',
+        text: 'Refreshers only care about expired tokens.',
+      },
+      {
+        s: 5,
+        note: 'unchanged',
+        text: 'Response interceptors run before the retry decision, so a logger sees every attempt.',
+      },
+      {
+        s: 6,
+        note: '503 is retryable: sleep 2 s',
+        sleep: 2,
+        text: 'Attempt 1 of 2. The delay is baseDelay × 2^attempt, and attempts count from 1, so the first wait is 2 s with the default 1 s base.',
+      },
+      {
+        s: 2,
+        note: 'again, on the original request',
+        text: 'The client goes back to the request the endpoint built, not the one it sent. Every interceptor runs again, so a token refreshed in the meantime is used. X-Retry-Count is 0 again.',
+      },
+      {
+        s: 3,
+        note: '200 with a JSON body',
+        text: 'The second attempt goes through.',
+      },
+      ...success(
+        'One value for the caller, two requests on the wire and 2 s asleep between them. The caller cannot tell from the result that a retry happened.',
+      ),
+    ],
+  },
+  {
+    id: 'refresh',
+    label: '401, refreshed',
+    steps: [
+      ...start,
+      { s: 3, note: '401 Unauthorized', text: 'The access token has expired.' },
+      {
+        s: 4,
+        note: '.retryWithUpdatedToken',
+        text: 'Your refresher sees the 401, gets a new token and asks for a retry. The client calls performRequest again from the original request, at depth 1.',
+      },
+      {
+        s: 2,
+        note: 'new token applied',
+        text: 'The request interceptors run again, so the auth interceptor reads the new token.',
+      },
+      {
+        s: 3,
+        note: '200 with a JSON body',
+        text: 'The retried request is accepted.',
+      },
+      {
+        s: 4,
+        note: 'skipped at depth 1',
+        text: 'At depth 1 refreshers are not asked. If the new token were rejected too, the 401 would fail validation instead of refreshing forever.',
+      },
+      {
+        s: 5,
+        note: 'unchanged',
+        text: 'The inner pass runs the response interceptors and validation itself.',
+      },
+      { s: 6, note: '200: not retryable', text: 'No retry needed.' },
+      { s: 7, note: 'inside 200...299', text: 'The status is fine.' },
+      {
+        s: 8,
+        note: 'decode([PostDTO].self)',
+        text: 'The inner pass hands its data back to the outer call, which decodes it once.',
+      },
+      {
+        s: 9,
+        note: 'id marked finished',
+        text: 'The caller gets posts and never sees the 401. The 401 itself never reaches the response interceptors or the client’s logger.',
+        out: { text: '[PostDTO]' },
+      },
+    ],
+  },
+  {
+    id: 'server',
+    label: '404, error body',
+    steps: [
+      ...start,
+      {
+        s: 3,
+        note: '404 {"error":"Post not found"}',
+        text: 'The server answers with a status and a JSON explanation.',
+      },
+      { s: 4, note: '.proceed', text: 'Not a token problem.' },
+      {
+        s: 5,
+        note: 'unchanged',
+        text: 'Response interceptors see error responses too.',
+      },
+      {
+        s: 6,
+        note: '404: not retryable',
+        text: 'A 404 will not change on its own, so it is not retried.',
+      },
+      {
+        s: 7,
+        note: 'outside 200...299',
+        bad: true,
+        text: 'The client decodes {"error": String} from the body. It finds one, so the message becomes the error. Any other shape, {"message": …} included, gives statusCode(404).',
+      },
+      {
+        s: 9,
+        note: 'error thrown',
+        bad: true,
+        text: 'Decoding is skipped. The error goes back to the caller in place of a value, and the id is marked finished.',
+        out: { text: 'serverMessage("Post not found", 404)', bad: true },
+      },
+    ],
+  },
+  {
+    id: 'offline',
+    label: 'offline',
+    steps: [
+      ...start,
+      {
+        s: 3,
+        note: 'URLError -1009',
+        bad: true,
+        text: 'The session throws URLError.notConnectedToInternet. A thrown error skips the refresh and response hooks.',
+      },
+      {
+        s: 6,
+        note: 'retryable error: sleep 2 s',
+        sleep: 2,
+        text: 'Five URLError codes count as retryable, and being offline is one of them.',
+      },
+      {
+        s: 2,
+        note: 'again',
+        text: 'The interceptors run again on the original request.',
+      },
+      { s: 3, note: 'URLError -1009', bad: true, text: 'Still offline.' },
+      {
+        s: 6,
+        note: 'sleep 4 s',
+        sleep: 4,
+        text: 'Attempt 2 of 2, twice the wait.',
+      },
+      { s: 2, note: 'again', text: 'The interceptors run a third time.' },
+      { s: 3, note: 'URLError -1009', bad: true, text: 'Still offline.' },
+      {
+        s: 6,
+        note: 'no attempts left',
+        bad: true,
+        text: 'Three attempts and 6 s of waiting for a device that was offline the whole time.',
+      },
+      {
+        s: 9,
+        note: 'error thrown',
+        bad: true,
+        text: 'Every URLError except timedOut is wrapped as networkError. timedOut becomes .timeout.',
+        out: { text: 'networkError(URLError -1009)', bad: true },
+      },
+    ],
+  },
+];
+
+const pad = (n: number) => String(n + 1).padStart(2, '0');
+---
+
+<VizFrame
+  fig={fig}
+  title="One request through EventHorizon’s APIClient"
+  caption={caption}
+  class="rpw"
+  data-rpw
+>
+  <div slot="tools" class="rpw__tools">
+    <button type="button" class="viz-btn" data-next aria-label="Next step"
+      >step</button
+    >
+    <AnimControls label="Walk" />
+  </div>
+
+  <div class="rpw__bar">
+    <div class="viz-seg" role="group" aria-label="Server answer">
+      {
+        scenarios.map((sc, i) => (
+          <button
+            type="button"
+            aria-pressed={i === 0 ? 'true' : 'false'}
+            data-scenario={sc.id}
+          >
+            {sc.label}
+          </button>
+        ))
+      }
+    </div>
+    <span class="viz-mono rpw__counter" data-counter></span>
+  </div>
+
+  <ol class="rpw__stations viz-panel" aria-label="Stations">
+    {
+      stations.map((st, i) => (
+        <li class={`rpw__station rpw__station--${st.kind}`} data-station={i}>
+          <span class="rpw__num" aria-hidden="true">
+            {pad(i)}
+          </span>
+          <span class="rpw__body">
+            <span class="rpw__name">{st.name}</span>
+            <code class="rpw__code">{st.code}</code>
+            <span class="rpw__note" data-note />
+          </span>
+          <span class="rpw__visits viz-mono" data-visits />
+        </li>
+      ))
+    }
+  </ol>
+
+  <p class="rpw__text" data-text aria-live="polite"></p>
+
+  <div class="rpw__out viz-panel">
+    <div>
+      <span class="viz-label">caller receives</span>
+      <span class="viz-chip" data-out>waiting</span>
+    </div>
+    <div>
+      <span class="viz-label">requests sent</span>
+      <span class="viz-chip viz-chip--net" data-sent>0</span>
+    </div>
+    <div>
+      <span class="viz-label">asleep in backoff</span>
+      <span class="viz-chip viz-chip--level" data-sleep>0 s</span>
+    </div>
+  </div>
+
+  <div class="viz-legend rpw__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-meta)"></i>structure and hooks</span>
+    <span><i style="--c:var(--viz-net)"></i>leaves the process</span>
+    <span><i style="--c:var(--viz-level)"></i>checks on the result</span>
+    <span><i style="--c:var(--viz-sound)"></i>the value</span>
+    <span><i style="--c:var(--viz-bad)"></i>failure path</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-rpw-data
+    set:html={JSON.stringify(scenarios)}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = 1900;
+    const LEAD_MS = 500;
+
+    function initPipelineWalk(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const scenarios = JSON.parse(
+        root.querySelector('[data-rpw-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const stationEls = [...root.querySelectorAll('[data-station]')];
+      const segBtns = [...root.querySelectorAll('[data-scenario]')];
+      const textEl = root.querySelector('[data-text]');
+      const counterEl = root.querySelector('[data-counter]');
+      const outEl = root.querySelector('[data-out]');
+      const sentEl = root.querySelector('[data-sent]');
+      const sleepEl = root.querySelector('[data-sleep]');
+
+      let scenario = scenarios[0];
+      let current = -1;
+      let playing = false;
+      let timer = 0;
+
+      const last = () => scenario.steps.length - 1;
+
+      function render() {
+        const shown = scenario.steps.slice(0, current + 1);
+        const step = shown[shown.length - 1];
+        stationEls.forEach((el, i) => {
+          const visits = shown.filter((s) => s.s === i);
+          const latest = visits[visits.length - 1];
+          el.classList.toggle('is-visited', visits.length > 0);
+          el.classList.toggle('is-current', Boolean(step && step.s === i));
+          el.classList.toggle('is-bad', Boolean(latest && latest.bad));
+          el.querySelector('[data-note]').textContent = latest
+            ? latest.note
+            : '';
+          el.querySelector('[data-visits]').textContent =
+            visits.length > 1 ? `×${visits.length}` : '';
+        });
+        textEl.textContent = step
+          ? step.text
+          : 'Pick a server answer, then play or step through the call.';
+        textEl.classList.toggle('is-bad', Boolean(step && step.bad));
+        counterEl.textContent = `${Math.max(current + 1, 0)} / ${scenario.steps.length}`;
+        const sent = shown.filter((s) => s.s === 3).length;
+        sentEl.textContent = String(sent);
+        const asleep = shown.reduce((sum, s) => sum + (s.sleep || 0), 0);
+        sleepEl.textContent = `${asleep} s`;
+        const out = shown.find((s) => s.out);
+        outEl.textContent = out ? out.out.text : 'waiting';
+        outEl.className = `viz-chip ${out ? (out.out.bad ? 'viz-chip--bad' : 'viz-chip--sound') : ''}`;
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(
+          () => {
+            current += 1;
+            render();
+            if (current >= last()) {
+              playing = false;
+              root.dispatchEvent(new CustomEvent('anim:ended'));
+              return;
+            }
+            schedule();
+          },
+          current < 0 ? LEAD_MS : STEP_MS,
+        );
+      }
+
+      function play() {
+        if (playing) return;
+        if (current >= last()) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        schedule();
+      }
+
+      function reset() {
+        stop();
+        current = -1;
+        render();
+      }
+
+      root.querySelector('[data-next]').addEventListener('click', () => {
+        stop();
+        current = current >= last() ? 0 : current + 1;
+        render();
+        root.dispatchEvent(
+          new CustomEvent(current >= last() ? 'anim:ended' : 'anim:paused'),
+        );
+      });
+
+      segBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.scenario === scenario.id) return;
+          scenario = scenarios.find((s) => s.id === btn.dataset.scenario);
+          segBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          reset();
+          if (reduce) {
+            current = last();
+            render();
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          play();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      // Until it plays, and always with reduced motion, show the whole path.
+      current = last();
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-rpw]').forEach(initPipelineWalk);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .rpw__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rpw__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .rpw__bar .viz-seg {
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+  .rpw__counter {
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+
+  .rpw__stations {
+    display: grid;
+    padding: var(--sp-2) 0;
+  }
+  .rpw__station {
+    --c: var(--viz-meta);
+    display: grid;
+    grid-template-columns: 2rem minmax(0, 1fr) auto;
+    align-items: start;
+    gap: var(--sp-2);
+    padding: 6px var(--sp-3);
+    border-left: 3px solid transparent;
+    opacity: 0.45;
+    transition:
+      opacity 0.3s var(--ease),
+      background 0.3s var(--ease),
+      border-color 0.3s var(--ease);
+  }
+  .rpw__station--net {
+    --c: var(--viz-net);
+  }
+  .rpw__station--level {
+    --c: var(--viz-level);
+  }
+  .rpw__station--sound {
+    --c: var(--viz-sound);
+  }
+  .rpw__station.is-visited {
+    opacity: 1;
+    border-left-color: color-mix(in srgb, var(--c) 45%, transparent);
+  }
+  .rpw__station.is-current {
+    border-left-color: var(--c);
+    background: color-mix(in srgb, var(--c) 9%, transparent);
+  }
+  .rpw__station.is-bad {
+    --c: var(--viz-bad);
+  }
+  .rpw__num {
+    padding-top: 2px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--c);
+  }
+  .rpw__body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 10px;
+    min-width: 0;
+  }
+  .rpw__name {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .rpw__code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+    background: none;
+    border: 0;
+    padding: 0;
+    overflow-wrap: anywhere;
+  }
+  .rpw__note {
+    flex-basis: 100%;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--c);
+    overflow-wrap: anywhere;
+  }
+  .rpw__note:empty {
+    display: none;
+  }
+  .rpw__visits {
+    padding-top: 2px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--viz-level);
+  }
+
+  .rpw__text {
+    margin: var(--sp-3) 0 0;
+    min-height: 4.5em;
+    padding-left: var(--sp-3);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg);
+    border-left: 3px solid var(--viz-meta);
+  }
+  .rpw__text.is-bad {
+    border-left-color: var(--viz-bad);
+  }
+
+  .rpw__out {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr));
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .rpw__out div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .rpw__out .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .rpw__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 560px) {
+    .rpw__station {
+      grid-template-columns: 1.6rem minmax(0, 1fr) auto;
+      padding-inline: var(--sp-2);
+    }
+    .rpw__out {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .rpw__out div:first-child {
+      grid-column: 1 / -1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rpw__station {
+      transition: none;
+    }
+  }
+</style>
