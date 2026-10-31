@@ -1,0 +1,576 @@
+---
+/**
+ * The server's checks for an attestation and for an assertion, in order.
+ * Pick one input to break and see which check rejects it, and which checks
+ * never run. The attestation list follows Apple's "Validating apps that
+ * connect to your server" plus the session lookup in front of it; the
+ * assertion list follows the same page, with this article's timestamp window
+ * standing in for the per-request challenge.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '03',
+  caption = 'Every check reads a different part of the input, so every attack lands on exactly one of them. A check that is missing on the server is a scenario here that ends in “accepted”.',
+} = Astro.props;
+
+interface Check {
+  title: string;
+  detail: string;
+  apple?: string;
+}
+interface Scenario {
+  id: string;
+  label: string;
+  input: string;
+  failAt: number;
+  note: string;
+}
+interface Mode {
+  id: 'attest' | 'assert';
+  label: string;
+  checks: Check[];
+  scenarios: Scenario[];
+  accepted: string;
+}
+
+const modes: Mode[] = [
+  {
+    id: 'attest',
+    label: 'attestation',
+    accepted:
+      'Accepted. Store the public key, counter 0 and the receipt under keyId.',
+    checks: [
+      {
+        title: 'Session is known, unused, not expired',
+        detail: 'Look up sessionId and delete it in the same operation.',
+      },
+      {
+        title: 'x5c chains to Apple App Attestation Root CA',
+        detail: 'credCert, then the intermediate, then the root you pinned.',
+        apple: '1',
+      },
+      {
+        title: 'Nonce in credCert = SHA256(authData ‖ SHA256(challenge))',
+        detail: 'Extension 1.2.840.113635.100.8.2.',
+        apple: '2–4',
+      },
+      {
+        title: 'SHA256(public key in credCert) = keyId',
+        detail: 'Uncompressed point: 0x04, x, y.',
+        apple: '5',
+      },
+      {
+        title: 'RP ID hash = SHA256(Team ID . bundle ID)',
+        detail: 'First 32 bytes of authData.',
+        apple: '6',
+      },
+      {
+        title: 'counter = 0',
+        detail: 'A fresh key has signed nothing yet.',
+        apple: '7',
+      },
+      {
+        title: 'aaguid = this server’s environment',
+        detail: 'appattest + 7 zero bytes, or appattestdevelop.',
+        apple: '8',
+      },
+      {
+        title: 'credentialId = keyId',
+        detail: 'The 32 bytes after the length field.',
+        apple: '9',
+      },
+      {
+        title: 'Extensions: validation category, bundle version',
+        detail: 'How the binary was distributed, and its version.',
+        apple: '10–11',
+      },
+      {
+        title: 'Public key not linked to another account',
+        detail: 'Apple’s note under “store the public key”.',
+      },
+    ],
+    scenarios: [
+      {
+        id: 'genuine',
+        label: 'genuine',
+        input: 'nothing changed',
+        failAt: -1,
+        note: 'Ten checks, no network call. The certificate chain and the nonce do the heavy lifting; the rest tie the certified key to this app, this environment and this keyId.',
+      },
+      {
+        id: 'replay',
+        label: 'replay, same session',
+        input: 'sessionId already used',
+        failAt: 0,
+        note: 'The challenge was deleted the first time it was used. A challenge that can be used twice is not a challenge.',
+      },
+      {
+        id: 'fresh',
+        label: 'replay, new challenge',
+        input: 'old attestation, new sessionId',
+        failAt: 2,
+        note: 'The nonce inside Apple’s certificate commits to the old challenge. Changing it breaks Apple’s signature on the certificate, so the old attestation can never match a new challenge.',
+      },
+      {
+        id: 'forged',
+        label: 'forged chain',
+        input: 'certificates from the attacker’s own CA',
+        failAt: 1,
+        note: 'Everything after this check would pass: the attacker also wrote the authenticator data. The scheme rests on the chain, which is why it runs first.',
+      },
+      {
+        id: 'keyswap',
+        label: 'someone else’s keyId',
+        input: 'keyId of a different key',
+        failAt: 3,
+        note: 'An attestation vouches for the key in its certificate and for no other.',
+      },
+      {
+        id: 'clone',
+        label: 're-signed copy',
+        input: 'App ID 9Z8Y7X6W5V.com.example.app',
+        failAt: 4,
+        note: 'Apple attests the copy without complaint: it is a real app on a real device, signed by its own team. It is just not your app, and the RP ID hash is what says so.',
+      },
+      {
+        id: 'devkey',
+        label: 'development key',
+        input: 'aaguid appattestdevelop, production server',
+        failAt: 6,
+        note: 'Development keys are counted apart from production ones and can be generated freely. A production server that accepts them accepts keys nobody is counting.',
+      },
+    ],
+  },
+  {
+    id: 'assert',
+    label: 'assertion',
+    accepted:
+      'Accepted. Store the new counter, only if it is still higher than the stored one.',
+    checks: [
+      {
+        title: 'X-Key-ID maps to a stored public key',
+        detail: 'Saved when the attestation passed.',
+      },
+      {
+        title: 'Signature valid for SHA256(authData ‖ SHA256(clientData))',
+        detail:
+          'clientData rebuilt by the server from the request it received.',
+        apple: '1–3',
+      },
+      {
+        title: 'RP ID hash = SHA256(App ID)',
+        detail: 'Same 32 bytes as in the attestation.',
+        apple: '4',
+      },
+      {
+        title: 'counter > stored counter',
+        detail: 'Strictly greater, as Apple specifies.',
+        apple: '5',
+      },
+      {
+        title: 'X-Timestamp inside the window',
+        detail: 'This design’s stand-in for Apple’s per-request challenge.',
+        apple: '6',
+      },
+      {
+        title: 'Extensions: validation category, bundle version',
+        detail: 'The same two values as in the attestation.',
+        apple: '7–8',
+      },
+    ],
+    scenarios: [
+      {
+        id: 'genuine',
+        label: 'genuine',
+        input: 'nothing changed',
+        failAt: -1,
+        note: 'One ECDSA verification, two hashes, one comparison against the stored counter. Apple is not involved.',
+      },
+      {
+        id: 'tamper',
+        label: 'body edited',
+        input: 'amount changed in a proxy',
+        failAt: 1,
+        note: 'The server hashes the body it received. One changed byte gives a different clientData, and the signature no longer matches.',
+      },
+      {
+        id: 'unknown',
+        label: 'made-up key',
+        input: 'X-Key-ID never attested',
+        failAt: 0,
+        note: 'No stored key, nothing to verify against. This also catches a key from the development environment on a production server.',
+      },
+      {
+        id: 'replay',
+        label: 'sent twice',
+        input: 'same headers, counter 42 again',
+        failAt: 3,
+        note: 'The first copy raised the stored counter to 42. The second is not greater, so it is rejected, however fresh its timestamp is.',
+      },
+      {
+        id: 'held',
+        label: 'held back',
+        input: 'never delivered, replayed 10 min later',
+        failAt: 4,
+        note: 'Nothing was sent since, so its counter is still the highest. Only freshness catches this, and a timestamp only narrows the window. A one-time challenge from the server closes it.',
+      },
+      {
+        id: 'overtaken',
+        label: 'out of order',
+        input: 'two genuine requests, 43 arrives before 42',
+        failAt: 3,
+        note: 'Not an attack, still rejected. Parallel requests can overtake each other between signing and arrival. The client has to re-sign and resend, or the server has to accept each counter once inside a small window.',
+      },
+    ],
+  },
+];
+---
+
+<VizFrame
+  fig={fig}
+  title="Break one input, find the check that stops it"
+  caption={caption}
+  class="avc"
+  data-avc
+>
+  <div class="avc__controls">
+    <div class="avc__group">
+      <span class="viz-label">verify</span>
+      <div class="viz-seg" role="group" aria-label="What the server verifies">
+        {
+          modes.map((m, i) => (
+            <button
+              type="button"
+              aria-pressed={i === 0 ? 'true' : 'false'}
+              data-mode={m.id}
+            >
+              {m.label}
+            </button>
+          ))
+        }
+      </div>
+    </div>
+    {
+      modes.map((m, mi) => (
+        <div class="avc__group" data-scenarios={m.id} hidden={mi !== 0}>
+          <span class="viz-label">input</span>
+          <div class="viz-seg avc__scen" role="group" aria-label="Scenario">
+            {m.scenarios.map((s, si) => (
+              <button
+                type="button"
+                aria-pressed={si === 0 ? 'true' : 'false'}
+                data-scenario={s.id}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))
+    }
+  </div>
+
+  <p class="avc__input">
+    <span class="viz-label">changed</span>
+    <span class="viz-chip" data-input></span>
+  </p>
+
+  {
+    modes.map((m, mi) => (
+      <ol
+        class="avc__checks viz-panel"
+        data-checks={m.id}
+        hidden={mi !== 0}
+        aria-label={`${m.label} checks`}
+      >
+        {m.checks.map((c, ci) => (
+          <li class="avc__check" data-state="pass" style={`--i:${ci}`}>
+            <span class="avc__mark" aria-hidden="true" />
+            <span class="avc__title">{c.title}</span>
+            <span class="avc__apple viz-mono">
+              {c.apple ? `Apple ${c.apple}` : 'server'}
+            </span>
+            <span class="avc__detail">{c.detail}</span>
+            <span class="avc__state" data-state-label />
+          </li>
+        ))}
+      </ol>
+    ))
+  }
+
+  <div class="avc__verdict" data-verdict="ok" aria-live="polite">
+    <span class="avc__vlabel" data-vlabel></span>
+    <span class="avc__vtext" data-vtext></span>
+  </div>
+  <p class="avc__note" data-note></p>
+
+  <script
+    is:inline
+    type="application/json"
+    data-avc-data
+    set:html={JSON.stringify(
+      modes.map((m) => ({
+        id: m.id,
+        accepted: m.accepted,
+        titles: m.checks.map((c) => c.title),
+        scenarios: m.scenarios,
+      })),
+    )}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initAttestVerifyChecklist(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const modes = JSON.parse(
+        root.querySelector('[data-avc-data]').textContent,
+      );
+      const modeBtns = [...root.querySelectorAll('[data-mode]')];
+      const inputEl = root.querySelector('[data-input]');
+      const verdict = root.querySelector('[data-verdict]');
+      const vlabel = root.querySelector('[data-vlabel]');
+      const vtext = root.querySelector('[data-vtext]');
+      const noteEl = root.querySelector('[data-note]');
+      const STATE_LABEL = { pass: 'pass', fail: 'rejects', skip: 'not run' };
+
+      let mode = modes[0].id;
+      const scenario = Object.fromEntries(
+        modes.map((m) => [m.id, m.scenarios[0].id]),
+      );
+
+      function render() {
+        const m = modes.find((x) => x.id === mode);
+        const s = m.scenarios.find((x) => x.id === scenario[mode]);
+        root
+          .querySelectorAll('[data-checks]')
+          .forEach((el) => (el.hidden = el.dataset.checks !== mode));
+        root
+          .querySelectorAll('[data-scenarios]')
+          .forEach((el) => (el.hidden = el.dataset.scenarios !== mode));
+        const rows = [
+          ...root.querySelectorAll(`[data-checks="${mode}"] .avc__check`),
+        ];
+        rows.forEach((row, i) => {
+          const state =
+            s.failAt < 0 || i < s.failAt
+              ? 'pass'
+              : i === s.failAt
+                ? 'fail'
+                : 'skip';
+          row.dataset.state = state;
+          row.querySelector('[data-state-label]').textContent =
+            STATE_LABEL[state];
+        });
+        const ok = s.failAt < 0;
+        inputEl.textContent = s.input;
+        inputEl.className = `viz-chip ${ok ? 'viz-chip--sound' : 'viz-chip--bad'}`;
+        verdict.dataset.verdict = ok ? 'ok' : 'bad';
+        vlabel.textContent = ok
+          ? 'accepted'
+          : `rejected at check ${s.failAt + 1}`;
+        vtext.textContent = ok ? m.accepted : m.titles[s.failAt];
+        noteEl.textContent = s.note;
+      }
+
+      modeBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          mode = btn.dataset.mode;
+          modeBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+      root.querySelectorAll('[data-scenarios]').forEach((group) => {
+        const buttons = [...group.querySelectorAll('[data-scenario]')];
+        buttons.forEach((btn) =>
+          btn.addEventListener('click', () => {
+            scenario[group.dataset.scenarios] = btn.dataset.scenario;
+            buttons.forEach((b) =>
+              b.setAttribute('aria-pressed', String(b === btn)),
+            );
+            render();
+          }),
+        );
+      });
+
+      render();
+    }
+
+    const boot = () =>
+      document
+        .querySelectorAll('[data-avc]')
+        .forEach(initAttestVerifyChecklist);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .avc__controls {
+    display: grid;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .avc__group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px var(--sp-2);
+  }
+  .avc__group[hidden] {
+    display: none;
+  }
+  .avc__group .viz-label {
+    width: 3rem;
+  }
+  .avc__scen {
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+
+  .avc__input {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px var(--sp-2);
+    margin: 0 0 var(--sp-3);
+  }
+  .avc__input .viz-label {
+    width: 3rem;
+  }
+  .avc__input .viz-chip {
+    white-space: normal;
+  }
+
+  .avc__checks {
+    display: grid;
+    gap: 5px;
+    padding: var(--sp-2);
+  }
+  .avc__checks[hidden] {
+    display: none;
+  }
+  .avc__check {
+    --c: var(--viz-sound);
+    display: grid;
+    grid-template-columns: 1.1rem minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 2px 8px;
+    padding: 7px 10px;
+    border: 1px solid color-mix(in srgb, var(--c) 35%, transparent);
+    border-left: 3px solid var(--c);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--c) 6%, var(--surface));
+    transition:
+      opacity 0.25s var(--ease) calc(var(--i) * 45ms),
+      border-color 0.25s var(--ease) calc(var(--i) * 45ms),
+      background 0.25s var(--ease) calc(var(--i) * 45ms);
+  }
+  .avc__check[data-state='fail'] {
+    --c: var(--viz-bad);
+  }
+  .avc__check[data-state='skip'] {
+    --c: var(--fg-faint);
+    opacity: 0.5;
+  }
+  .avc__mark {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--c);
+    align-self: center;
+  }
+  .avc__check[data-state='skip'] .avc__mark {
+    background: transparent;
+    border: 1.5px solid var(--c);
+  }
+  .avc__title {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .avc__apple {
+    font-size: 10.5px;
+    color: var(--fg-faint);
+    white-space: nowrap;
+  }
+  .avc__detail {
+    grid-column: 2 / 3;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--fg-muted);
+  }
+  .avc__state {
+    grid-column: 3 / 4;
+    justify-self: end;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--c);
+  }
+
+  .avc__verdict {
+    --c: var(--viz-sound);
+    display: grid;
+    gap: 2px;
+    margin-top: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--c);
+    border-radius: var(--radius-sm);
+  }
+  .avc__verdict[data-verdict='bad'] {
+    --c: var(--viz-bad);
+  }
+  .avc__vlabel {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--c);
+  }
+  .avc__vtext {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .avc__note {
+    margin: var(--sp-2) 0 0;
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg-muted);
+  }
+
+  @media (max-width: 480px) {
+    .avc__check {
+      grid-template-columns: 1.1rem minmax(0, 1fr);
+    }
+    .avc__apple {
+      grid-column: 2 / 3;
+    }
+    .avc__state {
+      grid-column: 2 / 3;
+      justify-self: start;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .avc__check {
+      transition: none;
+    }
+  }
+</style>

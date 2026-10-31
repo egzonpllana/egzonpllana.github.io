@@ -1,0 +1,702 @@
+---
+title: 'Implementing Apple App Attest for iOS API Security - No More Static Secrets'
+description: 'How App Attest replaces a shared secret in the binary with a per-device key in the Secure Enclave: what Apple certifies once, what the app signs on every request, every check the server must run, and the corrections a re-check against Apple’s documentation turned up.'
+date: 2026-02-13
+updated: 2026-10-30
+tags: ['Swift', 'Security', 'Apple', 'Certificate Attestation', 'iOS']
+heroImage: '../../assets/covers/apple-app-attest-ios-api-security.png'
+---
+
+import StatTiles from '../../components/StatTiles.astro';
+import PhaseRail from '../../components/PhaseRail.astro';
+import AppAttestSequence from '../../components/AppAttestSequence.astro';
+import AuthDataByteMap from '../../components/AuthDataByteMap.astro';
+import AttestVerifyChecklist from '../../components/AttestVerifyChecklist.astro';
+
+A server never sees an app. It sees HTTP requests. Anything the app can send, a script on a laptop can send too, as long as it knows what to put in the request. So the usual way to make an API "app only" is to give the app something the script does not have: a secret, built into the binary, used to sign every request.
+
+That works until someone reads the binary. App Attest replaces the secret with something nobody can read: a private key created inside the phone's Secure Enclave, unique to that install, which Apple certifies once as belonging to your app on a genuine Apple device. From then on the app signs requests with it, and the server checks each signature against a public key it stored. No secret ships in the app, so there is nothing to extract.
+
+This article walks through what Apple certifies, what the app signs, and every check the server has to run, with the client and server code. The first version, written when I added App Attest to an app's networking layer, had the mechanism right and several details wrong. I re-checked it against Apple's documentation as of October 2026 and against the source of EventHorizon, the networking package the app uses. The corrections are marked where they occur: share extensions are not supported, the assertion checks on the server were incomplete, a reinstall left the app holding a key ID for a key that no longer exists, and the signing string skipped binary bodies.
+
+<StatTiles
+  tiles={[
+    { label: 'Challenge size', value: 16, suffix: ' B', sub: 'minimum, per Apple' },
+    { label: 'Authenticator data', value: 226, suffix: ' B', sub: 'in Apple’s sample attestation' },
+    { label: 'attestKey ceiling', value: 100, suffix: '/s', sub: 'across all installs, per Apple' },
+    { label: 'Risk metric window', value: 30, suffix: ' days', sub: 'keys attested per device' },
+  ]}
+/>
+
+---
+
+## Why static secrets don't work
+
+The most common way to sign API requests from an iOS app is a shared secret in the binary: an API key, an HMAC key, a token. The app signs requests with it and the backend checks the signature.
+
+Every install ships the same secret, and at the moment of signing it sits in the app's memory. HMAC-SHA256 with an XOR-obfuscated key does not change that: with Frida or Hopper, an attacker finds the XOR key and the obfuscated bytes, and the secret is out. Encrypted plists, hardcoded strings and build-time environment variables end the same way. If the app can read the secret, so can someone with the app.
+
+Once it is out, the attacker signs requests from any HTTP client. The app is bypassed and the backend cannot tell.
+
+The weak point is not the obfuscation. It is the model: one key for every device means one extraction compromises every device.
+
+| | HMAC secret | App Attest |
+| --- | --- | --- |
+| Key | the same in every binary | a new key pair per install, made in the Secure Enclave |
+| Extract it once | every install is exposed | the private key cannot be read or exported |
+| Who can sign | anyone holding the key | only that install, on that device |
+| Device and app genuine? | not checked | certified by Apple at attestation |
+| Replay | up to you | a counter in every signature, checked by the server |
+
+> **In plain words:** a secret the app can read is a secret anyone with the app can read. App Attest gives each install a key that not even the app can read, only use.
+
+---
+
+## What App Attest proves, and what it does not
+
+App Attest lives in the DeviceCheck framework (`DCAppAttestService`, iOS 14 and later). Three things happen:
+
+1. **The app creates a key.** `generateKey()` makes a P-256 key pair inside the Secure Enclave, the separate security processor in Apple chips. The private key never leaves it. The app gets back a `keyId`, which is the base64 of the SHA-256 hash of the public key.
+2. **Apple certifies the key once.** `attestKey` sends the public key to Apple. Apple returns a certificate chain that says: this public key was created on a genuine Apple device, by the app with this App ID, in answer to this challenge. That is an **attestation**.
+3. **The app signs requests with the key.** `generateAssertion` signs a hash of the request, and adds a counter that the Secure Enclave increases with every signature. That is an **assertion**. The server checks it against the public key it stored at attestation.
+
+What that buys, in Apple's words: "A compromised version of your app running on a genuine, unmodified Apple device can't create valid assertions." A re-signed copy of your app gets attested too, but under its own App ID, and the server rejects that.
+
+What it does not buy:
+
+- **It is not user authentication.** It says which app instance sent a request, not who is using it. Sign-in and tokens stay.
+- **It is not proof against a modified operating system.** Apple says an attacker who modifies the OS "might bypass restrictions", and offers a risk metric to spot one device serving assertions to many fake clients. More on that below.
+- **It does not exist everywhere.** `isSupported` is false in the Simulator, on Macs (including iPhone apps running on Apple silicon), and in most app extensions.
+
+> **In plain words:** attestation is Apple vouching for a key once. Assertions are that key vouching for each request. The server's job is to check both, and to remember the counter.
+
+---
+
+## Two conversations
+
+The whole protocol is two exchanges. Attestation runs once per key and is the only time anything talks to Apple. Assertions run on every signed request, between the app and your server only.
+
+<AppAttestSequence />
+
+During attestation the server sends a **challenge**: at least 16 random bytes, stored with a session ID and a short TTL (60 seconds, for example), usable once. The app hashes it and passes the hash to `attestKey`. Apple folds that hash into what it signs, so an attestation object is only good for the challenge it was made for. Without it, a captured attestation could be sent again later and a stale key passed off as new.
+
+The server then verifies everything locally. It checks Apple's signatures against Apple's root certificate, which it has a copy of. It never calls Apple to verify. The only server-to-Apple call in the whole design is optional and comes later: exchanging the attestation receipt for a fraud metric.
+
+> **In plain words:** Apple is asked once, at the start, to vouch for the key. After that, the app signs and the server checks, and Apple never hears about it.
+
+---
+
+## Inside the attestation object
+
+`attestKey` returns a few kilobytes of CBOR (a binary JSON-like format). Decoded, it is a map with three entries:
+
+```text
+fmt:      "apple-appattest"
+attStmt:  x5c:     [credCert, intermediate CA]   DER certificates
+          receipt: PKCS #7 blob                  for the fraud metric, later
+authData: authenticator data                     the bytes below
+```
+
+The leaf certificate, `credCert`, holds the public key, and an extension with OID `1.2.840.113635.100.8.2` holds a 32-byte **nonce**: `SHA256(authData ‖ clientDataHash)`. Apple signed that certificate, so the nonce ties together three things: this key, these authenticator data bytes, and the challenge hash the app sent.
+
+The authenticator data follows the WebAuthn layout. Apple's validation guide publishes a sample attestation; these are its authenticator data, byte for byte:
+
+<AuthDataByteMap />
+
+Three fields carry most of the security:
+
+- **RP ID hash** is `SHA256("<Team ID>.<bundle ID>")`. The device writes it for whichever app called `attestKey`, so it is how a server tells your app from a re-signed copy.
+- **counter** is 0 at attestation and goes up with every assertion. The server stores it and expects it to grow.
+- **aaguid** names the environment: `appattest` followed by seven zero bytes in production, `appattestdevelop` in development. Development keys are tracked separately from production keys, and a TestFlight or App Store build always uses production, whatever the entitlement says. (Apple's "Preparing to use the App Attest service" page says `appattestsandbox`; the validation page, and the 16-byte field itself, say `appattestdevelop`.)
+
+The extensions map at the end is recent. Apple's current list has two more checks on it: `apple_validation_category_01`, how the running binary was distributed (4 for the App Store, 2 for TestFlight, 3 for development signing), and `apple_bundle_version_01`, its version. An assertion's authenticator data starts with the same first 37 bytes: RP ID hash, flags, counter.
+
+> **In plain words:** the attestation is a certificate for the key plus 226 bytes that say which app made it, in which environment, and how many times it has signed. The nonce in the certificate glues those bytes to your challenge.
+
+---
+
+## What the server checks
+
+This is where most implementations go wrong, and where my first version was incomplete. It described the assertion check as "verify the signature, check the counter". Apple lists more, and every one stops a different attack. Pick an input to break:
+
+<AttestVerifyChecklist />
+
+The checks below are in Swift, using [swift-certificates](https://github.com/apple/swift-certificates) and swift-crypto, both of which run on Linux. The steps are the same in any language. Decoding the CBOR is left to a library; the verifier takes the decoded fields. I ran this verifier against Apple's sample attestation: it accepts it, and rejects it with another challenge, another App ID, the development environment or another key ID. The sample has one quirk worth knowing: it was made by appending the raw challenge to the authenticator data, not its hash. Your server must hash exactly what your app hashed.
+
+```swift
+import Crypto
+import Foundation
+import SwiftASN1
+import X509
+
+enum AppAttestEnvironment: Sendable {
+    case development, production
+
+    var aaguid: Data {
+        switch self {
+        case .development: Data("appattestdevelop".utf8)
+        case .production: Data("appattest".utf8) + Data(repeating: 0, count: 7)
+        }
+    }
+}
+
+enum VerificationFailure: Error, Equatable {
+    case malformed
+    case untrustedChain        // step 1
+    case nonceMismatch         // steps 2–4
+    case keyIdMismatch         // step 5
+    case wrongAppID            // step 6
+    case counterNotZero        // step 7
+    case wrongEnvironment      // step 8
+    case credentialIdMismatch  // step 9
+    case badSignature
+    case counterNotIncreased
+}
+
+struct AuthenticatorData {
+    let rpIdHash: Data
+    let counter: UInt32
+    let aaguid: Data?
+    let credentialId: Data?
+
+    init(_ data: Data) throws(VerificationFailure) {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 37 else { throw .malformed }
+        rpIdHash = Data(bytes[0..<32])
+        counter = bytes[33..<37].reduce(0) { $0 << 8 | UInt32($1) }  // big-endian
+        // Flag 0x40: attested credential data follows. Attestations only.
+        guard bytes[32] & 0x40 != 0 else {
+            aaguid = nil
+            credentialId = nil
+            return
+        }
+        guard bytes.count >= 55 else { throw .malformed }
+        aaguid = Data(bytes[37..<53])
+        let length = Int(bytes[53]) << 8 | Int(bytes[54])
+        guard bytes.count >= 55 + length else { throw .malformed }
+        credentialId = Data(bytes[55..<(55 + length)])
+    }
+}
+
+/// The CBOR attestation object, decoded with any CBOR library.
+struct AttestationObject: Sendable {
+    let format: String        // "apple-appattest"
+    let certificates: [Data]  // attStmt.x5c: [credCert, intermediate]
+    let receipt: Data         // attStmt.receipt
+    let authData: Data
+}
+
+struct AttestedKey: Sendable {
+    let keyId: Data
+    let publicKey: P256.Signing.PublicKey
+    let receipt: Data
+}
+
+struct AttestationVerifier: Sendable {
+    let appID: String  // "<Team ID>.<bundle ID>"
+    let environment: AppAttestEnvironment
+    let root: Certificate  // Apple App Attestation Root CA
+
+    func verify(_ object: AttestationObject, keyId: Data, challenge: Data) async throws -> AttestedKey {
+        guard object.format == "apple-appattest", let leafDER = object.certificates.first else {
+            throw VerificationFailure.malformed
+        }
+        // 1. credCert chains to Apple's App Attestation root.
+        let leaf = try Certificate(derEncoded: Array(leafDER))
+        let intermediates = try object.certificates.dropFirst().map { try Certificate(derEncoded: Array($0)) }
+        var verifier = Verifier(rootCertificates: CertificateStore([root])) {
+            RFC5280Policy()
+        }
+        let result = await verifier.validate(leaf: leaf, intermediates: CertificateStore(intermediates))
+        guard case .validCertificate = result else { throw VerificationFailure.untrustedChain }
+
+        // 2–4. Apple wrote SHA256(authData || SHA256(challenge)) into credCert.
+        let clientDataHash = Data(SHA256.hash(data: challenge))
+        let nonce = Data(SHA256.hash(data: object.authData + clientDataHash))
+        guard try Self.nonce(in: leaf) == nonce else { throw VerificationFailure.nonceMismatch }
+
+        // 5. The key Apple certified is the key the app named.
+        guard let publicKey = P256.Signing.PublicKey(leaf.publicKey),
+              Data(SHA256.hash(data: publicKey.x963Representation)) == keyId
+        else { throw VerificationFailure.keyIdMismatch }
+
+        let auth = try AuthenticatorData(object.authData)
+        // 6–9. Right app, fresh key, right environment, same key ID.
+        guard auth.rpIdHash == Data(SHA256.hash(data: Data(appID.utf8))) else { throw VerificationFailure.wrongAppID }
+        guard auth.counter == 0 else { throw VerificationFailure.counterNotZero }
+        guard auth.aaguid == environment.aaguid else { throw VerificationFailure.wrongEnvironment }
+        guard auth.credentialId == keyId else { throw VerificationFailure.credentialIdMismatch }
+
+        return AttestedKey(keyId: keyId, publicKey: publicKey, receipt: object.receipt)
+    }
+
+    /// Extension 1.2.840.113635.100.8.2 holds SEQUENCE { [1] EXPLICIT OCTET STRING }.
+    static func nonce(in certificate: Certificate) throws -> Data {
+        guard let ext = certificate.extensions[oid: [1, 2, 840, 113_635, 100, 8, 2]] else {
+            throw VerificationFailure.nonceMismatch
+        }
+        let octets = try DER.sequence(try DER.parse(ext.value), identifier: .sequence) { nodes in
+            try DER.explicitlyTagged(&nodes, tagNumber: 1, tagClass: .contextSpecific) {
+                try ASN1OctetString(derEncoded: $0)
+            }
+        }
+        return Data(octets.bytes)
+    }
+}
+```
+
+`keyId` here is the app's base64 string, decoded. Two of Apple's steps are not in the snippet because they need the CBOR decoder: the two extension values, which go after step 9. One step happens when storing: Apple asks you to make sure the public key is not already linked to another user. The leaf certificate in Apple's sample is valid for three days, so verify an attestation when it arrives. You cannot re-check it next month, and you do not need to: from then on, the stored public key is what counts.
+
+An assertion arrives as the `X-Signature` header: base64 of a CBOR map with two entries, a DER-encoded ECDSA `signature` and the `authenticatorData`. Apple signs a nonce built the same way as in the attestation, with the hash of the request in place of the challenge hash:
+
+```swift
+struct AssertionVerifier: Sendable {
+    let appID: String
+
+    func verify(
+        signature: Data, authenticatorData: Data, clientData: Data,
+        publicKey: P256.Signing.PublicKey, storedCounter: UInt32
+    ) throws(VerificationFailure) -> UInt32 {
+        let clientDataHash = Data(SHA256.hash(data: clientData))
+        let nonce = Data(SHA256.hash(data: authenticatorData + clientDataHash))
+        guard let ecdsa = try? P256.Signing.ECDSASignature(derRepresentation: signature),
+              publicKey.isValidSignature(ecdsa, for: nonce)
+        else { throw .badSignature }
+
+        let auth = try AuthenticatorData(authenticatorData)
+        guard auth.rpIdHash == Data(SHA256.hash(data: Data(appID.utf8))) else { throw .wrongAppID }
+        guard auth.counter > storedCounter else { throw .counterNotIncreased }
+        return auth.counter
+    }
+}
+```
+
+Apple's last assertion step is "verify that the embedded challenge in the client data matches the earlier challenge". My design does not fetch a challenge per request, because that doubles the round trips. It signs a timestamp instead, and the server accepts it only inside a short window. That is weaker, and Fig 03's "held back" case shows where: a request that never reached the server can be replayed until the window closes. For an endpoint that moves money, fetch a challenge.
+
+The server side of a signed request, then. The counter is written with one conditional update, because two copies of the same request can both pass a read-then-compare:
+
+```swift
+struct DecodedAssertion: Sendable {
+    let signature: Data
+    let authenticatorData: Data
+}
+
+protocol AttestedKeyStore: Sendable {
+    func key(for keyId: String) async throws -> (publicKey: P256.Signing.PublicKey, counter: UInt32)?
+    /// One conditional write: UPDATE keys SET counter = $2 WHERE key_id = $1 AND counter < $2
+    func advanceCounter(for keyId: String, to counter: UInt32) async throws -> Bool
+}
+
+enum RequestRejection: Error {
+    case unknownKey, staleTimestamp, lostCounterRace
+}
+
+struct SignedRequestGuard: Sendable {
+    let verifier: AssertionVerifier
+    let store: any AttestedKeyStore
+    let window: TimeInterval = 120
+
+    func check(
+        method: String, target: String, body: Data,
+        keyId: String, timestamp: String, assertion: DecodedAssertion
+    ) async throws {
+        guard let stored = try await store.key(for: keyId) else { throw RequestRejection.unknownKey }
+
+        // The same bytes the app built: METHOD \n /path?query \n timestamp \n hex(SHA256(body)).
+        let bodyHash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+        let clientData = Data([method, target, timestamp, bodyHash].joined(separator: "\n").utf8)
+
+        let counter = try verifier.verify(
+            signature: assertion.signature, authenticatorData: assertion.authenticatorData,
+            clientData: clientData, publicKey: stored.publicKey, storedCounter: stored.counter)
+
+        guard let sent = try? Date(timestamp, strategy: .iso8601),
+              abs(sent.timeIntervalSinceNow) <= window
+        else { throw RequestRejection.staleTimestamp }
+
+        // Two copies of one request can both pass the read above; only one wins this write.
+        guard try await store.advanceCounter(for: keyId, to: counter) else {
+            throw RequestRejection.lostCounterRace
+        }
+    }
+}
+```
+
+The two-minute window is an example, not a recommendation. It has to cover clock drift on phones and slow networks, and everything inside it is replayable once.
+
+> **In plain words:** attestation is ten checks once; an assertion is a signature, an App ID, a counter and a freshness check every time. Leave one out and Fig 03 shows which attack walks through.
+
+---
+
+## The app side
+
+The app follows Clean Architecture. The domain layer declares what attestation is, the data layer remembers the key ID, and the infrastructure layer talks to DeviceCheck and the network:
+
+```text
+Domain/
+  AppAttestState.swift                     state enum
+  AppAttestError.swift                     error enum
+  AppAttestServicing.swift                 protocol
+Data/
+  AppAttestKeyStoring.swift                protocol
+  KeychainAppAttestRepository.swift        Keychain implementation
+Infrastructure/
+  AppAttestService.swift                   actor: key, attestation, assertions
+  AppAttestRequestSigningInterceptor.swift signs every request
+  AttestationGatingInterceptor.swift       holds requests until attested
+```
+
+### Attestation, once per install
+
+Attestation starts at launch. If the Keychain already holds a key ID, the app uses it: no network call, no Apple call. Otherwise it generates a key, fetches a challenge, asks Apple, and sends the result to the server.
+
+```swift
+enum AppAttestState: Sendable {
+    case idle
+    case attesting
+    case attested(keyId: String)
+    case unsupported
+    case failed(retryAfter: ContinuousClock.Instant)
+}
+
+actor AppAttestService: AppAttestServicing {
+    private let keyStore: any AppAttestKeyStoring
+    private let backend: any AttestationBackend
+    private var state: AppAttestState = .idle
+    private var pendingKeyId: String?
+    private var waiters: [UUID: CheckedContinuation<String, any Error>] = [:]
+
+    func beginAttestation() async {
+        switch state {
+        case .attesting, .attested, .unsupported:
+            return
+        case .failed(let retryAfter) where ContinuousClock.now < retryAfter:
+            return
+        case .idle, .failed:
+            break
+        }
+        if let keyId = keyStore.readKeyId() {
+            finish(.attested(keyId: keyId))
+            return
+        }
+        guard DCAppAttestService.shared.isSupported else {
+            finish(.unsupported)
+            return
+        }
+        state = .attesting
+        do {
+            let keyId = try await attestKey()
+            keyStore.writeKeyId(keyId)
+            finish(.attested(keyId: keyId))
+        } catch {
+            finish(.failed(retryAfter: .now + .seconds(60)))
+        }
+    }
+
+    private func attestKey() async throws -> String {
+        let service = DCAppAttestService.shared
+        let keyId: String
+        if let pendingKeyId {
+            keyId = pendingKeyId
+        } else {
+            keyId = try await service.generateKey()
+        }
+        pendingKeyId = keyId
+        let challenge = try await backend.fetchChallenge()  // fails before attestKey: keep the key
+        let attestation: Data
+        do {
+            attestation = try await service.attestKey(
+                keyId, clientDataHash: Data(SHA256.hash(data: challenge.challenge)))
+        } catch let error as DCError where error.code == .serverUnavailable {
+            throw error  // Apple: try again later with the same key
+        } catch {
+            pendingKeyId = nil  // any other error: discard the key, generate a new one next time
+            throw error
+        }
+        pendingKeyId = nil  // attested now; a key can be attested only once
+        try await backend.verify(sessionId: challenge.sessionId, keyId: keyId, attestation: attestation)
+        return keyId
+    }
+}
+```
+
+Three changes from my first version, each from Apple's documentation:
+
+- **The key ID goes to the server.** Apple's steps 5 and 9 compare the certificate's key and the authenticator data's `credentialId` with "the key identifier from your app". My first version sent only the session ID and the attestation, and described the server as extracting the key ID from the object, which skips the comparison.
+- **Errors are not all the same.** For `serverUnavailable`, Apple says to retry later with the same key. For anything else, discard the key and generate a new one. The first version treated every error alike and made `.failed` a dead end until the next launch.
+- **Unsupported is a state, not a failure.** It does not change by retrying.
+
+The key ID is stored in the Keychain with an accessibility class that ends in `ThisDeviceOnly`. The key itself never leaves the device, so its ID has no business migrating in a backup.
+
+Several requests can arrive while attestation is running. Each waits on a continuation, all are resumed together when it finishes, and each gives up after 30 seconds. The actor serializes the state, so there is no lock:
+
+```swift
+extension AppAttestService {
+    func awaitAttestation() async throws -> String {
+        switch state {
+        case .idle, .failed: await beginAttestation()
+        case .attesting, .attested, .unsupported: break
+        }
+        switch state {
+        case .attested(let keyId): return keyId
+        case .attesting: return try await waitForAttestation()
+        case .unsupported: throw AppAttestError.unsupported
+        case .idle, .failed: throw AppAttestError.attestationFailed
+        }
+    }
+
+    private func waitForAttestation() async throws -> String {
+        let id = UUID()
+        return try await withCheckedThrowingContinuation { continuation in
+            waiters[id] = continuation
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(30))
+                await self?.timeOut(id)
+            }
+        }
+    }
+}
+```
+
+`finish(_:)` sets the state and resumes every waiter with the key ID or the error; `timeOut(_:)` removes one waiter and resumes it with `.timedOut`. Both are in the full actor, which compiles in the Swift 6 language mode.
+
+### When the key is gone
+
+App Attest keys "don't survive app reinstallation, device migration, or restoration of a device from a backup", in Apple's words. Keychain items, on the other hand, survive deleting the app. My first version read the key ID from the Keychain and went straight to `.attested`, so after a reinstall it held the ID of a key the Secure Enclave no longer had. Every assertion would then fail, with the error Apple documents for a key it cannot use, `DCError.invalidKey`, and nothing re-attested.
+
+The fix sits where the failure shows up:
+
+```swift
+extension AppAttestService {
+    func generateAssertion(clientDataHash: Data) async throws -> (keyId: String, assertion: Data) {
+        let keyId = try await awaitAttestation()
+        do {
+            let assertion = try await DCAppAttestService.shared.generateAssertion(
+                keyId, clientDataHash: clientDataHash)
+            return (keyId, assertion)
+        } catch let error as DCError where error.code == .invalidKey {
+            // Reinstall, restore or migration: the Keychain kept the ID, the Secure Enclave lost the key.
+            // Only the first of several concurrent failures resets; the others wait for the new key.
+            if case .attested(let current) = state, current == keyId {
+                keyStore.deleteKeyId()
+                state = .idle
+            }
+            let freshKeyId = try await awaitAttestation()
+            let assertion = try await DCAppAttestService.shared.generateAssertion(
+                freshKeyId, clientDataHash: clientDataHash)
+            return (freshKeyId, assertion)
+        }
+    }
+}
+```
+
+The `current == keyId` check matters. Five requests that fail at once would otherwise each delete the key ID, and the later ones would delete the new key the first one just attested.
+
+> **In plain words:** the app attests once and remembers the key ID. If the key turns out to be gone, it forgets the ID and attests again, once, however many requests noticed.
+
+---
+
+## Signing every request
+
+A network interceptor signs every request after everything else has shaped it. EventHorizon, the networking package the app is built on, runs a list of interceptors over each outgoing request, so App Attest is two structs added to that list. No view model, use case or repository changed.
+
+```swift
+struct AppAttestRequestSigningInterceptor: NetworkInterceptorProtocol {
+    let appAttestService: any AppAttestServicing
+
+    func interceptAsync(request: URLRequest) async throws -> URLRequest {
+        guard request.httpBodyStream == nil else { throw AppAttestError.unsignableBody }
+        let timestamp = Date.now.formatted(.iso8601)
+        let clientData = RequestSigning.clientData(for: request, timestamp: timestamp)
+        let (keyId, assertion) = try await appAttestService.generateAssertion(
+            clientDataHash: Data(SHA256.hash(data: clientData)))
+
+        var signed = request
+        signed.setValue(assertion.base64EncodedString(), forHTTPHeaderField: "X-Signature")
+        signed.setValue(timestamp, forHTTPHeaderField: "X-Timestamp")
+        signed.setValue(keyId, forHTTPHeaderField: "X-Key-ID")
+        return signed
+    }
+
+    // EventHorizon's APIClient only calls interceptAsync; these satisfy the protocol.
+    func intercept(request: URLRequest) -> URLRequest { request }
+    func intercept(response: URLResponse?, data: Data?) -> (URLResponse?, Data?) { (response, data) }
+}
+
+enum RequestSigning {
+    /// METHOD \n /path?query \n timestamp \n hex(SHA256(body)). The server rebuilds exactly these bytes.
+    static func clientData(for request: URLRequest, timestamp: String) -> Data {
+        let method = (request.httpMethod ?? "GET").uppercased()
+        var target = request.url?.path(percentEncoded: true) ?? "/"
+        if let query = request.url?.query(percentEncoded: true) {
+            target += "?" + query
+        }
+        let bodyHash = SHA256.hash(data: request.httpBody ?? Data())
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return Data([method, target, timestamp, bodyHash].joined(separator: "\n").utf8)
+    }
+}
+```
+
+The first version built `METHOD|path|timestamp|body` with the body decoded as UTF-8, and an empty string when decoding failed. A JPEG in a multipart upload is not valid UTF-8, so every binary upload was signed as if its body were empty, and the body could be swapped without breaking the signature. Hashing the raw bytes covers any body, and it keeps `clientData` short. The query string is in the signed bytes now too. A body passed as a stream cannot be hashed in advance, so the interceptor refuses it rather than sign half a request.
+
+`X-Signature` is a slight misnomer: it carries the whole CBOR assertion, signature and authenticator data, which the server decodes.
+
+### Holding requests until attested
+
+A second interceptor makes every request wait for attestation, except the two endpoints that perform it:
+
+```swift
+struct AttestationGatingInterceptor: NetworkInterceptorProtocol {
+    static let unsignedPaths: Set<String> = ["/apple/attest-init", "/apple/attest"]
+    let appAttestService: any AppAttestServicing
+
+    func interceptAsync(request: URLRequest) async throws -> URLRequest {
+        if let path = request.url?.path(), Self.unsignedPaths.contains(path) {
+            return request
+        }
+        _ = try await appAttestService.awaitAttestation()
+        return request
+    }
+
+    func intercept(request: URLRequest) -> URLRequest { request }
+    func intercept(response: URLResponse?, data: Data?) -> (URLResponse?, Data?) { (response, data) }
+}
+```
+
+The first version exempted any path that *contained* `/apple/attest`. An exact match exempts exactly two. If a user taps Sign In while attestation runs, the request waits behind the loading indicator that is already on screen. If attestation fails, the request throws and is never sent.
+
+### Interceptor order
+
+```swift
+func makeAuthorized() -> APIClient {
+    APIClient(interceptors: [
+        NetworkAwareInterceptor(networkMonitor: networkMonitor),
+        AttestationGatingInterceptor(appAttestService: appAttestService),
+        TokenRefreshingInterceptor(),
+        AuthInterceptor(tokenProvider: { self.tokenRepository.accessToken }),
+        AppAttestRequestSigningInterceptor(appAttestService: appAttestService),
+        RetryInterceptor(maxRetries: 3),
+    ])
+}
+```
+
+Connectivity first, then the gate, then token refresh and the bearer token, then the signature over the finished request. My first version said the retry interceptor sits last "so failed requests get re-signed with a new timestamp". The re-signing is real, but its cause is different: on every retry, EventHorizon's `APIClient` runs the whole interceptor list again on the original request, so each attempt gets a new timestamp and a new counter wherever `RetryInterceptor` sits. What its position does decide is that the `X-Retry-Count` header it sets is added after signing, outside the signed bytes, which is harmless.
+
+---
+
+## Share extensions: a correction
+
+My first version said the Share Extension read the shared key ID and signed requests "identically to the main app", with the same key. Apple's documentation says otherwise. "Establishing your app's integrity" lists action, extensible SSO and watchOS extensions as supported: "All other extension types are not supported, even if the `isSupported` method property is `true`." The `isSupported` reference page is stricter still, and says `generateKey` fails in an app extension regardless.
+
+A share extension is therefore not a supported caller of App Attest, and an upload path that relies on it is relying on undocumented behaviour. The design I would use instead: the containing app, which can make assertions, asks the server for a short-lived upload token scoped to the share endpoint, with a signed request, and puts it in the App Group container. The extension sends that token. The server accepts it only on that endpoint and only until it expires.
+
+---
+
+## Backend: three kinds of endpoint
+
+<PhaseRail
+  phases={[
+    {
+      title: 'POST /apple/attest-init',
+      body: 'Returns a session ID and a challenge of at least 16 random bytes. The server keeps the pair with a short TTL and deletes it on first use. Unsigned: the app has no attested key yet.',
+      params: [
+        { name: 'TTL', value: '60 s' },
+        { name: 'uses', value: '1' },
+      ],
+    },
+    {
+      title: 'POST /apple/attest',
+      body: 'Takes the session ID, the key ID and the base64 attestation object. Runs the attestation checks in Fig 03, then stores the public key, a counter of 0 and the receipt, linked to the user and the device. Unsigned.',
+      params: [
+        { name: 'stores', value: 'public key · counter · receipt' },
+        { name: 'calls Apple', value: 'no' },
+      ],
+    },
+    {
+      title: 'Every other endpoint',
+      body: 'Requires X-Key-ID, X-Timestamp (RFC 3339, UTC) and X-Signature. Rebuilds clientData from the request as received, verifies the assertion, checks the timestamp window, and advances the counter in one conditional write.',
+      params: [
+        { name: 'headers', value: '3' },
+        { name: 'counter', value: 'strictly increasing' },
+      ],
+    },
+  ]}
+/>
+
+Keep development and production keys apart on the server: Apple says a key or receipt from one environment cannot be used in the other.
+
+---
+
+## Why no fallback
+
+It would be easy to fall back to the old HMAC signing on devices that cannot attest. I chose not to. If a fallback path exists, an attacker uses it: the static secret is back in the binary, and every App Attest check is one "unsupported" away from skipped.
+
+> If a device can't attest, it can't use the API. That's the point.
+
+This goes against Apple's advice. Apple's guide says to "gracefully bypass the service" when `isSupported` is false, and its WWDC21 session suggests treating failures as one signal in a risk assessment rather than as a block. The cost of not following it is concrete:
+
+- **The Simulator, Macs and most extensions cannot attest.** That includes iPhone apps running on Apple silicon Macs. A debug path for the Simulator has to be one the production server refuses.
+- **Rollout can lock users out.** Apple throttles `attestKey` traffic per app and suggests staying under 100 calls per second across all installs, and ramping up no faster than 10 million users a day. An app update that turns attestation on for everyone at once can be throttled, and with no fallback, throttled means the API is unreachable until a retry succeeds.
+
+A middle path is to keep App Attest mandatory for the endpoints worth protecting and accept unattested clients elsewhere, with tighter limits. I kept the strict version, and the cost above is its price.
+
+---
+
+## The receipt and the risk metric
+
+App Attest proves the key lives on a genuine device. It cannot tell whether that device is one phone, or one phone with a modified OS signing for a thousand scripted clients. For that, the attestation object carries a **receipt**. Your server sends it, with a JWT signed by a DeviceCheck key from your developer account, to Apple's `attestationData` endpoint on `data.appattest.apple.com` (`data-development.appattest.apple.com` in development). Apple returns a new receipt whose field 17 is the **risk metric**: roughly how many keys this device has attested for your app in the past 30 days.
+
+A reinstall, a restore or a new owner each add one, so the normal value is small. A large one means one device is producing keys for many installs. Apple's guidance follows from that: generate a key only when there is none, and use one key per user per device. A refreshed receipt can be requested again after its "not before" date and must be used before it expires, so a server that wants the metric has to refresh it periodically.
+
+---
+
+## Honest downsides
+
+- **Requests cost more on the device.** Every signed request is a Secure Enclave operation. Apple does not limit assertions, but suggests reserving them for "sensitive moments". Signing every request is a choice for blanket coverage over minimum work.
+- **Parallel requests can trip the counter.** Two requests signed back to back can arrive in the opposite order. The strict counter check then rejects whichever arrives second with the lower counter, and the client sees an error for a genuine request.
+- **A timestamp is not a challenge.** It narrows replay to a window instead of closing it.
+- **The key is per device, not per user.** Apple recommends a key for each user on each device, and binding the key to the account on the server.
+- **No fallback** locks out the Simulator, Macs, extensions, and anyone caught in a throttled rollout.
+
+---
+
+## What I would change next
+
+- **Move the share extension off App Attest**, onto a short-lived, endpoint-scoped token issued to the containing app through a signed request.
+- **Fetch a challenge for high-value endpoints.** Keep the timestamp for ordinary reads; use Apple's one-time challenge where a replay inside the window would cost something.
+- **Bind the key to the account.** Link the public key to the user at sign-in, reject a key already linked to someone else, and put a hash of the access token in `clientData` so a signed request cannot be replayed with another user's token.
+- **Handle reordering on purpose.** Either make the server answer a counter failure with a status the client re-signs and retries, or accept each counter once within a small window of recent values. The second departs from the letter of Apple's "greater than the previous value", so I would only do it with the window kept small and every accepted counter recorded.
+- **Check the two extension values** on attestations and assertions, now that Apple lists them.
+- **Ramp attestation by cohort** with a server-side flag, and watch for throttling errors before widening it.
+
+---
+
+## Takeaways
+
+> **A secret the app can read is not a secret.** Obfuscation slows extraction down; it does not prevent it. The fix is a key the app can use but not read.
+
+> **Attestation is once, assertions are always.** Apple vouches for the key one time. Everything after that is your server checking signatures against a public key it stored.
+
+> **Every check stops one attack.** The chain stops forgeries, the nonce stops replays, the RP ID hash stops re-signed copies, the aaguid stops development keys, the counter stops duplicates. Skip one and that attack works.
+
+> **Hash what you sign, all of it.** Decoding a body as text before signing it leaves binary bodies unsigned.
+
+> **Keys die with the install; Keychain items do not.** Handle `invalidKey` by forgetting the key ID and attesting again, once.
+
+> **Read the support matrix.** `isSupported` being true is not the same as being supported. Share extensions are not.
+
+> **No fallback is a security decision with an availability cost.** Make it knowingly, and plan the rollout around Apple's rate limits.
+
+---
+
+## References
+
+**Apple** — [Establishing your app's integrity](https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity) · [Validating apps that connect to your server](https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server) · [Attestation object validation guide](https://developer.apple.com/documentation/devicecheck/attestation-object-validation-guide) (the sample in Fig 02) · [Preparing to use the App Attest service](https://developer.apple.com/documentation/devicecheck/preparing-to-use-the-app-attest-service) · [Assessing fraud risk](https://developer.apple.com/documentation/devicecheck/assessing-fraud-risk) · [`DCAppAttestService.isSupported`](https://developer.apple.com/documentation/devicecheck/dcappattestservice/issupported) · [`DCError.invalidKey`](https://developer.apple.com/documentation/devicecheck/dcerror-swift.struct/invalidkey) · [Apple App Attestation Root CA](https://www.apple.com/certificateauthority/Apple_App_Attestation_Root_CA.pem)
+
+**WWDC** — [Mitigate fraud with App Attest and DeviceCheck](https://developer.apple.com/videos/play/wwdc2021/10244/) (WWDC21) · [Safeguard your accounts, promotions, and content](https://developer.apple.com/videos/play/wwdc2021/10110/) (WWDC21)
+
+**Standards** — [Web Authentication: authenticator data](https://www.w3.org/TR/webauthn/#sec-authenticator-data) · [RFC 8152: COSE](https://www.rfc-editor.org/rfc/rfc8152)
+
+**Libraries** — [swift-certificates](https://github.com/apple/swift-certificates) · [swift-crypto](https://github.com/apple/swift-crypto) · [EventHorizon](https://github.com/egzonpllana/event-horizon-ios) ([`APIClient.swift`](https://github.com/egzonpllana/event-horizon-ios/blob/main/Sources/EventHorizon/Infrastructure/Services/APIClient.swift), where retries re-run the interceptors)

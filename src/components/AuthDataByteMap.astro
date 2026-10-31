@@ -1,0 +1,603 @@
+---
+/**
+ * The authenticator data inside a real attestation object: the 226 bytes of
+ * Apple's published sample (Team ID 1234567890, bundle ID com.example.myapp,
+ * production). Every byte is the sample's own; the field boundaries come from
+ * Apple's layout (32 + 1 + 4 + 16 + 2 + 32 + 77 + extensions). Pick a field to
+ * decode it and see which server check reads it. The environment switch swaps
+ * the 16 aaguid bytes for the development constant.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '02',
+  caption = 'Bytes from the sample attestation in Apple’s validation guide. Tap or arrow through the fields. The first 37 bytes have the same layout in every assertion; the rest only appear once, in the attestation.',
+} = Astro.props;
+
+const HEX =
+  'f4466d68f91eb6c10620cb7e63c7283244685ee1d6467b54160e753172057f03' +
+  '40' +
+  '00000000' +
+  '61707061747465737400000000000000' +
+  '0020' +
+  'ce0498f58483fbb4da0d7b2c63a5a538f552d4adcb9a4fa916195c49613e655d' +
+  'a50102032620012158204332544acf323db774443caaf339f56e7e95c724fac2c14259f365e2445650b2' +
+  '225820b5fb285bcf549bcb60594412e7682a2427eeada9fb52dfed0b1ab17ed09fa9bd' +
+  'a2776170706c655f62756e646c655f76657273696f6e5f30316131781c6170706c655f76616c69646174696f6e5f63617465676f72795f30314401000000';
+
+const bytes = HEX.match(/../g)?.map((h) => h.toUpperCase()) ?? [];
+
+const DEV_AAGUID = [...'appattestdevelop'].map((c) =>
+  c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'),
+);
+
+type Kind = 'level' | 'meta' | 'sound';
+interface Field {
+  id: string;
+  name: string;
+  size: number;
+  kind: Kind;
+  value: string;
+  devValue?: string;
+  text: string;
+  check: string;
+}
+
+const fields: Field[] = [
+  {
+    id: 'rpid',
+    name: 'RP ID hash',
+    size: 32,
+    kind: 'level',
+    value: 'SHA256("1234567890.com.example.myapp")',
+    text: 'The hash of the App ID the key was created for: Team ID, a dot, bundle ID. The device fills it in from the app that called attestKey, so a re-signed copy of your app under another team produces a different hash.',
+    check:
+      'Attestation step 6 and assertion step 4: equals SHA256 of your App ID.',
+  },
+  {
+    id: 'flags',
+    name: 'flags',
+    size: 1,
+    kind: 'meta',
+    value: '0x40 · attested credential data follows',
+    text: 'One byte of bit flags from the WebAuthn format. Bit 6 (0x40) says the aaguid, credential ID and public key follow. An assertion carries no credential data, so its first 37 bytes are all a parser needs.',
+    check:
+      'Not in Apple’s list. A parser uses bit 6 to know whether there is more to read.',
+  },
+  {
+    id: 'counter',
+    name: 'counter',
+    size: 4,
+    kind: 'level',
+    value: '0 (big-endian UInt32)',
+    text: 'How many assertions this key has signed. Zero at attestation. The Secure Enclave raises it with every generateAssertion call, and nothing outside it can lower it.',
+    check:
+      'Attestation step 7: equals 0. Assertion step 5: greater than the stored value.',
+  },
+  {
+    id: 'aaguid',
+    name: 'aaguid',
+    size: 16,
+    kind: 'meta',
+    value: '"appattest" + 7 × 0x00 · production',
+    devValue: '"appattestdevelop" · development',
+    text: 'Which App Attest environment issued the key. Development keys are counted separately and cannot be used in production. A build signed for TestFlight or the App Store always gets production keys.',
+    check: 'Attestation step 8: matches the environment the server runs in.',
+  },
+  {
+    id: 'credlen',
+    name: 'credentialId length',
+    size: 2,
+    kind: 'meta',
+    value: '32 (big-endian UInt16)',
+    text: 'Length of the field that follows. For App Attest it is always 32, the size of a SHA-256 hash.',
+    check: 'Read by the parser, not checked on its own.',
+  },
+  {
+    id: 'credid',
+    name: 'credentialId',
+    size: 32,
+    kind: 'sound',
+    value: 'zgSY9YSD+7TaDXssY6WlOPVS1K3Lmk+pFhlcSWE+ZV0= (base64)',
+    text: 'SHA256 of the public key in uncompressed X9.62 form (0x04, x, y). Base64-encoded, it is exactly the keyId that generateKey returned to the app.',
+    check:
+      'Attestation step 9: equals the keyId the app sent. Step 5 hashes the certificate’s key and expects the same value.',
+  },
+  {
+    id: 'cosehead',
+    name: 'COSE key header',
+    size: 7,
+    kind: 'sound',
+    value: 'kty 2 (EC2) · alg −7 (ES256) · crv 1 (P-256)',
+    text: 'The public key as a CBOR map (RFC 8152). These seven bytes open the map and say what kind of key it is: an elliptic-curve key on P-256, used for ECDSA with SHA-256.',
+    check:
+      'The server takes the key from the certificate; these bytes describe the same key.',
+  },
+  {
+    id: 'cosex',
+    name: 'COSE x coordinate',
+    size: 35,
+    kind: 'sound',
+    value: 'label −2, 32-byte x',
+    text: 'Three bytes of CBOR (map key −2, a 32-byte string) and the x coordinate of the public key point.',
+    check:
+      'Together with y, it is the key every later assertion is verified against.',
+  },
+  {
+    id: 'cosey',
+    name: 'COSE y coordinate',
+    size: 35,
+    kind: 'sound',
+    value: 'label −3, 32-byte y',
+    text: 'The y coordinate. The full COSE key is 77 bytes, the size Apple documents.',
+    check:
+      'Together with x, it is the key every later assertion is verified against.',
+  },
+  {
+    id: 'ext',
+    name: 'extensions',
+    size: 62,
+    kind: 'meta',
+    value: 'apple_bundle_version_01: "1" · apple_validation_category_01: 1',
+    text: 'A CBOR map Apple added to the format: the app’s bundle version, and how the running binary was distributed (4 = App Store, 2 = TestFlight, 3 = development signing). This sample reports 1.',
+    check:
+      'The last two steps in Apple’s current list: both values match what you expect to be running.',
+  },
+];
+
+let offset = 0;
+const laid = fields.map((f, i) => {
+  const start = offset;
+  offset += f.size;
+  return { ...f, index: i, start, end: offset - 1 };
+});
+if (offset !== bytes.length) {
+  throw new Error(
+    `AuthDataByteMap: fields cover ${offset} bytes, data has ${bytes.length}`,
+  );
+}
+const fieldAt = (off: number) =>
+  laid.find((f) => off >= f.start && off <= f.end);
+const AAGUID_START = laid.find((f) => f.id === 'aaguid')?.start ?? 37;
+
+const ROW = 8;
+const cells = bytes.map((b, off) => ({
+  b,
+  off,
+  f: fieldAt(off)?.index ?? 0,
+  dev:
+    off >= AAGUID_START && off < AAGUID_START + 16
+      ? DEV_AAGUID[off - AAGUID_START]
+      : b,
+}));
+
+const detail = laid.map((f) => ({
+  name: f.name,
+  kind: f.kind,
+  range: `bytes ${f.start}–${f.end} · ${f.size} B`,
+  head:
+    bytes.slice(f.start, f.start + Math.min(f.size, 8)).join(' ') +
+    (f.size > 8 ? ' …' : ''),
+  devHead:
+    f.id === 'aaguid' ? DEV_AAGUID.slice(0, 8).join(' ') + ' …' : undefined,
+  value: f.value,
+  devValue: f.devValue,
+  text: f.text,
+  check: f.check,
+}));
+---
+
+<VizFrame
+  fig={fig}
+  title="Authenticator data, byte by byte"
+  caption={caption}
+  class="adm"
+  data-adm
+>
+  <div class="adm__bar">
+    <span class="viz-label">environment</span>
+    <div class="viz-seg" role="group" aria-label="App Attest environment">
+      <button type="button" aria-pressed="true" data-env="prod"
+        >production</button
+      >
+      <button type="button" aria-pressed="false" data-env="dev"
+        >development</button
+      >
+    </div>
+  </div>
+
+  <div class="adm__wrap">
+    <div class="adm__grid viz-panel" aria-hidden="true">
+      {
+        cells.map((c) => (
+          <>
+            {c.off % ROW === 0 && (
+              <span
+                class:list={[
+                  'adm__off',
+                  { 'adm__off--half': c.off % 16 !== 0 },
+                ]}
+              >
+                {c.off}
+              </span>
+            )}
+            <span
+              class:list={[
+                'adm__b',
+                `adm__b--${laid[c.f].kind}`,
+                { 'adm__b--head': c.off < 37 },
+              ]}
+              data-f={c.f}
+              data-prod={c.b}
+              data-dev={c.dev}
+            >
+              {c.b}
+            </span>
+          </>
+        ))
+      }
+    </div>
+  </div>
+
+  <div class="adm__fields" role="listbox" aria-label="Fields" data-fields>
+    {
+      laid.map((f) => (
+        <button
+          type="button"
+          role="option"
+          class={`adm__field adm__field--${f.kind}`}
+          data-field={f.index}
+          aria-selected={f.index === 0 ? 'true' : 'false'}
+          tabindex={f.index === 0 ? '0' : '-1'}
+        >
+          <i aria-hidden="true" />
+          {f.name}
+          <span>{f.size}</span>
+        </button>
+      ))
+    }
+  </div>
+
+  <div class="adm__detail viz-panel" aria-live="polite">
+    <div class="adm__dtop">
+      <span class="adm__dname" data-d-name></span>
+      <span class="viz-chip" data-d-range></span>
+    </div>
+    <dl class="adm__dl">
+      <div>
+        <dt class="viz-label">raw</dt>
+        <dd class="viz-mono" data-d-head></dd>
+      </div>
+      <div>
+        <dt class="viz-label">decoded</dt>
+        <dd class="viz-mono" data-d-value></dd>
+      </div>
+    </dl>
+    <p class="adm__dtext" data-d-text></p>
+    <p class="adm__check">
+      <span class="viz-label">server check</span><span data-d-check></span>
+    </p>
+  </div>
+
+  <div class="viz-legend adm__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-level)"></i>hashes and counters</span>
+    <span><i style="--c:var(--viz-meta)"></i>structure and environment</span>
+    <span><i style="--c:var(--viz-sound)"></i>the key</span>
+    <span class="adm__headkey"
+      ><i></i>first 37 bytes, also in every assertion</span
+    >
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-adm-data
+    set:html={JSON.stringify(detail)}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initAuthDataByteMap(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-adm-data]').textContent,
+      );
+      const cells = [...root.querySelectorAll('.adm__b')];
+      const chips = [...root.querySelectorAll('[data-field]')];
+      const envBtns = [...root.querySelectorAll('[data-env]')];
+      const out = {
+        name: root.querySelector('[data-d-name]'),
+        range: root.querySelector('[data-d-range]'),
+        head: root.querySelector('[data-d-head]'),
+        value: root.querySelector('[data-d-value]'),
+        text: root.querySelector('[data-d-text]'),
+        check: root.querySelector('[data-d-check]'),
+      };
+      const CHIP = { level: 'level', meta: 'meta', sound: 'sound' };
+
+      let active = 0;
+      let env = 'prod';
+
+      function show(i) {
+        active = i;
+        const d = data[i];
+        const dev = env === 'dev';
+        out.name.textContent = d.name;
+        out.range.textContent = d.range;
+        out.range.className = `viz-chip viz-chip--${CHIP[d.kind]}`;
+        out.head.textContent = dev && d.devHead ? d.devHead : d.head;
+        out.value.textContent = dev && d.devValue ? d.devValue : d.value;
+        out.text.textContent = d.text;
+        out.check.textContent = d.check;
+        cells.forEach((c) => c.classList.toggle('is-on', +c.dataset.f === i));
+        chips.forEach((c) => {
+          const on = +c.dataset.field === i;
+          c.setAttribute('aria-selected', String(on));
+          c.tabIndex = on ? 0 : -1;
+        });
+      }
+
+      root.querySelector('.adm__grid').addEventListener('click', (e) => {
+        const cell = e.target.closest('[data-f]');
+        if (cell) show(+cell.dataset.f);
+      });
+      root.querySelector('.adm__grid').addEventListener('mouseover', (e) => {
+        const cell = e.target.closest('[data-f]');
+        if (cell && +cell.dataset.f !== active) show(+cell.dataset.f);
+      });
+      chips.forEach((chip) =>
+        chip.addEventListener('click', () => show(+chip.dataset.field)),
+      );
+      root.querySelector('[data-fields]').addEventListener('keydown', (e) => {
+        const step = {
+          ArrowRight: 1,
+          ArrowDown: 1,
+          ArrowLeft: -1,
+          ArrowUp: -1,
+        };
+        if (!(e.key in step) && e.key !== 'Home' && e.key !== 'End') return;
+        e.preventDefault();
+        let next = active + (step[e.key] || 0);
+        if (e.key === 'Home') next = 0;
+        if (e.key === 'End') next = data.length - 1;
+        next = Math.max(0, Math.min(data.length - 1, next));
+        show(next);
+        chips[next].focus();
+      });
+
+      envBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          env = btn.dataset.env;
+          envBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          cells.forEach((c) => {
+            c.textContent = env === 'dev' ? c.dataset.dev : c.dataset.prod;
+          });
+          const aaguid = data.findIndex((d) => d.devValue);
+          show(aaguid >= 0 ? aaguid : active);
+        }),
+      );
+
+      show(0);
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-adm]').forEach(initAuthDataByteMap);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .adm__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+
+  .adm__wrap {
+    container-type: inline-size;
+  }
+  .adm__grid {
+    display: grid;
+    grid-template-columns: 2.4rem repeat(16, minmax(0, 1fr));
+    gap: 3px;
+    padding: var(--sp-3);
+    font-family: var(--font-mono);
+  }
+  .adm__off {
+    align-self: center;
+    padding-right: 6px;
+    font-size: 10.5px;
+    color: var(--fg-faint);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  /* 16 bytes a row: the label at offset 8 would break the row. */
+  .adm__off--half {
+    display: none;
+  }
+
+  .adm__b {
+    --c: var(--fg-muted);
+    position: relative;
+    padding: 4px 0;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.2;
+    text-align: center;
+    color: var(--fg);
+    background: color-mix(in srgb, var(--c) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--c) 30%, transparent);
+    border-radius: 4px;
+    cursor: pointer;
+    transition:
+      background 0.15s var(--ease),
+      border-color 0.15s var(--ease);
+  }
+  .adm__b--level {
+    --c: var(--viz-level);
+  }
+  .adm__b--meta {
+    --c: var(--viz-meta);
+  }
+  .adm__b--sound {
+    --c: var(--viz-sound);
+  }
+  .adm__b--head {
+    box-shadow: inset 0 -2px 0 var(--fg-faint);
+  }
+  .adm__b.is-on {
+    background: color-mix(in srgb, var(--c) 34%, transparent);
+    border-color: var(--c);
+  }
+
+  @container (max-width: 520px) {
+    .adm__grid {
+      grid-template-columns: 2.2rem repeat(8, minmax(0, 1fr));
+      padding: var(--sp-2);
+    }
+    .adm__off--half {
+      display: block;
+    }
+    .adm__b {
+      padding: 5px 0;
+      font-size: 11px;
+    }
+  }
+
+  .adm__fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: var(--sp-3);
+  }
+  .adm__field {
+    --c: var(--fg-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 3px 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .adm__field i {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--c);
+  }
+  .adm__field span {
+    color: var(--fg-faint);
+  }
+  .adm__field span::after {
+    content: ' B';
+  }
+  .adm__field--level {
+    --c: var(--viz-level);
+  }
+  .adm__field--meta {
+    --c: var(--viz-meta);
+  }
+  .adm__field--sound {
+    --c: var(--viz-sound);
+  }
+  .adm__field[aria-selected='true'] {
+    color: var(--fg);
+    border-color: var(--c);
+    background: color-mix(in srgb, var(--c) 12%, var(--surface));
+  }
+  .adm__field:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .adm__detail {
+    display: grid;
+    gap: 8px;
+    margin-top: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .adm__dtop {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px var(--sp-3);
+  }
+  .adm__dname {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .adm__dl {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+    gap: var(--sp-3);
+    margin: 0;
+  }
+  .adm__dl div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .adm__dl dd {
+    margin: 0;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  @media (max-width: 480px) {
+    .adm__dl {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .adm__dtext {
+    margin: 0;
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg-muted);
+  }
+  .adm__check {
+    display: grid;
+    gap: 2px;
+    margin: 0;
+    padding: 8px 10px;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg);
+    background: var(--bg-subtle);
+    border-left: 3px solid var(--viz-meta);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+
+  .adm__legend {
+    margin-top: var(--sp-3);
+  }
+  .adm__headkey i {
+    height: 3px;
+    border-radius: 2px;
+    background: var(--fg-faint);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .adm__b {
+      transition: none;
+    }
+  }
+</style>

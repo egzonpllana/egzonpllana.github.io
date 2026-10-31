@@ -1,0 +1,742 @@
+---
+/**
+ * The two App Attest conversations between the app, your server and Apple,
+ * played one message at a time. Attestation runs once per key and is the only
+ * time Apple is contacted; an assertion runs on every signed request and
+ * never leaves the app-server pair. A self-step (from === to) is work done
+ * inside one party, drawn as a box on its lifeline.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '01',
+  caption = 'Attestation contacts Apple once, to get a certificate for the key. After that, Apple is out of the loop: every assertion is made on the device and checked on your server against the stored public key.',
+} = Astro.props;
+
+type Lane = 0 | 1 | 2;
+type Kind = 'sound' | 'level' | 'meta' | 'net';
+interface Step {
+  from: Lane;
+  to: Lane;
+  label: string;
+  note: string;
+  kind: Kind;
+}
+interface Flow {
+  id: 'attest' | 'assert';
+  label: string;
+  steps: Step[];
+  phases: { name: string; from: number; to: number }[];
+  idle?: Lane;
+}
+
+const lanes = ['App', 'Your server', 'Apple'];
+
+const flows: Flow[] = [
+  {
+    id: 'attest',
+    label: 'attestation · once',
+    steps: [
+      {
+        from: 0,
+        to: 0,
+        label: 'generateKey()',
+        note: 'P-256 key pair made in the Secure Enclave. The app only gets a keyId.',
+        kind: 'sound',
+      },
+      {
+        from: 0,
+        to: 1,
+        label: 'POST /apple/attest-init',
+        note: 'ask for a challenge',
+        kind: 'net',
+      },
+      {
+        from: 1,
+        to: 0,
+        label: 'sessionId + challenge',
+        note: '16+ random bytes, single use, short TTL',
+        kind: 'meta',
+      },
+      {
+        from: 0,
+        to: 0,
+        label: 'SHA256(challenge)',
+        note: 'this hash is the clientDataHash',
+        kind: 'level',
+      },
+      {
+        from: 0,
+        to: 2,
+        label: 'attestKey(keyId, hash)',
+        note: 'the only call that reaches Apple',
+        kind: 'net',
+      },
+      {
+        from: 2,
+        to: 0,
+        label: 'attestation object',
+        note: 'CBOR: certificate chain, receipt, authenticator data',
+        kind: 'net',
+      },
+      {
+        from: 0,
+        to: 1,
+        label: 'POST /apple/attest',
+        note: 'sessionId, keyId, attestation',
+        kind: 'net',
+      },
+      {
+        from: 1,
+        to: 1,
+        label: 'verify locally',
+        note: 'chain to Apple’s root, nonce, keyId, App ID, counter 0, environment. No call to Apple.',
+        kind: 'meta',
+      },
+      {
+        from: 1,
+        to: 0,
+        label: '200 OK',
+        note: 'public key, counter 0 and receipt stored against keyId',
+        kind: 'level',
+      },
+      {
+        from: 0,
+        to: 0,
+        label: 'save keyId',
+        note: 'Keychain, this device only',
+        kind: 'meta',
+      },
+    ],
+    phases: [
+      { name: 'challenge', from: 0, to: 3 },
+      { name: 'Apple signs', from: 4, to: 5 },
+      { name: 'verify', from: 6, to: 9 },
+    ],
+  },
+  {
+    id: 'assert',
+    label: 'assertion · every request',
+    idle: 2,
+    steps: [
+      {
+        from: 0,
+        to: 0,
+        label: 'build clientData',
+        note: 'method, path, timestamp, SHA256(body)',
+        kind: 'meta',
+      },
+      {
+        from: 0,
+        to: 0,
+        label: 'generateAssertion()',
+        note: 'Secure Enclave signs SHA256(clientData); the key’s counter goes up by one',
+        kind: 'sound',
+      },
+      {
+        from: 0,
+        to: 1,
+        label: 'request + 3 headers',
+        note: 'X-Key-ID, X-Timestamp, X-Signature (the CBOR assertion)',
+        kind: 'net',
+      },
+      {
+        from: 1,
+        to: 1,
+        label: 'verify',
+        note: 'rebuild clientData, check signature, App ID, counter above the stored one, timestamp window',
+        kind: 'meta',
+      },
+      {
+        from: 1,
+        to: 0,
+        label: 'response',
+        note: 'new counter stored in one conditional update',
+        kind: 'level',
+      },
+    ],
+    phases: [
+      { name: 'sign', from: 0, to: 1 },
+      { name: 'send', from: 2, to: 2 },
+      { name: 'verify', from: 3, to: 4 },
+    ],
+  },
+];
+---
+
+<VizFrame
+  fig={fig}
+  title="Who talks to whom: attestation once, assertions after"
+  caption={caption}
+  class="aas"
+  data-aas
+>
+  <div slot="tools" class="aas__tools">
+    <button type="button" class="viz-btn" data-next aria-label="Next message"
+      >step</button
+    >
+    <AnimControls />
+  </div>
+
+  <div class="aas__bar">
+    <div class="viz-seg" role="group" aria-label="Flow">
+      {
+        flows.map((f, i) => (
+          <button
+            type="button"
+            aria-pressed={i === 0 ? 'true' : 'false'}
+            data-flow={f.id}
+          >
+            {f.label}
+          </button>
+        ))
+      }
+    </div>
+  </div>
+
+  {
+    flows.map((flow, fi) => (
+      <div class="aas__flow" data-flow-panel={flow.id} hidden={fi !== 0}>
+        <ol class="aas__phases" aria-label="Phases">
+          {flow.phases.map((p) => (
+            <li data-phase-from={p.from} data-phase-to={p.to}>
+              <span>{p.name}</span>
+            </li>
+          ))}
+        </ol>
+
+        <div class="aas__board viz-panel">
+          <div class="aas__lanes" aria-hidden="true">
+            {lanes.map((l, li) => (
+              <span
+                class:list={[
+                  'aas__lane',
+                  { 'aas__lane--idle': flow.idle === li },
+                ]}
+              >
+                {l}
+              </span>
+            ))}
+          </div>
+          <div class="aas__lifelines" aria-hidden="true">
+            {lanes.map((_, li) => (
+              <i class:list={{ 'is-idle': flow.idle === li }} />
+            ))}
+          </div>
+          {flow.idle !== undefined && (
+            <span
+              class="aas__idle viz-mono"
+              style={`--lane:${flow.idle}`}
+              aria-hidden="true"
+            >
+              not involved
+            </span>
+          )}
+          <ol class="aas__steps" aria-live="polite">
+            {flow.steps.map((s, i) => {
+              const self = s.from === s.to;
+              const lo = Math.min(s.from, s.to);
+              const hi = Math.max(s.from, s.to);
+              const dir = s.to > s.from ? 'right' : 'left';
+              const span = self
+                ? `--start:${s.from * 2 + 1};--end:${s.from * 2 + 3}`
+                : `--start:${lo * 2 + 2};--end:${hi * 2 + 2}`;
+              return (
+                <li
+                  class:list={[
+                    'aas__step',
+                    `aas__step--${s.kind}`,
+                    { 'aas__step--self': self },
+                  ]}
+                  data-i={i}
+                  data-lane={s.from}
+                  style={span}
+                  aria-label={
+                    self
+                      ? `${lanes[s.from]}: ${s.label}. ${s.note}`
+                      : `${lanes[s.from]} to ${lanes[s.to]}: ${s.label}. ${s.note}`
+                  }
+                >
+                  <span class="aas__label">
+                    <b>{String(i + 1).padStart(2, '0')}</b> {s.label}
+                  </span>
+                  {!self && (
+                    <span
+                      class={`aas__arrow aas__arrow--${dir}`}
+                      aria-hidden="true"
+                    >
+                      <i />
+                    </span>
+                  )}
+                  <span class="aas__note">{s.note}</span>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      </div>
+    ))
+  }
+
+  <div class="viz-legend aas__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>the key</span>
+    <span><i style="--c:var(--viz-net)"></i>crosses a boundary</span>
+    <span><i style="--c:var(--viz-meta)"></i>challenge, structure, checks</span>
+    <span><i style="--c:var(--viz-level)"></i>derived or stored values</span>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initAppAttestSequence(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const STEP_MS = 1250;
+      const LEAD_MS = 400;
+      const flowBtns = [...root.querySelectorAll('[data-flow]')];
+      const panels = [...root.querySelectorAll('[data-flow-panel]')];
+
+      let flow = 'attest';
+      let current = -1;
+      let playing = false;
+      let timer = 0;
+
+      const panel = () => panels.find((p) => p.dataset.flowPanel === flow);
+      const steps = () => [...panel().querySelectorAll('.aas__step')];
+      const last = () => steps().length - 1;
+
+      function render() {
+        steps().forEach((s, i) => {
+          s.classList.toggle('is-shown', i <= current);
+          s.classList.toggle('is-current', i === current);
+        });
+        panel()
+          .querySelectorAll('[data-phase-from]')
+          .forEach((p) => {
+            const from = +p.dataset.phaseFrom;
+            const to = +p.dataset.phaseTo;
+            p.classList.toggle('is-current', current >= from && current <= to);
+            p.classList.toggle('is-done', current > to);
+          });
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(
+          () => {
+            current += 1;
+            render();
+            if (current >= last()) {
+              playing = false;
+              root.dispatchEvent(new CustomEvent('anim:ended'));
+              return;
+            }
+            schedule();
+          },
+          current < 0 ? LEAD_MS : STEP_MS,
+        );
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      root.querySelector('[data-next]').addEventListener('click', () => {
+        stop();
+        current = current >= last() ? 0 : current + 1;
+        render();
+        root.dispatchEvent(
+          new CustomEvent(current >= last() ? 'anim:ended' : 'anim:paused'),
+        );
+      });
+
+      flowBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.flow === flow) return;
+          stop();
+          flow = btn.dataset.flow;
+          flowBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          panels.forEach((p) => (p.hidden = p !== panel()));
+          // Reduced motion shows the whole flow; otherwise the new flow plays.
+          if (reduce) {
+            current = last();
+            render();
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          current = -1;
+          render();
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          playing = true;
+          schedule();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play() {
+          if (current >= last()) current = -1;
+          playing = true;
+          schedule();
+        },
+        pause: stop,
+        reset() {
+          stop();
+          current = -1;
+          render();
+        },
+      });
+
+      // Reduced motion rests on the full sequence until the reader plays it.
+      current = reduce ? last() : -1;
+      root.classList.add('is-armed');
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-aas]').forEach(initAppAttestSequence);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .aas__tools {
+    display: flex;
+    gap: 6px;
+  }
+  .aas__bar {
+    display: flex;
+    margin-bottom: var(--sp-3);
+  }
+  .aas__bar .viz-seg {
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+  .aas__flow[hidden] {
+    display: none;
+  }
+
+  .aas__phases {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin: 0 0 var(--sp-3);
+  }
+  .aas__phases li {
+    position: relative;
+    padding-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    transition: color 0.3s var(--ease);
+  }
+  .aas__phases li::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto;
+    height: 3px;
+    border-radius: 3px;
+    background: var(--border-strong);
+    transition: background 0.3s var(--ease);
+  }
+  .aas__phases li.is-current {
+    color: var(--fg);
+  }
+  .aas__phases li.is-current::before,
+  .aas__phases li.is-done::before {
+    background: var(--accent);
+  }
+
+  .aas__board {
+    position: relative;
+    padding: 0 0 var(--sp-3);
+    overflow: hidden;
+  }
+  .aas__lanes,
+  .aas__step {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .aas__lanes {
+    position: relative;
+    z-index: 1;
+    padding: var(--sp-3) 0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .aas__lane {
+    grid-column: span 2;
+    justify-self: center;
+    padding: 4px 10px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--fg);
+    text-align: center;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--bg-subtle);
+  }
+  .aas__lane--idle {
+    color: var(--fg-faint);
+    border-style: dashed;
+  }
+  .aas__lifelines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .aas__lifelines i {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed var(--border-strong);
+  }
+  .aas__lifelines i:nth-child(1) {
+    left: calc(100% / 6);
+  }
+  .aas__lifelines i:nth-child(2) {
+    left: 50%;
+  }
+  .aas__lifelines i:nth-child(3) {
+    left: calc(500% / 6);
+  }
+  .aas__lifelines i.is-idle {
+    opacity: 0.35;
+  }
+  .aas__idle {
+    position: absolute;
+    top: 50%;
+    left: calc((var(--lane) * 2 + 1) * 100% / 6);
+    z-index: 1;
+    padding: 2px 6px;
+    font-size: 10.5px;
+    color: var(--fg-faint);
+    white-space: nowrap;
+    background: var(--surface);
+    border: 1px dashed var(--border-strong);
+    border-radius: 6px;
+    transform: translate(-50%, -50%);
+  }
+
+  .aas__steps {
+    position: relative;
+    padding: var(--sp-2) 0 0;
+  }
+  .aas__step {
+    --c: var(--fg-muted);
+    row-gap: 3px;
+    padding: 7px 0;
+    transition:
+      opacity 0.4s var(--ease),
+      transform 0.4s var(--ease);
+  }
+  .aas__step--sound {
+    --c: var(--viz-sound);
+  }
+  .aas__step--net {
+    --c: var(--viz-net);
+  }
+  .aas__step--meta {
+    --c: var(--viz-meta);
+  }
+  .aas__step--level {
+    --c: var(--viz-level);
+  }
+  :global(.aas.is-armed) .aas__step:not(.is-shown) {
+    opacity: 0.12;
+  }
+  .aas__step.is-current .aas__label {
+    color: var(--fg);
+  }
+  .aas__step.is-current .aas__label b {
+    color: var(--accent-fg);
+    background: var(--c);
+  }
+
+  .aas__label,
+  .aas__arrow,
+  .aas__note {
+    grid-column: var(--start) / var(--end);
+    padding-inline: 6px;
+    text-align: center;
+    min-width: 0;
+  }
+  .aas__label {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+  }
+  .aas__label b {
+    display: inline-block;
+    margin-right: 4px;
+    padding: 0 5px;
+    font-size: 10px;
+    color: var(--c);
+    border: 1px solid var(--c);
+    border-radius: 4px;
+    transition:
+      background 0.2s var(--ease),
+      color 0.2s var(--ease);
+  }
+  .aas__note {
+    font-size: 11.5px;
+    line-height: 1.35;
+    color: var(--fg-faint);
+  }
+
+  /* Work inside one party: a box on its lifeline, the note under it. */
+  .aas__step--self .aas__label {
+    position: relative;
+    z-index: 1;
+    justify-self: center;
+    max-width: 100%;
+    padding: 4px 8px;
+    background: var(--surface);
+    border: 1px solid color-mix(in srgb, var(--c) 55%, transparent);
+    border-left: 3px solid var(--c);
+    border-radius: 6px;
+  }
+  .aas__step--self .aas__note {
+    grid-column: 1 / -1;
+  }
+  .aas__step--self.is-current .aas__label {
+    background: color-mix(in srgb, var(--c) 12%, var(--surface));
+  }
+
+  .aas__arrow {
+    position: relative;
+    height: 10px;
+    padding: 0;
+  }
+  .aas__arrow i {
+    position: absolute;
+    top: 4px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--c);
+    border-radius: 2px;
+    transform-origin: left;
+  }
+  .aas__arrow--left i {
+    transform-origin: right;
+  }
+  .aas__arrow i::after {
+    content: '';
+    position: absolute;
+    top: -4px;
+    border: 5px solid transparent;
+  }
+  .aas__arrow--right i::after {
+    right: -2px;
+    border-left: 8px solid var(--c);
+    border-right: 0;
+  }
+  .aas__arrow--left i::after {
+    left: -2px;
+    border-right: 8px solid var(--c);
+    border-left: 0;
+  }
+  .aas__step.is-current .aas__arrow i {
+    animation: aas-draw 0.55s var(--ease) both;
+  }
+  .aas__step.is-current .aas__arrow i::before {
+    content: '';
+    position: absolute;
+    top: -3px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--c);
+    box-shadow: 0 0 10px var(--c);
+    animation: aas-packet 0.55s var(--ease) both;
+  }
+  .aas__arrow--left i::before {
+    right: 0;
+  }
+  .aas__step.is-current .aas__arrow--left i::before {
+    animation-name: aas-packet-left;
+  }
+  @keyframes aas-draw {
+    from {
+      transform: scaleX(0);
+    }
+  }
+  @keyframes aas-packet {
+    from {
+      left: 0;
+      opacity: 1;
+    }
+    to {
+      left: calc(100% - 8px);
+      opacity: 0;
+    }
+  }
+  @keyframes aas-packet-left {
+    from {
+      right: 0;
+      opacity: 1;
+    }
+    to {
+      right: calc(100% - 8px);
+      opacity: 0;
+    }
+  }
+
+  .aas__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 560px) {
+    /* Too narrow for a box inside one lane: let it run across, anchored to its lane's side. */
+    .aas__step--self .aas__label {
+      grid-column: 1 / -1;
+    }
+    .aas__step--self[data-lane='0'] .aas__label {
+      justify-self: start;
+    }
+    .aas__step--self[data-lane='2'] .aas__label {
+      justify-self: end;
+    }
+    .aas__lane {
+      padding: 3px 6px;
+      font-size: 11px;
+    }
+    .aas__label {
+      font-size: 11px;
+    }
+    .aas__note {
+      font-size: 10.5px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .aas__step,
+    .aas__phases li,
+    .aas__phases li::before {
+      transition: none;
+    }
+    .aas__step.is-current .aas__arrow i,
+    .aas__step.is-current .aas__arrow i::before {
+      animation: none;
+    }
+  }
+</style>
