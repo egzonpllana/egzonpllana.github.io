@@ -1,0 +1,527 @@
+---
+title: 'Drawing a Gauge View with Swift 5.9 on iOS'
+description: 'A speedometer-style gauge in UIKit, rebuilt and re-checked: why angles turn clockwise on a y-down screen, one formula that places the needle, the labels and the gradient stops, how a conic CAGradientLayer is cut to an arc by a mask, and why the needle should be a rotated layer animated by Core Animation rather than a path redrawn from CADisplayLink.'
+date: 2024-08-02
+updated: 2026-10-30
+tags: ['Swift', 'iOS', 'UIKit', 'Core Animation', 'Mathematics']
+heroImage: '../../assets/covers/drawing-a-gauge-view-swift.png'
+repoUrl: 'https://github.com/egzonpllana/SwiftAndMathematicalChallenges/tree/main/GaugeViewXK'
+---
+
+import StatTiles from '../../components/StatTiles.astro';
+import UIKitAngleCompass from '../../components/UIKitAngleCompass.astro';
+import GaugeValueLab from '../../components/GaugeValueLab.astro';
+import GaugeLayerStack from '../../components/GaugeLayerStack.astro';
+import NeedleTimingRace from '../../components/NeedleTimingRace.astro';
+
+A gauge is a circle with a slice missing. `GaugeViewXK`, the view I built for this article, draws 300° of it: from the lower left, clockwise over the top, to the lower right, with a 60° gap at the bottom. A gradient runs along the arc, numbers sit just inside it, and a needle from the centre points at the current value, like a speedometer or the dial of a speed test.
+
+Every mark on that dial comes from one piece of trigonometry: an angle θ and a radius r around a centre c give the point (cx + r·cos θ, cy + r·sin θ). Around it sit three decisions. **Which way angles turn**: UIKit's y-axis points down, so the angles in that formula turn clockwise. **How colour follows the arc**: a gradient layer always fills a rectangle, and the arc is a mask that cuts it. **Who moves the needle**: your code on every frame, or Core Animation on its own clock. Each section below takes one of them from the intuition to the mechanism to the code.
+
+The first version of this article, from August 2024, described the parts and got some of the maths wrong. It said screen angles start from the positive y-axis and that the `− π/2` in the needle formula converts to them; in UIKit they start from the positive x-axis, and the `− π/2` only cancels a 90° hidden in the formula's base angle. Its worked example said an angle pointing straight up lands to the right of the centre, and its arithmetic treated sin 0 as 1. It called the display-link animation smooth and consistent; its speed depends on the frame rate, and it stops whenever the main thread is busy. And it left out what the code does wrong: it adds two layers every time `draw(_:)` runs, never resizes the arc, rebuilds every label on every layout pass, never gives the value label a frame, and keeps its light-mode colours in dark mode. This version re-checks every claim against the [repository](https://github.com/egzonpllana/SwiftAndMathematicalChallenges/tree/main/GaugeViewXK), Apple's documentation and probes: the original view running on the iOS 27.1 simulator, and the gradient and rotation questions rendered by Core Animation itself and read back pixel by pixel. The title still says Swift 5.9 because that is what it was written in. The repository compiles in Swift 6 language mode as it is, with one warning in its SwiftUI preview. The code below is a rewrite; it type-checks against the iOS 27.1 SDK in both Swift 5 and Swift 6 modes and needs iOS 17.
+
+---
+
+## Angles turn clockwise on a screen
+
+In a maths textbook, y points up and a positive angle turns counterclockwise from the positive x-axis: 90° is straight up. On an iPhone the origin is the top-left corner and y grows towards the bottom of the screen. cos and sin do not change. The point at angle θ on a circle of radius r around c is still
+
+```text
+x = cx + r · cos θ
+y = cy + r · sin θ
+```
+
+but because y grows downward, the same positive angle now turns **clockwise**. 0° points right, 90° straight down, 180° left and 270° straight up. Nothing needs converting; the picture is the textbook's, upside down. UIKit, Core Animation and SVG all work this way, which is why the figures in this article use the Swift code's angles as they are.
+
+The gauge's arc is one call:
+
+```swift
+UIBezierPath(
+    arcCenter: center,
+    radius: radius,
+    startAngle: 120 * .pi / 180, // lower left
+    endAngle: 60 * .pi / 180, // lower right
+    clockwise: true
+)
+```
+
+Between 120° and 60° there are two arcs, and `clockwise` picks one. Apple's documentation defines it on UIKit's coordinate system: from 0 to π with `clockwise: true` draws the bottom half of the circle. So `true` walks the direction of increasing angle, 120° → 180° → 270° → 360°, and on to 60° again: 300° over the top. `false` walks the other way, through the 60° at the bottom.
+
+Core Graphics names the direction the other way round. [`CGMutablePath.addArc`](<https://developer.apple.com/documentation/coregraphics/cgmutablepath/addarc(center:radius:startangle:endangle:clockwise:transform:)>) defines its flag for a y-up space, and its documentation warns that in a flipped coordinate system, the default for `UIView` drawing on iOS, a clockwise arc comes out counterclockwise. On the simulator, `UIBezierPath` with `clockwise: true` and `CGPath.addArc` with `clockwise: false` built the same 300° path, reaching y = −r at the top; `addArc` with `clockwise: true` built the 60° one.
+
+<UIKitAngleCompass />
+
+> **In plain words:** on a y-down screen, positive angles turn clockwise and 90° is straight down. `UIBezierPath`'s `clockwise: true` means "towards larger angles", which is clockwise on screen; Core Graphics' flag means the opposite in a UIKit view.
+
+---
+
+## One formula places every mark
+
+A gauge turns a value into an angle in two steps. The value becomes a fraction of the range, f = (value − min) / (max − min): 0 at the lowest value and 1 at the highest. The fraction becomes an angle along the sweep, θ = 120° + f × 300°. On a 0–500 gauge, 300 is f = 0.6 and θ = 300°, up and to the right. The needle's tip is the formula from the first section with that angle and the needle's length; each tick label is the same formula with its own value and the label radius.
+
+The original spelled the needle's angle differently:
+
+```swift
+func calculateEndAngle() -> CGFloat {
+    let degrees = mapValueToDegrees(value: currentValue) // f × 360
+    let scaleFactor: CGFloat = 300 / 360
+    let baseAngle: CGFloat = 210
+    return (baseAngle + degrees * scaleFactor).radians
+}
+
+// in updateIndicatorPath()
+let endPoint = CGPoint(
+    x: center.x + radius * cos(endAngle - CGFloat(90).radians),
+    y: center.y + radius * sin(endAngle - CGFloat(90).radians)
+)
+```
+
+That is 210° + f × 300° − 90° = 120° + f × 300°: the same angle. The first article explained the −90° as a conversion, because "for drawing on a screen, angles often start from the positive y-axis". In UIKit they don't; `cos`, `sin` and `UIBezierPath` all measure from the positive x-axis. The −90° only cancels the extra 90° in the base angle of 210°. The worked example needs the same correction. With this code, an `endAngle` of π/2 gives cos 0 = 1 and sin 0 = 0, so a centre of (50, 50) and a radius of 40 put the end at (90, 50): right of the centre, not straight up. Straight up in UIKit is 270°, or −90°, which gives (50, 10).
+
+The labels have a different problem. The repository places label i of n at 120° + i/(n − 1) × 300°: by index, not by value. For `.range(start:end:parts:)` the values are evenly spaced, so index and value agree. For `.values(_:)`, which takes any list, they do not. In `[0, 50, 100, 200, 350, 500]`, the label 50 sits where the needle points for 100. The fix is one function that everything goes through:
+
+```swift
+import UIKit
+
+/// UIKit angles: 0 points right, and angles grow clockwise because y grows downward.
+struct GaugeGeometry {
+    static let startAngle: CGFloat = 120 * .pi / 180 // lower left
+    static let sweep: CGFloat = 300 * .pi / 180 // clockwise, over the top
+    static let endAngle = startAngle + sweep // 420°: lower right, one full turn later
+
+    let range: ClosedRange<CGFloat>
+
+    /// 0 at the lowest value, 1 at the highest. Values outside the range are clamped.
+    func fraction(for value: CGFloat) -> CGFloat {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return 0 }
+        let clamped = min(max(value, range.lowerBound), range.upperBound)
+        return (clamped - range.lowerBound) / span
+    }
+
+    func angle(for value: CGFloat) -> CGFloat {
+        Self.startAngle + fraction(for: value) * Self.sweep
+    }
+
+    func value(at angle: CGFloat) -> CGFloat {
+        let fraction = (angle - Self.startAngle) / Self.sweep
+        return range.lowerBound + fraction * (range.upperBound - range.lowerBound)
+    }
+
+    static func point(at angle: CGFloat, radius: CGFloat, from center: CGPoint) -> CGPoint {
+        CGPoint(x: center.x + radius * cos(angle), y: center.y + radius * sin(angle))
+    }
+}
+```
+
+The end angle is 420°, not 60°. They point the same way, but 420° keeps every angle on the dial increasing with the value, and that matters again when the needle animates. The original rejected values outside the range silently; this one clamps them, and a range with no width returns 0 instead of dividing by zero.
+
+<GaugeValueLab />
+
+> **In plain words:** value → fraction → angle → point. Put the needle, every label and, in the next section, the gradient stops through the same function, and they cannot disagree.
+
+---
+
+## The gradient is a square; the arc is a stencil
+
+A `CAShapeLayer` strokes a path in one colour; it cannot stroke it with a gradient. So the gauge uses two layers: a `CAGradientLayer` as large as the view, and the arc as that layer's `mask`. A mask is a layer whose alpha decides how much of the masked layer shows. The arc's stroke is opaque and everything around it transparent, so only the arc survives; the stroke's colour does not matter. Apple's documentation adds two conditions: the mask must not have a superlayer, and its size and position are yours to set.
+
+The colour has to follow the arc, so the gradient is conic, available since iOS 12: colour changes with the angle around a point instead of along a line. `CAGradientLayer.h` documents the geometry. The gradient is centred at `startPoint`. Its 0 direction is the vector from `startPoint` to `endPoint`. Its angle increases from the positive x-axis towards the positive y-axis, which on iOS is clockwise, the same direction as the arc. So `endPoint` only sets a direction; how far away it is does not matter.
+
+The original set `startPoint` to the centre and `endPoint` to (0.23, 2), explained in the first article as "a bit outside the middle, giving our gradient a direction". In unit coordinates that vector is (−0.27, 1.5), and atan2(1.5, −0.27) = 100.2°: just past straight down. Rendering the layer with Core Animation put the seam between the last and the first colour between 100.0° and 100.5°. The stops came from the repository's `calculateGradientLocations`, which gives 0, 0.4 and 1 for three colours. A stop at location L sits at 100.2° + L × 360°, so the arc, from 120° to 420°, covers only locations 0.055 to 0.888. Pure red and pure green, at 0 and 1, both land in the gap. The arc starts 14% of the way from red to yellow and ends 81% of the way to green. The numbers were tuned until the gauge looked right; nothing ties them to the arc.
+
+Tie them to the angle formula instead. Point location 0 straight down, at the middle of the gap, with `endPoint = (0.5, 1)`. An angle θ is then location (θ − 90°) / 360°, and the arc runs from 30/360 = 1/12 to 330/360 = 11/12. Spread the colours evenly over that, and colour i of n lands on the value i/(n − 1) of the range: red on the minimum, yellow on the middle, green on the maximum.
+
+```swift
+extension GaugeGeometry {
+    /// Stops for a conic gradient whose location 0 points straight down, into the gap.
+    /// An angle θ is location (θ − 90°) / 360°, so the arc runs from 1/12 to 11/12,
+    /// and colour i of n lands on the value i / (n − 1) of the range.
+    static func gradientLocations(count: Int) -> [NSNumber] {
+        let first = (startAngle - .pi / 2) / (2 * .pi) // 30° / 360° = 1/12
+        let span = sweep / (2 * .pi) // 300° / 360° = 5/6
+        return (0..<count).map { index in
+            let t = count > 1 ? CGFloat(index) / CGFloat(count - 1) : 0
+            return NSNumber(value: Double(first + span * t))
+        }
+    }
+}
+```
+
+Fading the end of the arc to transparent has a catch the repository worked around. Core Animation interpolates gradient colours without premultiplying them by alpha, and `UIColor.clear` is black with alpha 0. Halfway from green to `.clear`, the colour is dark green at half alpha; rendered over white it came out as (129, 199, 129), a grey band. The repository swaps `.clear` for white at alpha 0, which came out as (208, 253, 203) over white: a pale wash instead, which shows on a dark background. The neutral end is the same colour at alpha 0, `color.withAlphaComponent(0)`, which gave (131, 253, 129). The same helper also returns four locations for three colours when the last one is clear.
+
+<GaugeLayerStack />
+
+> **In plain words:** the gradient layer fills a square and the arc only decides which pixels survive. A conic gradient starts where `endPoint` points and turns clockwise; compute its stops from the same angles as the arc instead of tuning them by eye.
+
+---
+
+## Build the layers once, lay them out on every bounds change
+
+The original drew its arcs from `draw(_:)`:
+
+```swift
+override func draw(_ rect: CGRect) {
+    super.draw(rect)
+    drawGauge(layerType: .background)
+    drawGauge(layerType: .gauge)
+}
+```
+
+and each `drawGauge` call creates a new shape layer, or a new gradient layer, and adds it as a sublayer. `draw(_:)` is for drawing into the view's own backing image with Core Graphics, and overriding it has costs even when nothing is drawn: UIKit gives the view a backing image the size of its bounds (on the simulator, the layer's `contents` was set), and calls the method again whenever the view is invalidated. Every call adds two more layers. The original went from 15 sublayers to 17 after one `setNeedsDisplay()`. And `draw(_:)` is not called when the view changes size, because `contentMode` defaults to `.scaleToFill`, which stretches the old image instead. Resized from 300 to 200 points, the original's gradient layers stayed 300 points wide.
+
+The labels had the opposite problem. They come from `layoutSubviews()`, which removed every label and created new ones on each layout pass. The value label in the middle was added once and never given a size: it stayed 0 × 0 points and never showed. In the preview in the repository's README, the number is a separate label under the gauge.
+
+The colours had a quieter bug. The default needle colour is `UIColor(Color.primary)`, which is dynamic: black in light mode, white in dark. But a layer's `strokeColor` is a `CGColor`, one value resolved once. Switched to dark mode on the simulator, the needle stayed black.
+
+So the structure is:
+
+- **Create the layers and labels once**, in the initialiser.
+- **Set geometry in `layoutSubviews()`**: paths, bounds and positions from the current bounds. UIKit calls it when the bounds change.
+- **Set colours when the appearance changes**, by resolving each `UIColor` against the view's trait collection.
+
+Two Core Animation details shape the layout code. A layer you create yourself, unlike a view's own backing layer, animates most property changes implicitly with a default animation. On the simulator, setting `transform`, `bounds` and `position` on one each started an implicit animation; setting `path` did not, which matches the documentation: `path` is animatable but has no implicit animation. Layout should not animate, so it runs inside a transaction with actions disabled. And the needle layer will be rotated, and `CALayer`'s documentation says not to set `frame` on a layer whose transform rotates by anything but a multiple of 90°, so layout sets `bounds` and `position`.
+
+```swift
+enum GaugeFill {
+    case wholeArc // the original: the whole gradient is always painted
+    case upToValue // the gradient ends where the needle points
+}
+
+@MainActor
+protocol GaugeDisplaying: AnyObject {
+    var value: CGFloat { get }
+    func setValue(_ value: CGFloat, animated: Bool)
+}
+
+final class GaugeView: UIView, GaugeDisplaying {
+    private static let turnKey = "transform.rotation.z"
+    private static let duration: CFTimeInterval = 0.6
+
+    private let geometry: GaugeGeometry
+    private let fill: GaugeFill
+    private let colors: [UIColor]
+    private let ticks: [CGFloat]
+    private let arcWidth: CGFloat = 18
+
+    private let trackLayer = CAShapeLayer()
+    private let gradientLayer = CAGradientLayer()
+    private let arcMask = CAShapeLayer()
+    private let needleLayer = CAShapeLayer()
+    private let tickLabels: [UILabel]
+    private let valueLabel = UILabel()
+    private var labelLink: CADisplayLink?
+
+    private(set) var value: CGFloat
+    private var needleAngle: CGFloat // 120°...420°, never wrapped
+
+    init(
+        range: ClosedRange<CGFloat>,
+        divisions: Int = 10,
+        colors: [UIColor] = [.systemRed, .systemYellow, .systemGreen],
+        fill: GaugeFill = .wholeArc
+    ) {
+        geometry = GaugeGeometry(range: range)
+        self.fill = fill
+        self.colors = colors.count > 1 ? colors : Array(repeating: colors.first ?? .systemBlue, count: 2)
+        let parts = max(divisions, 1)
+        let step = (range.upperBound - range.lowerBound) / CGFloat(parts)
+        ticks = (0...parts).map { range.lowerBound + CGFloat($0) * step }
+        tickLabels = ticks.map { _ in UILabel() }
+        value = range.lowerBound
+        needleAngle = GaugeGeometry.startAngle
+        super.init(frame: .zero)
+        setUpLayers()
+        setUpLabels()
+        isAccessibilityElement = true // one element; the tick labels are not read out
+        accessibilityTraits = .updatesFrequently
+        accessibilityValue = format(value)
+        applyColors()
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (gauge: GaugeView, _) in
+            gauge.applyColors()
+        }
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    private func setUpLayers() {
+        for arc in [trackLayer, arcMask] {
+            arc.fillColor = nil
+            arc.lineWidth = arcWidth
+        }
+        arcMask.strokeColor = UIColor.black.cgColor // a mask only reads alpha
+        arcMask.strokeEnd = fill == .wholeArc ? 1 : 0
+        gradientLayer.type = .conic
+        gradientLayer.startPoint = CGPoint(x: 0.5, y: 0.5) // the centre
+        gradientLayer.endPoint = CGPoint(x: 0.5, y: 1) // location 0 points straight down
+        gradientLayer.locations = GaugeGeometry.gradientLocations(count: colors.count)
+        gradientLayer.mask = arcMask
+        needleLayer.lineWidth = 4
+        needleLayer.lineCap = .round
+        needleLayer.transform = CATransform3DMakeRotation(needleAngle, 0, 0, 1)
+        [trackLayer, gradientLayer, needleLayer].forEach(layer.addSublayer)
+    }
+
+    private func setUpLabels() {
+        for (label, tick) in zip(tickLabels, ticks) {
+            label.text = format(tick)
+            label.font = .preferredFont(forTextStyle: .caption2)
+            label.textColor = .secondaryLabel
+            addSubview(label)
+        }
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: 28, weight: .semibold)
+        valueLabel.textColor = .label
+        valueLabel.text = format(value)
+        addSubview(valueLabel)
+    }
+
+    /// A CGColor is a snapshot, so layer colours are resolved again when the appearance changes.
+    private func applyColors() {
+        trackLayer.strokeColor = UIColor.tertiarySystemFill.resolvedColor(with: traitCollection).cgColor
+        gradientLayer.colors = colors.map { $0.resolvedColor(with: traitCollection).cgColor }
+        needleLayer.strokeColor = UIColor.label.resolvedColor(with: traitCollection).cgColor
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let side = min(bounds.width, bounds.height)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let arcRadius = side / 2 - 12
+        let labelRadius = arcRadius - arcWidth / 2 - 16
+        let needleLength = side / 2 - arcWidth - 40
+
+        let arc = UIBezierPath(
+            arcCenter: center,
+            radius: arcRadius,
+            startAngle: GaugeGeometry.startAngle,
+            endAngle: GaugeGeometry.endAngle,
+            clockwise: true // in UIKit: the direction of increasing angle
+        )
+        let needle = UIBezierPath()
+        needle.move(to: center)
+        needle.addLine(to: CGPoint(x: center.x + needleLength, y: center.y)) // at 0°; the transform turns it
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true) // standalone layers animate bounds and position implicitly
+        for sublayer in [trackLayer, gradientLayer, needleLayer] {
+            sublayer.bounds = bounds // the view's own coordinate space
+            sublayer.position = center // not frame: the needle layer is rotated
+        }
+        arcMask.frame = gradientLayer.bounds
+        trackLayer.path = arc.cgPath
+        arcMask.path = arc.cgPath
+        needleLayer.path = needle.cgPath
+        CATransaction.commit()
+
+        for (label, tick) in zip(tickLabels, ticks) {
+            label.sizeToFit()
+            label.center = GaugeGeometry.point(at: geometry.angle(for: tick), radius: labelRadius, from: center)
+        }
+        valueLabel.sizeToFit()
+        valueLabel.center = CGPoint(x: center.x, y: center.y + side * 0.3)
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { stopLabelLink() }
+    }
+
+    private func format(_ number: CGFloat) -> String {
+        Double(number).formatted(.number.precision(.fractionLength(0)))
+    }
+}
+```
+
+A few lines need a reason.
+
+- **Every sublayer gets the view's bounds.** The view, its sublayers and every path share one coordinate space, and the needle layer's anchor point, the middle of its bounds, is the gauge's centre. Rotating that layer turns the needle around the centre.
+- **The needle is drawn once, pointing at 0°.** Its angle is the layer's transform, so moving it never builds a path.
+- **The radii are the original's**: the arc 12 points inside the edge, the labels 16 points inside the arc, the needle 40 points short of it. They are fixed offsets, so the gauge is meant for sizes around 300 points, as the original was.
+- **One accessibility element.** VoiceOver reads the gauge as one element with a value, instead of eleven numbers. The caller sets `accessibilityLabel`, for example "Download speed". `.updatesFrequently` tells assistive apps to poll the value rather than wait for notifications.
+
+> **In plain words:** create layers once, set their geometry in `layoutSubviews()` and their colours when the appearance changes. Disable implicit animations for layout, and position a rotated layer with `bounds` and `position`, not `frame`.
+
+---
+
+## Who moves the needle
+
+The original animated the needle from a `CADisplayLink`, a timer that calls a method once per display refresh. Each call moved `currentValue` a tenth of the remaining distance, rebuilt the needle's path, and stopped once it was within 0.1 of the target:
+
+```swift
+let changeRate = valueDifference / CGFloat(animationTime) // animationTime = 10
+```
+
+That is an ease-out, but counted in frames, not seconds. `animationTime` is not a time; it decides what fraction of the distance each frame covers. From 0 to 500 the needle takes 82 frames, and on the simulator, at 60 Hz, it settled after 1.38 s. How often a display link fires is not the app's choice. Apple's ProMotion guide says an app cannot presume any refresh rate: the system lowers it in Low Power Mode or when the device is hot, and on a ProMotion iPhone it goes above 60 Hz once the app adds the `CADisableMinimumFrameDurationOnPhone` key. At 120 Hz the same 82 frames take 0.68 s. The duration also depends on the distance in value units: 0 to 50 takes 60 frames.
+
+The callbacks also run on the main thread. While the main thread is busy there are none, and the needle stops. On the simulator I blocked the main thread for 1.5 s while two squares moved, one from a display link and one with a `CABasicAnimation`. In two screenshots taken 0.8 s apart during the block, the display-link square had not moved and the Core Animation square was 76 points further on. An animation added to a layer is sent to the render server once, and the render server works out each frame from the clock, without the app.
+
+A display link also retains its target: [`init(target:selector:)`](<https://developer.apple.com/documentation/quartzcore/cadisplaylink/init(target:selector:)>) says so, and `invalidate()` releases it. The original invalidated the link once the needle arrived, so a gauge removed from the screen mid-animation stayed alive until then, and no longer.
+
+So the needle goes to Core Animation. It is a layer with a fixed path, and its angle is the layer's rotation. To move it, set the model value to where the needle ends up, then add an animation from where it is to there. Three details decide whether that works.
+
+**Animate the angle, not the matrix.** The dial's angles run from 120° to 420°, and 420° points the same way as 60°. A rotation matrix only stores the direction, so animating `transform` from the matrix for 120° to the matrix for 420° interpolates from 120° to 60°, the short way. Rendered by Core Animation at each quarter of a linear animation, the needle pointed at 120°, 105°, 90°, 75° and 60°: back through the gap. The `transform.rotation.z` key path animates the number and builds the matrix from it on every frame: 120°, 195°, 270°, 345°, 420°.
+
+**Start from where the needle is on screen.** When a new value arrives mid-animation, the next animation starts from the presentation layer, which holds what is on screen now. Reading `transform.rotation.z` back decomposes the matrix and returns an angle between −180° and 180°: on the simulator, halfway through a turn from 120° to 420°, the presentation layer read −82.7°, which is 277.3°. The code puts it back on the dial's scale: anything below 90°, the middle of the gap, belongs to the second half of the sweep.
+
+**Keep the display link for what Core Animation cannot do.** The number in the middle is text, and text does not animate. So a display link reads the needle's presentation layer and writes the number, and that is all it does. It asks for 30 Hz with `preferredFrameRateRange`, because a number does not need 120 updates a second, and it is invalidated when the needle settles and when the view leaves its window. On the simulator, a gauge removed from the screen mid-animation was deallocated.
+
+```swift
+extension GaugeView {
+    func setValue(_ newValue: CGFloat, animated: Bool) {
+        let fromAngle = presentedNeedleAngle
+        value = min(max(newValue, geometry.range.lowerBound), geometry.range.upperBound)
+        needleAngle = geometry.angle(for: value)
+        accessibilityValue = format(value)
+
+        // The model first, with no implicit animation: this is where the needle ends up.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        needleLayer.transform = CATransform3DMakeRotation(needleAngle, 0, 0, 1)
+        if fill == .upToValue {
+            arcMask.strokeEnd = geometry.fraction(for: value)
+        }
+        CATransaction.commit()
+
+        guard animated, !UIAccessibility.isReduceMotionEnabled, abs(needleAngle - fromAngle) > 0.001 else {
+            needleLayer.removeAnimation(forKey: Self.turnKey)
+            arcMask.removeAnimation(forKey: "strokeEnd")
+            stopLabelLink()
+            return
+        }
+        // Animate the angle, not the matrix: 120° and 420° are 300° apart as numbers,
+        // but as matrices they are 60° apart, and a matrix animation goes the short way.
+        animate(needleLayer, keyPath: Self.turnKey, from: fromAngle, to: needleAngle)
+        if fill == .upToValue {
+            let fromFraction = (fromAngle - GaugeGeometry.startAngle) / GaugeGeometry.sweep
+            animate(arcMask, keyPath: "strokeEnd", from: fromFraction, to: geometry.fraction(for: value))
+        }
+        startLabelLink()
+    }
+
+    private func animate(_ target: CALayer, keyPath: String, from: CGFloat, to: CGFloat) {
+        let animation = CABasicAnimation(keyPath: keyPath)
+        animation.fromValue = from
+        animation.toValue = to
+        animation.duration = Self.duration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        target.add(animation, forKey: keyPath)
+    }
+
+    /// Where the needle is on screen right now, on the gauge's own 120°...420° scale.
+    private var presentedNeedleAngle: CGFloat {
+        guard needleLayer.animation(forKey: Self.turnKey) != nil,
+              let raw = needleLayer.presentation()?.value(forKeyPath: Self.turnKey) as? CGFloat
+        else { return needleAngle }
+        // A matrix reads back between -180° and 180°, so 270° comes back as -90°.
+        // Anything below the middle of the gap (90°) belongs to the second half of the sweep.
+        return raw < .pi / 2 ? raw + 2 * .pi : raw
+    }
+
+    private func startLabelLink() {
+        guard labelLink == nil else { return }
+        // The link retains its target until invalidate(): it stops when the needle
+        // settles, and when the view leaves the window.
+        let link = CADisplayLink(target: self, selector: #selector(updateValueLabel))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30) // text, not motion
+        link.add(to: .main, forMode: .common)
+        labelLink = link
+    }
+
+    @objc private func updateValueLabel() {
+        guard needleLayer.animation(forKey: Self.turnKey) != nil else {
+            stopLabelLink()
+            return
+        }
+        // Read the needle, do not drive it: the render server is already moving it.
+        valueLabel.text = format(geometry.value(at: presentedNeedleAngle))
+    }
+
+    private func stopLabelLink() {
+        labelLink?.invalidate()
+        labelLink = nil
+        valueLabel.text = format(value)
+    }
+}
+```
+
+`.upToValue` is the one thing the original did not do: it paints the gradient only up to the needle. That is the same mask with `strokeEnd`, the fraction of the path that is stroked, set to f. `strokeEnd` is measured along the path's length, and an arc's length grows in step with its angle, so the fill and the needle stay together under the same duration and curve. With Reduce Motion on, the needle and the fill jump to the new value and the number changes at once.
+
+```swift
+let gauge = GaugeView(range: 0...500, fill: .upToValue)
+gauge.accessibilityLabel = "Download speed"
+gauge.setValue(300, animated: true)
+```
+
+<NeedleTimingRace />
+
+> **In plain words:** a display link moves things only when the main thread is free, at a rate the system picks. Let Core Animation rotate the needle on its own clock, animate `transform.rotation.z` so it goes the long way round, and keep a display link only for the number, which it reads from the needle.
+
+---
+
+## Measured, not assumed
+
+These numbers come from the probes behind the sections above: the original `GaugeViewXK` running on the iOS 27.1 simulator, and layer trees rendered by Core Animation on macOS with y pointing down, as on iOS.
+
+<StatTiles
+  tiles={[
+    {
+      label: 'original needle, 0 → 500',
+      value: 1.38,
+      decimals: 2,
+      suffix: ' s',
+      sub: '82 display-link frames at 60 Hz; the same frames take 0.68 s at 120 Hz',
+    },
+    {
+      label: 'moved during a main-thread block',
+      value: 76,
+      suffix: ' pt',
+      sub: 'CABasicAnimation, between two screenshots 0.8 s apart; the display-link square moved 0',
+    },
+    {
+      label: 'sublayers after one redraw',
+      value: 17,
+      sub: 'from 15: every draw(_:) call adds two layers',
+    },
+    {
+      label: 'where the old gradient starts',
+      value: 100.2,
+      decimals: 1,
+      suffix: '°',
+      sub: 'endPoint (0.23, 2); pure red and pure green fall in the gap',
+    },
+  ]}
+/>
+
+What I did not check: ProMotion on a device. The simulator ran at 60 Hz, so the 120 Hz figures are the same 82 frames divided by 120, not a measurement. VoiceOver reading the gauge was not exercised. The figures draw the gradient with CSS `conic-gradient`, which has the same geometry as Core Animation's, but browsers blend colours their own way, and the figure palette stands in for the system colours.
+
+---
+
+## Takeaways
+
+> **On a y-down screen, positive angles turn clockwise.** cos and sin are unchanged, 0° points right and 90° points down. Nothing needs converting.
+
+> **`clockwise: true` in `UIBezierPath` means towards larger angles.** Core Graphics defines its flag for y-up, so in a UIKit view it reads the other way.
+
+> **Put every mark through one function.** Value to fraction to angle to point, for the needle, the labels and the gradient stops. Labels spaced by index drift from their values as soon as the values are uneven.
+
+> **A conic gradient starts where `endPoint` points and turns clockwise.** Its stops are angles: derive them from the arc. Fade to the same colour at alpha 0, not to `.clear`.
+
+> **Layers in `init`, geometry in `layoutSubviews()`, colours on trait changes.** `draw(_:)` is for Core Graphics drawing, runs only when the view is invalidated, and costs a backing image.
+
+> **Layers you create animate implicitly; layout should not.** Disable actions, and set `bounds` and `position` on a rotated layer.
+
+> **Let Core Animation move the needle.** Rotate a layer, animate `transform.rotation.z`, not the matrix, and start an interrupted animation from the presentation layer.
+
+> **A display link is for work Core Animation cannot do.** Its rate is not yours, it stops when the main thread is busy, and it retains its target until you invalidate it.
+
+---
+
+## References
+
+**UIKit** — [`UIBezierPath(arcCenter:…)`](<https://developer.apple.com/documentation/uikit/uibezierpath/init(arccenter:radius:startangle:endangle:clockwise:)>) · [`UIView.draw(_:)`](<https://developer.apple.com/documentation/uikit/uiview/draw(_:)>) · [`UIView.contentMode`](https://developer.apple.com/documentation/uikit/uiview/contentmode-swift.property) · [`UIView.layoutSubviews()`](<https://developer.apple.com/documentation/uikit/uiview/layoutsubviews()>) · [`registerForTraitChanges(_:handler:)`](<https://developer.apple.com/documentation/uikit/uitraitchangeobservable-67e94/registerfortraitchanges(_:handler:)>) · [`UIColor.resolvedColor(with:)`](<https://developer.apple.com/documentation/uikit/uicolor/resolvedcolor(with:)>) · [`UIColor.withAlphaComponent(_:)`](<https://developer.apple.com/documentation/uikit/uicolor/withalphacomponent(_:)>) · [`UIAccessibility.isReduceMotionEnabled`](https://developer.apple.com/documentation/uikit/uiaccessibility/isreducemotionenabled) · [`accessibilityValue`](https://developer.apple.com/documentation/objectivec/nsobject-swift.class/accessibilityvalue) · [`updatesFrequently`](https://developer.apple.com/documentation/uikit/uiaccessibilitytraits/updatesfrequently)
+
+**Core Animation** — [`CAGradientLayer`](https://developer.apple.com/documentation/quartzcore/cagradientlayer) · [`conic`](https://developer.apple.com/documentation/quartzcore/cagradientlayertype/conic) · [`locations`](https://developer.apple.com/documentation/quartzcore/cagradientlayer/locations) · [`CALayer.mask`](https://developer.apple.com/documentation/quartzcore/calayer/mask) · [`CALayer.frame`](https://developer.apple.com/documentation/quartzcore/calayer/frame) · [`CALayer.presentation()`](<https://developer.apple.com/documentation/quartzcore/calayer/presentation()>) · [`CAShapeLayer.path`](https://developer.apple.com/documentation/quartzcore/cashapelayer/path) · [`strokeEnd`](https://developer.apple.com/documentation/quartzcore/cashapelayer/strokeend) · [`CABasicAnimation`](https://developer.apple.com/documentation/quartzcore/cabasicanimation) · [`CATransaction.setDisableActions(_:)`](<https://developer.apple.com/documentation/quartzcore/catransaction/setdisableactions(_:)>) · [`CADisplayLink`](https://developer.apple.com/documentation/quartzcore/cadisplaylink) · [`preferredFrameRateRange`](https://developer.apple.com/documentation/quartzcore/cadisplaylink/preferredframeraterange) · [Optimizing iPhone and iPad apps to support ProMotion displays](https://developer.apple.com/documentation/quartzcore/optimizing-iphone-and-ipad-apps-to-support-promotion-displays)
+
+**Core Graphics** — [`CGMutablePath.addArc(center:…)`](<https://developer.apple.com/documentation/coregraphics/cgmutablepath/addarc(center:radius:startangle:endangle:clockwise:transform:)>)
+
+**Background** — [Understanding hitches in your app](https://developer.apple.com/documentation/xcode/understanding-hitches-in-your-app) · [Unit circle](https://en.wikipedia.org/wiki/Unit_circle) on Wikipedia

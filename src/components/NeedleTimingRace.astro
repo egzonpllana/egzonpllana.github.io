@@ -1,0 +1,768 @@
+---
+/**
+ * Three ways to move the needle from 0 to a new value, on one clock.
+ *
+ *   display link, 60 Hz and 120 Hz: the repo's updateNextValue, replayed per
+ *   callback. Each callback moves currentValue a tenth of the remaining
+ *   distance (animationTime = 10 is a divisor, not seconds) and snaps once the
+ *   distance is 0.1 or less. 0 -> 500 takes 82 callbacks: 1.37 s at 60 Hz
+ *   (the iOS 27.1 simulator measured 1.376 s), 0.68 s at 120 Hz. While the
+ *   main thread is busy there are no callbacks, and nothing catches up after.
+ *
+ *   CABasicAnimation: the article's GaugeView. 0.6 s, ease-out
+ *   (CAMediaTimingFunction .easeOut = cubic-bezier(0, 0, 0.58, 1)), on
+ *   transform.rotation.z. The render server runs it, so it keeps moving while
+ *   the main thread is blocked (simulator: a CABasicAnimation moved 76 pt
+ *   between two screenshots taken during a 1.5 s main-thread block; a
+ *   display-link-driven layer moved 0). The number under it comes from a
+ *   30 Hz display link that reads the needle, so the number does freeze.
+ *
+ *   "transform (matrix)" animates the matrix instead. Core Animation
+ *   interpolates a rotation matrix the short way: 120° to 420° is the same
+ *   matrix as 120° to 60°, so the needle swings back 60° through the gap
+ *   (CARenderer probe: 120, 105, 90, 75, 60 at quarters).
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '04',
+  caption = 'Played at half speed; drag the time slider to stop anywhere. The original moves the needle a tenth of the remaining distance per display-link callback, so its duration is counted in frames: 82 frames from 0 to 500, which is 1.37 s at 60 Hz and 0.68 s at 120 Hz. Turn on the busy main thread and both display-link needles stop for 300 ms, then resume where they were. The Core Animation needle keeps moving, because the render server runs it; only its number, read by a display link, waits. Switch the key path to transform and the same animation takes the short way between two matrices, back through the gap.',
+} = Astro.props;
+
+const AXIS_S = 1.8;
+const SIZE = 300;
+const C = SIZE / 2;
+const ARC_R = 130;
+const rad = (d: number) => (d * Math.PI) / 180;
+const pt = (deg: number, r: number) => [
+  C + r * Math.cos(rad(deg)),
+  C + r * Math.sin(rad(deg)),
+];
+const [sx, sy] = pt(120, ARC_R);
+const [ex, ey] = pt(420, ARC_R);
+const ARC_D = `M ${sx.toFixed(2)} ${sy.toFixed(2)} A ${ARC_R} ${ARC_R} 0 1 1 ${ex.toFixed(2)} ${ey.toFixed(2)}`;
+const MARKS = [0, 0.5, 1].map((f) => {
+  const deg = 120 + f * 300;
+  const [x1, y1] = pt(deg, ARC_R - 16);
+  const [x2, y2] = pt(deg, ARC_R + 16);
+  return { x1, y1, x2, y2 };
+});
+const LANES = [
+  { id: 'dl60', title: 'display link', rate: '60 Hz' },
+  { id: 'dl120', title: 'display link', rate: '120 Hz' },
+  { id: 'ca', title: 'CABasicAnimation', rate: '0.6 s ease-out' },
+];
+const ticks = [0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8];
+---
+
+<VizFrame
+  fig={fig}
+  title="Who moves the needle"
+  caption={caption}
+  class="ntr"
+  data-ntr
+>
+  <div slot="tools">
+    <AnimControls label="Race" />
+  </div>
+
+  <div class="ntr__bars">
+    <div class="ntr__bar">
+      <span class="viz-label">setValue</span>
+      <div class="viz-seg" role="group" aria-label="Jump">
+        <button type="button" aria-pressed="true" data-target="500"
+          >0 → 500</button
+        >
+        <button type="button" aria-pressed="false" data-target="50"
+          >0 → 50</button
+        >
+      </div>
+    </div>
+    <div class="ntr__bar">
+      <span class="viz-label">main thread</span>
+      <div class="viz-seg" role="group" aria-label="Main thread">
+        <button type="button" aria-pressed="true" data-stall="off">free</button>
+        <button type="button" aria-pressed="false" data-stall="on"
+          >busy 0.2–0.5 s</button
+        >
+      </div>
+    </div>
+    <div class="ntr__bar">
+      <span class="viz-label">CA key path</span>
+      <div class="viz-seg" role="group" aria-label="Core Animation key path">
+        <button type="button" aria-pressed="true" data-key="angle"
+          >transform.rotation.z</button
+        >
+        <button type="button" aria-pressed="false" data-key="matrix"
+          >transform (matrix)</button
+        >
+      </div>
+    </div>
+  </div>
+
+  <div class="ntr__lanes">
+    {
+      LANES.map((lane) => (
+        <div
+          class={`ntr__lane viz-panel ntr__lane--${lane.id}`}
+          data-lane={lane.id}
+        >
+          <div class="ntr__lane-head">
+            <span class="ntr__lane-title">{lane.title}</span>
+            <span class="viz-label">{lane.rate}</span>
+          </div>
+          <svg
+            viewBox={`0 0 ${SIZE} ${SIZE}`}
+            role="img"
+            aria-label={`Needle driven by ${lane.title}, ${lane.rate}`}
+          >
+            <path class="ntr__track" d={ARC_D} />
+            <path
+              class="ntr__gap"
+              d={`M ${C} ${C} L ${pt(60, 146)
+                .map((n) => n.toFixed(2))
+                .join(' ')} A 146 146 0 0 1 ${pt(120, 146)
+                .map((n) => n.toFixed(2))
+                .join(' ')} Z`}
+            />
+            {MARKS.map((m) => (
+              <line class="ntr__mark" x1={m.x1} y1={m.y1} x2={m.x2} y2={m.y2} />
+            ))}
+            <line
+              class="ntr__needle"
+              data-needle
+              x1={C}
+              y1={C}
+              x2={C + 112}
+              y2={C}
+              transform={`rotate(120 ${C} ${C})`}
+            />
+            <circle class="ntr__hub" cx={C} cy={C} r="9" />
+            <text class="ntr__number" data-number x={C} y={C + 92}>
+              0
+            </text>
+          </svg>
+          <span class="viz-chip" data-status />
+        </div>
+      ))
+    }
+  </div>
+
+  <label class="ntr__scrub">
+    <span class="viz-label">time</span>
+    <input
+      type="range"
+      min="0"
+      max={AXIS_S * 1000}
+      step="1"
+      value={AXIS_S * 1000}
+      data-scrub
+      aria-label="Time since setValue, in milliseconds"
+    />
+    <span class="viz-chip viz-chip--level" data-out-t>0 ms</span>
+  </label>
+
+  <div class="ntr__plot viz-panel">
+    <div class="ntr__plot-area">
+      <svg
+        viewBox={`0 0 ${AXIS_S * 1000} 200`}
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <rect
+          class="ntr__stall"
+          data-stall-band
+          x="200"
+          y="0"
+          width="300"
+          height="200"></rect>
+        <line class="ntr__grid" x1="0" y1="10" x2={AXIS_S * 1000} y2="10"
+        ></line>
+        <line class="ntr__grid" x1="0" y1="195" x2={AXIS_S * 1000} y2="195"
+        ></line>
+        <path class="ntr__curve ntr__curve--dl60" data-curve="dl60" d=""></path>
+        <path class="ntr__curve ntr__curve--dl120" data-curve="dl120" d=""
+        ></path>
+        <path class="ntr__curve ntr__curve--ca" data-curve="ca" d=""></path>
+        <line class="ntr__head" data-head x1="0" y1="0" x2="0" y2="200"></line>
+      </svg>
+      <span class="ntr__y" data-y-top style="top:5%">500</span>
+      <span class="ntr__y" style="top:97.5%">0</span>
+    </div>
+    <div class="ntr__x" aria-hidden="true">
+      {
+        ticks.map((t) => (
+          <i style={`left:${(t / AXIS_S) * 100}%`}>
+            {t}
+            {t === 0 || t === AXIS_S ? ' s' : ''}
+          </i>
+        ))
+      }
+    </div>
+    <div class="viz-legend ntr__legend" aria-hidden="true">
+      <span><i style="--c:var(--viz-net)"></i>display link, 60 Hz</span>
+      <span class="ntr__legend-dash"
+        ><i style="--c:var(--viz-net)"></i>display link, 120 Hz</span
+      >
+      <span><i style="--c:var(--viz-sound)"></i>CABasicAnimation</span>
+      <span data-legend-stall hidden
+        ><i style="--c:var(--viz-bad)"></i>main thread busy</span
+      >
+    </div>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-ntr-data
+    set:html={JSON.stringify({ axis: AXIS_S })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const C = 150;
+    const MAX = 500;
+    const DIVISOR = 10; // the repo's animationTime
+    const SNAP = 0.1;
+    const CA_DURATION = 0.6;
+    const LABEL_HZ = 30;
+    const STALL = { from: 0.2, to: 0.5 };
+    const SLOWDOWN = 2;
+
+    /** CAMediaTimingFunction(name: .easeOut): cubic-bezier(0, 0, 0.58, 1). */
+    function easeOut(x) {
+      if (x <= 0) return 0;
+      if (x >= 1) return 1;
+      const p1x = 0;
+      const p2x = 0.58;
+      const p1y = 0;
+      const p2y = 1;
+      const bx = (t) =>
+        3 * (1 - t) * (1 - t) * t * p1x + 3 * (1 - t) * t * t * p2x + t * t * t;
+      const by = (t) =>
+        3 * (1 - t) * (1 - t) * t * p1y + 3 * (1 - t) * t * t * p2y + t * t * t;
+      let lo = 0;
+      let hi = 1;
+      for (let i = 0; i < 40; i += 1) {
+        const mid = (lo + hi) / 2;
+        if (bx(mid) < x) lo = mid;
+        else hi = mid;
+      }
+      return by((lo + hi) / 2);
+    }
+
+    /** The repo's updateNextValue, once per callback. Returns [{ t, v }]. */
+    function simulateLink(hz, target, stall) {
+      const frames = [{ t: 0, v: 0, k: 0 }];
+      let v = 0;
+      let k = 0;
+      for (let vsync = 1; vsync < 2000; vsync += 1) {
+        const t = vsync / hz;
+        if (stall && t > STALL.from && t < STALL.to) continue;
+        k += 1;
+        const diff = target - v;
+        if (Math.abs(diff) > SNAP) {
+          const next = v + diff / DIVISOR;
+          v = Math.min(
+            Math.max(next, Math.min(target, v)),
+            Math.max(target, v),
+          );
+          frames.push({ t, v, k });
+        } else {
+          v = target;
+          frames.push({ t, v, k, settled: true });
+          break;
+        }
+      }
+      return frames;
+    }
+
+    function frameAt(frames, t) {
+      let lo = 0;
+      let hi = frames.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (frames[mid].t <= t) lo = mid;
+        else hi = mid - 1;
+      }
+      return frames[lo];
+    }
+
+    function initRace(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-ntr-data]').textContent,
+      );
+      const el = (sel) => root.querySelector(sel);
+      const lanes = {};
+      root.querySelectorAll('[data-lane]').forEach((node) => {
+        lanes[node.dataset.lane] = {
+          node,
+          needle: node.querySelector('[data-needle]'),
+          number: node.querySelector('[data-number]'),
+          status: node.querySelector('[data-status]'),
+        };
+      });
+      const curves = {};
+      root.querySelectorAll('[data-curve]').forEach((node) => {
+        curves[node.dataset.curve] = node;
+      });
+      const scrub = el('[data-scrub]');
+      const tOut = el('[data-out-t]');
+      const head = el('[data-head]');
+      const band = el('[data-stall-band]');
+      const legendStall = el('[data-legend-stall]');
+      const yTop = el('[data-y-top]');
+      const targetBtns = [...root.querySelectorAll('[data-target]')];
+      const stallBtns = [...root.querySelectorAll('[data-stall]')];
+      const keyBtns = [...root.querySelectorAll('[data-key]')];
+
+      const axisMs = data.axis * 1000;
+      let target = 500;
+      let stall = false;
+      let matrix = false;
+      let sims = {};
+      let now = data.axis;
+      let raf = 0;
+      let since = null;
+
+      const angleOf = (v) => 120 + (v / MAX) * 300;
+      const yOf = (v) => 195 - (v / target) * 185;
+
+      function caProgress(t) {
+        return easeOut(t / CA_DURATION);
+      }
+      function caNeedleAngle(t) {
+        const p = caProgress(t);
+        const to = angleOf(target);
+        if (!matrix) return 120 + (to - 120) * p;
+        // A matrix only knows the direction, so the turn is the shortest one.
+        let delta = (((to - 120) % 360) + 360) % 360;
+        if (delta > 180) delta -= 360;
+        return 120 + delta * p;
+      }
+      /** The number under the CA needle: a 30 Hz display link reading the needle. */
+      function caLabel(t) {
+        let last = 0;
+        for (let k = 1; k / LABEL_HZ <= t; k += 1) {
+          const tk = k / LABEL_HZ;
+          if (stall && tk > STALL.from && tk < STALL.to) continue;
+          last = tk;
+        }
+        return target * caProgress(last);
+      }
+
+      function stepPath(frames) {
+        let d = `M 0 ${yOf(0).toFixed(2)}`;
+        frames.forEach((f, i) => {
+          if (i === 0) return;
+          const x = (f.t * 1000).toFixed(1);
+          d += ` H ${x} V ${yOf(f.v).toFixed(2)}`;
+        });
+        return `${d} H ${axisMs}`;
+      }
+
+      function plot() {
+        sims = {
+          dl60: simulateLink(60, target, stall),
+          dl120: simulateLink(120, target, stall),
+        };
+        curves.dl60.setAttribute('d', stepPath(sims.dl60));
+        curves.dl120.setAttribute('d', stepPath(sims.dl120));
+        let d = '';
+        for (let ms = 0; ms <= axisMs; ms += 5) {
+          const v = target * caProgress(ms / 1000);
+          d += `${ms === 0 ? 'M' : 'L'}${ms} ${yOf(v).toFixed(2)} `;
+        }
+        curves.ca.setAttribute('d', d);
+        band.style.display = stall ? '' : 'none';
+        legendStall.hidden = !stall;
+        yTop.textContent = String(target);
+      }
+
+      const inStall = (t) => stall && t > STALL.from && t < STALL.to;
+
+      function setChip(node, text, kind) {
+        if (node.textContent !== text) node.textContent = text;
+        const cls = `viz-chip viz-chip--${kind}`;
+        if (node.className !== cls) node.className = cls;
+      }
+
+      function renderLink(id, hz, t) {
+        const lane = lanes[id];
+        const frames = sims[id];
+        const f = frameAt(frames, t);
+        const last = frames[frames.length - 1];
+        lane.needle.setAttribute(
+          'transform',
+          `rotate(${angleOf(f.v).toFixed(2)} ${C} ${C})`,
+        );
+        lane.number.textContent = String(Math.trunc(f.v));
+        if (f.settled) {
+          setChip(
+            lane.status,
+            `settled: ${last.k} frames, ${last.t.toFixed(2)} s`,
+            'level',
+          );
+        } else if (inStall(t)) {
+          setChip(lane.status, 'frozen: no callbacks', 'bad');
+        } else {
+          setChip(
+            lane.status,
+            t === 0 ? `${hz} callbacks per second` : `callback ${f.k}`,
+            'net',
+          );
+        }
+      }
+
+      function renderCA(t) {
+        const lane = lanes.ca;
+        const deg = caNeedleAngle(t);
+        lane.needle.setAttribute(
+          'transform',
+          `rotate(${deg.toFixed(2)} ${C} ${C})`,
+        );
+        const norm = ((deg % 360) + 360) % 360;
+        const inGap = norm > 60.5 && norm < 119.5;
+        lane.node.classList.toggle('is-gap', inGap);
+        // In matrix mode the read-back angle no longer maps to a value.
+        lane.number.textContent = matrix ? '—' : String(Math.trunc(caLabel(t)));
+        if (matrix) {
+          setChip(
+            lane.status,
+            target === 500
+              ? 'matrix: −60°, through the gap'
+              : 'matrix: +30°, short way is right',
+            target === 500 ? 'bad' : 'meta',
+          );
+        } else if (t >= CA_DURATION) {
+          setChip(lane.status, `settled: ${CA_DURATION.toFixed(2)} s`, 'level');
+        } else if (inStall(t)) {
+          setChip(lane.status, 'needle moves; number waits', 'sound');
+        } else {
+          setChip(lane.status, 'render server, by time', 'sound');
+        }
+      }
+
+      function render() {
+        const t = now;
+        scrub.value = String(Math.round(t * 1000));
+        tOut.textContent = `${Math.round(t * 1000)} ms`;
+        head.setAttribute('x1', String(t * 1000));
+        head.setAttribute('x2', String(t * 1000));
+        renderLink('dl60', 60, t);
+        renderLink('dl120', 120, t);
+        renderCA(t);
+      }
+
+      function frame(ts) {
+        const total = data.axis * 1000 * SLOWDOWN;
+        if (since === null) since = ts - now * 1000 * SLOWDOWN;
+        now = Math.min(data.axis, (ts - since) / 1000 / SLOWDOWN);
+        render();
+        if (ts - since < total) {
+          raf = requestAnimationFrame(frame);
+          return;
+        }
+        raf = 0;
+        since = null;
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
+      function stop() {
+        cancelAnimationFrame(raf);
+        raf = 0;
+        since = null;
+      }
+      function play() {
+        if (raf) return;
+        if (now >= data.axis) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        raf = requestAnimationFrame(frame);
+      }
+      function reset() {
+        stop();
+        now = 0;
+        render();
+      }
+
+      scrub.addEventListener('input', () => {
+        if (raf) {
+          stop();
+          root.dispatchEvent(new CustomEvent('anim:paused'));
+        }
+        now = Number(scrub.value) / 1000;
+        render();
+      });
+
+      function bindSeg(btns, apply) {
+        btns.forEach((btn) =>
+          btn.addEventListener('click', () => {
+            apply(btn);
+            btns.forEach((b) =>
+              b.setAttribute('aria-pressed', String(b === btn)),
+            );
+            plot();
+            render();
+          }),
+        );
+      }
+      bindSeg(targetBtns, (btn) => (target = Number(btn.dataset.target)));
+      bindSeg(stallBtns, (btn) => (stall = btn.dataset.stall === 'on'));
+      bindSeg(keyBtns, (btn) => (matrix = btn.dataset.key === 'matrix'));
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      plot();
+      // Until it plays, and always with reduced motion, rest on the last frame.
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-ntr]').forEach(initRace);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .ntr__bars {
+    display: grid;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .ntr__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+  }
+  .ntr__bar .viz-label {
+    min-width: 6.5rem;
+  }
+  .ntr__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+
+  .ntr__lanes {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-3);
+  }
+  .ntr__lane {
+    display: grid;
+    align-content: start;
+    justify-items: center;
+    gap: 6px;
+    padding: var(--sp-3) var(--sp-2);
+    min-width: 0;
+  }
+  .ntr__lane-head {
+    display: grid;
+    justify-items: center;
+    gap: 2px;
+    text-align: center;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .ntr__lane-title {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .ntr__lane svg {
+    display: block;
+    width: 100%;
+    max-width: 180px;
+    height: auto;
+  }
+  .ntr__lane .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+    text-align: center;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .ntr__track {
+    fill: none;
+    stroke: color-mix(in srgb, var(--fg) 10%, transparent);
+    stroke-width: 18;
+  }
+  .ntr__gap {
+    fill: color-mix(in srgb, var(--viz-meta) 8%, transparent);
+  }
+  .ntr__mark {
+    stroke: var(--fg-faint);
+    stroke-width: 3;
+  }
+  .ntr__needle {
+    stroke-width: 9;
+    stroke-linecap: round;
+    stroke: var(--viz-net);
+  }
+  .ntr__lane--ca .ntr__needle {
+    stroke: var(--viz-sound);
+  }
+  .ntr__lane--ca.is-gap .ntr__needle {
+    stroke: var(--viz-bad);
+  }
+  .ntr__hub {
+    fill: var(--fg);
+  }
+  .ntr__number {
+    font-family: var(--font-mono);
+    font-size: 44px;
+    font-weight: 600;
+    fill: var(--fg);
+    text-anchor: middle;
+    dominant-baseline: central;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ntr__scrub {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 5.5em;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-top: var(--sp-3);
+  }
+  .ntr__scrub .viz-chip {
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ntr__plot {
+    display: grid;
+    gap: 4px;
+    margin-top: var(--sp-2);
+    padding: var(--sp-3);
+  }
+  .ntr__plot-area {
+    position: relative;
+    height: 130px;
+  }
+  .ntr__plot-area svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+  .ntr__plot-area line,
+  .ntr__plot-area path {
+    vector-effect: non-scaling-stroke;
+  }
+  .ntr__stall {
+    fill: color-mix(in srgb, var(--viz-bad) 15%, transparent);
+  }
+  .ntr__grid {
+    stroke: var(--border-strong);
+    stroke-width: 1;
+  }
+  .ntr__curve {
+    fill: none;
+    stroke-width: 2.5;
+  }
+  .ntr__curve--dl60 {
+    stroke: var(--viz-net);
+  }
+  .ntr__curve--dl120 {
+    stroke: var(--viz-net);
+    stroke-width: 2;
+    stroke-dasharray: 5 4;
+  }
+  .ntr__curve--ca {
+    stroke: var(--viz-sound);
+  }
+  .ntr__head {
+    stroke: var(--fg);
+    stroke-width: 1.5;
+  }
+  .ntr__y {
+    position: absolute;
+    left: 4px;
+    transform: translateY(-50%);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-faint);
+    background: var(--viz-panel);
+    padding: 0 3px;
+  }
+  .ntr__x {
+    position: relative;
+    height: 14px;
+  }
+  .ntr__x i {
+    position: absolute;
+    top: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-style: normal;
+    color: var(--fg-faint);
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+  .ntr__x i:first-child {
+    transform: none;
+  }
+  .ntr__x i:last-child {
+    transform: translateX(-100%);
+  }
+  .ntr__legend {
+    margin-top: var(--sp-2);
+  }
+  .ntr__legend-dash i {
+    background: repeating-linear-gradient(
+      90deg,
+      var(--c) 0 3px,
+      transparent 3px 5px
+    );
+  }
+
+  @media (max-width: 560px) {
+    .ntr__lanes {
+      gap: 6px;
+    }
+    .ntr__lane {
+      padding: var(--sp-2) 4px;
+    }
+    .ntr__lane-title {
+      font-size: 10px;
+    }
+    .ntr__lane .viz-label {
+      font-size: 9.5px;
+      letter-spacing: 0.04em;
+    }
+    .ntr__lane .viz-chip {
+      padding: 3px 6px;
+      font-size: 10px;
+    }
+    .ntr__bar .viz-label {
+      min-width: 0;
+      width: 100%;
+    }
+    .ntr__scrub {
+      grid-template-columns: minmax(0, 1fr) 5.5em;
+      gap: 4px var(--sp-3);
+    }
+    .ntr__scrub .viz-label {
+      grid-column: 1 / -1;
+    }
+  }
+</style>

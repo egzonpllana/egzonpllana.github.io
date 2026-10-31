@@ -1,0 +1,578 @@
+---
+/**
+ * Angles on a y-down screen. One angle, one cos and one sin, drawn on UIKit's
+ * axes (y grows downward) and on the maths axes (y grows upward): positive
+ * angles turn clockwise on the first and counterclockwise on the second.
+ *
+ * The arc is the gauge's UIBezierPath(arcCenter:radius:startAngle:endAngle:
+ * clockwise:) with start 120° and end 60°. clockwise: true walks the direction
+ * of increasing angle (Apple's documentation: 0 to π with clockwise: true
+ * draws the bottom half), so it covers 300° over the top; clockwise: false
+ * walks the other way, the 60° at the bottom. Checked on the iOS 27.1
+ * simulator: UIBezierPath clockwise: true and CGMutablePath.addArc
+ * clockwise: false build the same 300° path; CGPath clockwise: true builds
+ * the 60° one.
+ *
+ * The readouts use the gauge's own numbers: a 300 pt view, centre (150, 150),
+ * arc radius 138 pt.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '01',
+  caption = 'Drag the handle or use the slider. cos and sin are the same numbers on both axes; only the direction of +y differs, so the same positive angle turns clockwise on a UIKit screen and counterclockwise in a maths textbook. 90° is straight down in UIKit. The arc is the gauge’s UIBezierPath from 120° to 60°: clockwise: true walks increasing angles, 300° over the top; clockwise: false walks back through the 60° at the bottom. Switch to the y-up axes and the same path runs counterclockwise, which is why CGPath’s clockwise flag reads backwards in a UIKit view.',
+} = Astro.props;
+
+const DEFAULT_ANGLE = 120;
+---
+
+<VizFrame
+  fig={fig}
+  title="Angles on a y-down screen"
+  caption={caption}
+  class="uac"
+  data-uac
+>
+  <div class="uac__controls">
+    <div class="uac__bar">
+      <span class="viz-label">axes</span>
+      <div class="viz-seg" role="group" aria-label="Coordinate system">
+        <button type="button" aria-pressed="true" data-axes="uikit"
+          >UIKit · y down</button
+        >
+        <button type="button" aria-pressed="false" data-axes="maths"
+          >maths · y up</button
+        >
+      </div>
+    </div>
+    <div class="uac__bar">
+      <span class="viz-label">arc 120° → 60°</span>
+      <div class="viz-seg" role="group" aria-label="Arc direction">
+        <button type="button" aria-pressed="false" data-arc="none">none</button>
+        <button type="button" aria-pressed="true" data-arc="cw"
+          >clockwise: true</button
+        >
+        <button type="button" aria-pressed="false" data-arc="ccw"
+          >clockwise: false</button
+        >
+      </div>
+    </div>
+    <label class="uac__slider">
+      <span class="viz-label">angle θ</span>
+      <input
+        type="range"
+        min="0"
+        max="359"
+        step="1"
+        value={DEFAULT_ANGLE}
+        data-angle
+        aria-label="Angle in degrees"
+      />
+      <span class="viz-chip viz-chip--level" data-angle-out
+        >{DEFAULT_ANGLE}°</span
+      >
+    </label>
+  </div>
+
+  <div class="uac__main">
+    <div class="uac__stage viz-panel">
+      <svg
+        viewBox="-170 -170 340 340"
+        role="img"
+        aria-label="A circle with x and y axes, a point at the chosen angle, its cosine and sine, and the gauge arc."
+        data-svg
+      >
+        <line class="uac__axis" x1="-158" y1="0" x2="158" y2="0"></line>
+        <line class="uac__axis" data-yaxis x1="0" y1="-158" x2="0" y2="158"
+        ></line>
+        <text class="uac__axis-label" x="164" y="18" text-anchor="end">+x</text>
+        <text class="uac__axis-label" data-ylabel x="8" y="160">+y</text>
+        <circle class="uac__circle" cx="0" cy="0" r="120"></circle>
+        <g data-cardinals></g>
+        <path class="uac__arc" data-arc-path d=""></path>
+        <text class="uac__arc-label" data-arc-start x="0" y="0"></text>
+        <text class="uac__arc-label" data-arc-end x="0" y="0"></text>
+        <path class="uac__sweep" data-sweep d=""></path>
+        <path class="uac__arrow" data-arrow d=""></path>
+        <line class="uac__cos" data-cos x1="0" y1="0" x2="0" y2="0"></line>
+        <line class="uac__sin" data-sin x1="0" y1="0" x2="0" y2="0"></line>
+        <line class="uac__radius" data-radius x1="0" y1="0" x2="0" y2="0"
+        ></line>
+        <text class="uac__trig" data-cos-label x="0" y="0">cos θ</text>
+        <text class="uac__trig" data-sin-label x="0" y="0">sin θ</text>
+        <circle class="uac__centre" cx="0" cy="0" r="4"></circle>
+        <g class="uac__handle" data-handle tabindex="-1">
+          <circle class="uac__hit" r="20"></circle>
+          <circle class="uac__dot" r="10"></circle>
+        </g>
+      </svg>
+    </div>
+
+    <div class="uac__read viz-panel" aria-live="polite">
+      <div>
+        <span class="viz-label">angle</span>
+        <span class="viz-chip viz-chip--level" data-out-rad></span>
+      </div>
+      <div>
+        <span class="viz-label">cos θ, sin θ</span>
+        <span class="viz-chip viz-chip--level" data-out-trig></span>
+      </div>
+      <div>
+        <span class="viz-label">point on the gauge arc</span>
+        <span class="viz-chip viz-chip--meta" data-out-x></span>
+        <span class="viz-chip viz-chip--meta" data-out-y></span>
+      </div>
+      <div>
+        <span class="viz-label">on this screen</span>
+        <span class="viz-chip viz-chip--sound" data-out-turn></span>
+      </div>
+      <div class="uac__arc-note">
+        <span class="viz-label">arc</span>
+        <span class="uac__note" data-out-arc></span>
+      </div>
+    </div>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const R = 120;
+    const SWEEP_R = 36;
+    const GAUGE = { cx: 150, cy: 150, r: 138 };
+    const CARDINALS = [
+      { deg: 0, text: '0°', rad: '0' },
+      { deg: 90, text: '90°', rad: 'π/2' },
+      { deg: 180, text: '180°', rad: 'π' },
+      { deg: 270, text: '270°', rad: '3π/2' },
+    ];
+    const NS = 'http://www.w3.org/2000/svg';
+    const rad = (d) => (d * Math.PI) / 180;
+    const fmt = (n, digits) => {
+      const v = Math.abs(n) < 5e-4 ? 0 : n;
+      return v.toFixed(digits).replace('-', '−');
+    };
+
+    /** θ as a multiple of π when it is a multiple of 15°. */
+    function piFraction(deg) {
+      if (deg === 0) return '0';
+      if (deg % 15 !== 0) return null;
+      let num = deg / 15;
+      let den = 12;
+      const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+      const g = gcd(num, den);
+      num /= g;
+      den /= g;
+      const top = num === 1 ? 'π' : `${num}π`;
+      return den === 1 ? top : `${top}/${den}`;
+    }
+
+    function initCompass(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const svg = root.querySelector('[data-svg]');
+      const input = root.querySelector('[data-angle]');
+      const angleOut = root.querySelector('[data-angle-out]');
+      const axesBtns = [...root.querySelectorAll('[data-axes]')];
+      const arcBtns = [...root.querySelectorAll('[data-arc]')];
+      const el = (sel) => root.querySelector(sel);
+      const ylabel = el('[data-ylabel]');
+      const cardinals = el('[data-cardinals]');
+      const arcPath = el('[data-arc-path]');
+      const arcStart = el('[data-arc-start]');
+      const arcEnd = el('[data-arc-end]');
+      const sweep = el('[data-sweep]');
+      const arrow = el('[data-arrow]');
+      const cos = el('[data-cos]');
+      const sin = el('[data-sin]');
+      const radius = el('[data-radius]');
+      const cosLabel = el('[data-cos-label]');
+      const sinLabel = el('[data-sin-label]');
+      const handle = el('[data-handle]');
+      const out = {
+        rad: el('[data-out-rad]'),
+        trig: el('[data-out-trig]'),
+        x: el('[data-out-x]'),
+        y: el('[data-out-y]'),
+        turn: el('[data-out-turn]'),
+        arc: el('[data-out-arc]'),
+      };
+
+      let uikit = true;
+      let arcMode = 'cw';
+      let angle = Number(input.value);
+
+      // Screen point for an angle: y flips sign on the maths axes.
+      const pt = (deg, r) => {
+        const s = uikit ? 1 : -1;
+        return [r * Math.cos(rad(deg)), s * r * Math.sin(rad(deg))];
+      };
+
+      /** An arc from a to b (degrees, b may be below a), in the current axes. */
+      function arc(a, b, r) {
+        const delta = b - a;
+        if (Math.abs(delta) < 0.01) return '';
+        const [x1, y1] = pt(a, r);
+        const [x2, y2] = pt(b, r);
+        const large = Math.abs(delta) > 180 ? 1 : 0;
+        // SVG's sweep flag 1 is clockwise on screen, like UIKit's increasing angle.
+        const sweepFlag = delta > 0 === uikit ? 1 : 0;
+        return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} ${sweepFlag} ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+      }
+
+      function setLine(node, x1, y1, x2, y2) {
+        node.setAttribute('x1', x1.toFixed(2));
+        node.setAttribute('y1', y1.toFixed(2));
+        node.setAttribute('x2', x2.toFixed(2));
+        node.setAttribute('y2', y2.toFixed(2));
+      }
+
+      function placeText(node, x, y, anchor = 'middle') {
+        node.setAttribute('x', x.toFixed(1));
+        node.setAttribute('y', y.toFixed(1));
+        node.setAttribute('text-anchor', anchor);
+      }
+
+      /** Degrees and radians on each axis, kept clear of the circle and the arc. */
+      function drawCardinals() {
+        cardinals.textContent = '';
+        CARDINALS.forEach(({ deg, text, rad: radians }) => {
+          const [x, y] = pt(deg, 1);
+          const t = document.createElementNS(NS, 'text');
+          t.setAttribute('class', 'uac__cardinal');
+          if (Math.abs(x) > 0.5) {
+            // Left and right: two short lines above the x-axis, outside the circle.
+            placeText(t, x * 166, -24, x > 0 ? 'end' : 'start');
+            t.textContent = text;
+            const second = document.createElementNS(NS, 'tspan');
+            second.setAttribute('x', String(x * 166));
+            second.setAttribute('dy', '13');
+            second.textContent = radians;
+            t.appendChild(second);
+          } else {
+            // Top and bottom: one line, left of the y-axis.
+            placeText(t, -8, y * 150 + (y > 0 ? 4 : 0), 'end');
+            t.textContent = `${text} · ${radians}`;
+          }
+          cardinals.appendChild(t);
+        });
+      }
+
+      function render() {
+        angleOut.textContent = `${angle}°`;
+        input.value = String(angle);
+        ylabel.setAttribute('y', uikit ? '160' : '-150');
+        drawCardinals();
+
+        // The gauge arc.
+        if (arcMode === 'none') {
+          arcPath.setAttribute('d', '');
+          arcStart.textContent = '';
+          arcEnd.textContent = '';
+        } else {
+          const end = arcMode === 'cw' ? 420 : 60;
+          arcPath.setAttribute('d', arc(120, end, R));
+          const [sx, sy] = pt(120, R + 20);
+          const [ex, ey] = pt(60, R + 20);
+          placeText(arcStart, sx, sy, 'end');
+          placeText(arcEnd, ex, ey, 'start');
+          arcStart.textContent = 'start 120°';
+          arcEnd.textContent = 'end 60°';
+        }
+
+        // The angle, from 0 in the direction of increasing angle.
+        sweep.setAttribute('d', angle === 0 ? '' : arc(0, angle, SWEEP_R));
+        if (angle >= 12) {
+          const [tx, ty] = pt(angle, SWEEP_R);
+          const s = uikit ? 1 : -1;
+          // Tangent in the direction of increasing angle, and the normal.
+          const dx = -Math.sin(rad(angle));
+          const dy = s * Math.cos(rad(angle));
+          const bx = tx - dx * 9;
+          const by = ty - dy * 9;
+          arrow.setAttribute(
+            'd',
+            `M ${tx.toFixed(2)} ${ty.toFixed(2)} L ${(bx - dy * 5).toFixed(2)} ${(by + dx * 5).toFixed(2)} L ${(bx + dy * 5).toFixed(2)} ${(by - dx * 5).toFixed(2)} Z`,
+          );
+        } else {
+          arrow.setAttribute('d', '');
+        }
+
+        const [px, py] = pt(angle, R);
+        setLine(cos, 0, 0, px, 0);
+        setLine(sin, px, 0, px, py);
+        setLine(radius, 0, 0, px, py);
+        handle.setAttribute(
+          'transform',
+          `translate(${px.toFixed(2)} ${py.toFixed(2)})`,
+        );
+        const cosValue = Math.cos(rad(angle));
+        const sinValue = Math.sin(rad(angle));
+        placeText(cosLabel, px / 2, py < 0 ? 16 : -8);
+        cosLabel.style.display = Math.abs(px) > 34 ? '' : 'none';
+        placeText(
+          sinLabel,
+          px + (px < 0 ? -8 : 8),
+          py / 2,
+          px < 0 ? 'end' : 'start',
+        );
+        sinLabel.style.display = Math.abs(py) > 24 ? '' : 'none';
+
+        // Readouts.
+        const pi = piFraction(angle);
+        out.rad.textContent = `${angle}° = ${pi ? `${pi} = ` : ''}${fmt(rad(angle), 3)} rad`;
+        out.trig.textContent = `${fmt(cosValue, 3)}, ${fmt(sinValue, 3)}`;
+        const gx = GAUGE.cx + GAUGE.r * cosValue;
+        const gy = GAUGE.cy + GAUGE.r * sinValue;
+        out.x.textContent = `x = 150 + 138·cos θ = ${fmt(gx, 1)}`;
+        out.y.textContent = `y = 150 + 138·sin θ = ${fmt(gy, 1)}`;
+        if (uikit) {
+          out.turn.textContent =
+            sinValue > 0.001
+              ? 'below the centre: positive angles turn clockwise'
+              : sinValue < -0.001
+                ? 'above the centre: positive angles turn clockwise'
+                : 'on the x-axis: positive angles turn clockwise';
+        } else {
+          out.turn.textContent =
+            sinValue > 0.001
+              ? 'above the centre: positive angles turn counterclockwise'
+              : sinValue < -0.001
+                ? 'below the centre: positive angles turn counterclockwise'
+                : 'on the x-axis: positive angles turn counterclockwise';
+        }
+        if (arcMode === 'none') {
+          out.arc.textContent = 'off';
+        } else if (arcMode === 'cw') {
+          out.arc.textContent = uikit
+            ? 'clockwise: true walks increasing angles, 120° → 420°: 300° over the top. The same path as CGPath addArc(clockwise: false).'
+            : 'The same path, increasing angles, in a y-up context: it now runs counterclockwise. CGPath names directions for y-up, so its flag is the opposite of UIBezierPath’s.';
+        } else {
+          out.arc.textContent = uikit
+            ? 'clockwise: false walks decreasing angles, 120° → 60°: only the 60° at the bottom.'
+            : 'Decreasing angles in a y-up context run clockwise: still the short 60° arc, now on top.';
+        }
+      }
+
+      function angleFromPointer(event) {
+        const ctm = svg.getScreenCTM();
+        if (!ctm) return;
+        const p = new DOMPoint(event.clientX, event.clientY).matrixTransform(
+          ctm.inverse(),
+        );
+        const screenDeg = (Math.atan2(p.y, p.x) * 180) / Math.PI;
+        const deg = uikit ? screenDeg : -screenDeg;
+        angle = Math.round((deg + 360) % 360) % 360;
+        render();
+      }
+
+      handle.addEventListener('pointerdown', (event) => {
+        handle.setPointerCapture(event.pointerId);
+        handle.dataset.dragging = '1';
+        event.preventDefault();
+      });
+      handle.addEventListener('pointermove', (event) => {
+        if (handle.dataset.dragging === '1') angleFromPointer(event);
+      });
+      const endDrag = () => delete handle.dataset.dragging;
+      handle.addEventListener('pointerup', endDrag);
+      handle.addEventListener('pointercancel', endDrag);
+
+      input.addEventListener('input', () => {
+        angle = Number(input.value);
+        render();
+      });
+      axesBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          uikit = btn.dataset.axes === 'uikit';
+          axesBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+      arcBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          arcMode = btn.dataset.arc;
+          arcBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-uac]').forEach(initCompass);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .uac__controls {
+    display: grid;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .uac__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+  }
+  .uac__bar .viz-label {
+    min-width: 7.5rem;
+  }
+  .uac__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+  .uac__slider {
+    display: grid;
+    grid-template-columns: 7.5rem minmax(0, 1fr) 4.5em;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+  .uac__slider .viz-chip {
+    justify-content: center;
+  }
+
+  .uac__main {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: var(--sp-3);
+    align-items: start;
+  }
+  .uac__stage {
+    padding: var(--sp-2);
+  }
+  .uac__stage svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 420px;
+    overflow: visible;
+  }
+  .uac__axis {
+    stroke: var(--viz-meta);
+    stroke-width: 1.5;
+    opacity: 0.7;
+  }
+  .uac__axis-label {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    fill: var(--viz-meta);
+  }
+  .uac__circle {
+    fill: none;
+    stroke: var(--border-strong);
+    stroke-width: 1.5;
+  }
+  /* Created by the script, so outside the scoped selector. */
+  .uac__stage :global(.uac__cardinal) {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    fill: var(--fg-muted);
+  }
+  .uac__arc {
+    fill: none;
+    stroke: color-mix(in srgb, var(--viz-sound) 55%, transparent);
+    stroke-width: 12;
+  }
+  .uac__arc-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    fill: var(--viz-sound-text);
+  }
+  .uac__sweep {
+    fill: none;
+    stroke: var(--viz-level);
+    stroke-width: 2.5;
+  }
+  .uac__arrow {
+    fill: var(--viz-level);
+  }
+  .uac__cos,
+  .uac__sin {
+    stroke: var(--viz-level);
+    stroke-width: 3;
+    stroke-dasharray: 6 4;
+  }
+  .uac__radius {
+    stroke: var(--fg-muted);
+    stroke-width: 2;
+  }
+  .uac__trig {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    fill: var(--viz-level);
+  }
+  .uac__centre {
+    fill: var(--viz-meta);
+  }
+  .uac__handle {
+    cursor: grab;
+    touch-action: none;
+  }
+  .uac__handle[data-dragging='1'] {
+    cursor: grabbing;
+  }
+  .uac__hit {
+    fill: transparent;
+  }
+  .uac__dot {
+    fill: var(--viz-sound);
+    stroke: var(--viz-panel);
+    stroke-width: 3;
+  }
+
+  .uac__read {
+    display: grid;
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .uac__read div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .uac__read .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+    font-variant-numeric: tabular-nums;
+  }
+  .uac__note {
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+
+  @media (max-width: 720px) {
+    .uac__main {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (max-width: 560px) {
+    .uac__slider {
+      grid-template-columns: minmax(0, 1fr) 4.5em;
+      gap: 4px var(--sp-3);
+    }
+    .uac__slider .viz-label {
+      grid-column: 1 / -1;
+    }
+    .uac__bar .viz-label {
+      min-width: 0;
+      width: 100%;
+    }
+  }
+</style>

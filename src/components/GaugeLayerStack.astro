@@ -1,0 +1,610 @@
+---
+/**
+ * The gauge's layers pulled apart: the conic CAGradientLayer as the square it
+ * really is, the CAShapeLayer arc that masks it, the two combined, and the
+ * whole view with a toggle per layer.
+ *
+ * Conic geometry, from CAGradientLayer.h: centred at startPoint, location 0
+ * along the vector from startPoint to endPoint, angles increasing from +x
+ * towards +y (clockwise on a y-down screen). Measured with Core Animation's
+ * renderer: the original's endPoint (0.23, 2) puts location 0 at
+ * atan2(1.5, -0.27) = 100.2°, and the red/green seam sat between 100.0° and
+ * 100.5°.
+ *
+ *   original  endPoint (0.23, 2), locations [0, 0.4, 1] (the repo's
+ *             calculateGradientLocations for three colours). The arc's
+ *             120°...420° covers locations 0.055...0.888.
+ *   fixed     endPoint (0.5, 1), locations [1/12, 1/2, 11/12], from
+ *             L = (θ - 90°) / 360°: the arc's start, top and end.
+ *
+ * CSS conic-gradient measures from 12 o'clock, clockwise, so its "from" angle
+ * is the UIKit angle + 90°. The three colours are the figure palette standing
+ * in for red, yellow and green.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '03',
+  caption = 'A CAGradientLayer always fills its whole bounds; the arc only decides which pixels survive, through the mask’s alpha. A conic gradient starts at the direction from startPoint to endPoint and turns clockwise on a y-down screen. The original’s endPoint (0.23, 2) points 100.2°, just past straight down, and its stops 0, 0.4 and 1 put pure red and pure green inside the gap: the arc starts 14% of the way from red to yellow and ends 81% of the way to green. Pointing location 0 straight down and computing the stops from the same angle formula puts each colour on a value. Switch the mask off in the last panel to see the square behind the arc. Red, amber and blue stand in for red, yellow and green.',
+} = Astro.props;
+
+const SIZE = 300;
+const C = SIZE / 2;
+const ARC_R = C - 12;
+const ARC_W = 18;
+const rad = (d: number) => (d * Math.PI) / 180;
+const pt = (deg: number, r: number) => [
+  C + r * Math.cos(rad(deg)),
+  C + r * Math.sin(rad(deg)),
+];
+const arcD = (a: number, b: number, r: number) => {
+  const [x1, y1] = pt(a, r);
+  const [x2, y2] = pt(b, r);
+  const large = Math.abs(b - a) > 180 ? 1 : 0;
+  return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+};
+const ARC_D = arcD(120, 420, ARC_R);
+const MASK_SVG = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 ${SIZE} ${SIZE}'><path d='${ARC_D}' fill='none' stroke='black' stroke-width='${ARC_W}'/></svg>`;
+const MASK_URL = `url("data:image/svg+xml,${encodeURIComponent(MASK_SVG)}")`;
+const TICKS = Array.from({ length: 11 }, (_, i) => {
+  const [x, y] = pt(120 + i * 30, 113);
+  return { x: x.toFixed(2), y: y.toFixed(2), text: String(i * 50) };
+});
+const NEEDLE_DEG = 120 + (300 / 500) * 300;
+
+const MODES = {
+  original: {
+    zero: (Math.atan2(1.5, -0.27) * 180) / Math.PI,
+    end: { x: 0.23, y: 2 },
+    stops: [
+      { at: 0, label: '0' },
+      { at: 0.4, label: '0.4' },
+      { at: 1, label: '1' },
+    ],
+  },
+  fixed: {
+    zero: 90,
+    end: { x: 0.5, y: 1 },
+    stops: [
+      { at: 1 / 12, label: '1/12' },
+      { at: 0.5, label: '1/2' },
+      { at: 11 / 12, label: '11/12' },
+    ],
+  },
+};
+const PANELS = [
+  { id: 'gradient', title: 'CAGradientLayer', sub: 'type = .conic' },
+  { id: 'mask', title: 'CAShapeLayer', sub: 'the arc, as a mask' },
+  { id: 'masked', title: 'gradient.mask = arc', sub: 'alpha decides' },
+  { id: 'view', title: 'the view', sub: 'all layers' },
+];
+---
+
+<VizFrame
+  fig={fig}
+  title="The gradient is a square; the arc is a stencil"
+  caption={caption}
+  class="glsk"
+  data-glsk
+>
+  <div class="glsk__wrap" data-wrap data-grad="original">
+    <div class="glsk__controls">
+      <div class="glsk__bar">
+        <span class="viz-label">gradient</span>
+        <div class="viz-seg" role="group" aria-label="Gradient setup">
+          <button type="button" aria-pressed="true" data-grad-btn="original"
+            >original</button
+          >
+          <button type="button" aria-pressed="false" data-grad-btn="fixed"
+            >fixed</button
+          >
+        </div>
+      </div>
+      <div class="glsk__bar">
+        <span class="viz-label">layers in the view</span>
+        <div class="glsk__toggles" role="group" aria-label="Layers">
+          <button
+            type="button"
+            class="viz-btn"
+            aria-pressed="true"
+            data-layer="mask">mask</button
+          >
+          <button
+            type="button"
+            class="viz-btn"
+            aria-pressed="true"
+            data-layer="track">track</button
+          >
+          <button
+            type="button"
+            class="viz-btn"
+            aria-pressed="true"
+            data-layer="needle">needle</button
+          >
+          <button
+            type="button"
+            class="viz-btn"
+            aria-pressed="true"
+            data-layer="labels">labels</button
+          >
+        </div>
+      </div>
+    </div>
+
+    <div class="glsk__grid">
+      {
+        PANELS.map((panel, i) => (
+          <div class="glsk__cell">
+            <div class="glsk__cap">
+              <span class="glsk__num">{i + 1}</span>
+              <span class="glsk__title">{panel.title}</span>
+              <span class="viz-label">{panel.sub}</span>
+            </div>
+            <div
+              class:list={['glsk__box', `glsk__box--${panel.id}`]}
+              data-box={panel.id}
+              style={`--arc-mask:${MASK_URL}`}
+            >
+              {panel.id === 'mask' ? (
+                <svg viewBox={`0 0 ${SIZE} ${SIZE}`} aria-hidden="true">
+                  <path class="glsk__mask-arc" d={ARC_D} />
+                </svg>
+              ) : (
+                <>
+                  {panel.id === 'view' && (
+                    <svg
+                      viewBox={`0 0 ${SIZE} ${SIZE}`}
+                      aria-hidden="true"
+                      data-part="track"
+                    >
+                      <path class="glsk__track" d={ARC_D} />
+                    </svg>
+                  )}
+                  <div
+                    class:list={[
+                      'glsk__grad',
+                      { 'glsk__grad--masked': panel.id !== 'gradient' },
+                    ]}
+                    data-grad-layer={panel.id}
+                  />
+                  <svg
+                    viewBox={`0 0 ${SIZE} ${SIZE}`}
+                    aria-hidden="true"
+                    data-overlay={panel.id}
+                  >
+                    {panel.id === 'gradient' && (
+                      <>
+                        <path class="glsk__outline" d={ARC_D} />
+                        <line
+                          class="glsk__zero"
+                          data-zero
+                          x1={C}
+                          y1={C}
+                          x2={C}
+                          y2={SIZE}
+                        />
+                        <g data-stops />
+                        <circle class="glsk__start" cx={C} cy={C} r="6" />
+                        <text class="glsk__note" data-end-note x={C} y="0" />
+                      </>
+                    )}
+                    {panel.id === 'masked' && <g data-ends />}
+                    {panel.id === 'view' && (
+                      <>
+                        <g class="glsk__labels" data-part="labels">
+                          {TICKS.map((t) => (
+                            <text x={t.x} y={t.y}>
+                              {t.text}
+                            </text>
+                          ))}
+                        </g>
+                        <g data-part="needle">
+                          <line
+                            class="glsk__needle"
+                            x1={C}
+                            y1={C}
+                            x2={C + 92}
+                            y2={C}
+                            transform={`rotate(${NEEDLE_DEG} ${C} ${C})`}
+                          />
+                          <circle class="glsk__hub" cx={C} cy={C} r="5" />
+                        </g>
+                      </>
+                    )}
+                  </svg>
+                </>
+              )}
+            </div>
+          </div>
+        ))
+      }
+    </div>
+
+    <div class="glsk__read viz-panel" aria-live="polite">
+      <div>
+        <span class="viz-label">location 0 points</span>
+        <span class="viz-chip viz-chip--meta" data-out-zero></span>
+      </div>
+      <div>
+        <span class="viz-label">the arc covers locations</span>
+        <span class="viz-chip viz-chip--level" data-out-cover></span>
+      </div>
+      <div>
+        <span class="viz-label">at the arc’s ends</span>
+        <span class="viz-chip" data-out-ends></span>
+      </div>
+    </div>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-glsk-data
+    set:html={JSON.stringify({ modes: MODES })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const C = 150;
+    const NS = 'http://www.w3.org/2000/svg';
+    const rad = (d) => (d * Math.PI) / 180;
+    const pt = (deg, r) => [
+      C + r * Math.cos(rad(deg)),
+      C + r * Math.sin(rad(deg)),
+    ];
+
+    /** Where between two stops a location falls: "14% of the way from red to yellow". */
+    function describe(loc, stops, names) {
+      if (loc <= stops[0].at) return `pure ${names[0]}`;
+      for (let i = 0; i < stops.length - 1; i += 1) {
+        const a = stops[i].at;
+        const b = stops[i + 1].at;
+        if (loc <= b) {
+          const t = (loc - a) / (b - a);
+          if (t < 0.005) return `pure ${names[i]}`;
+          if (t > 0.995) return `pure ${names[i + 1]}`;
+          return `${Math.round(t * 100)}% from ${names[i]} to ${names[i + 1]}`;
+        }
+      }
+      return `pure ${names[names.length - 1]}`;
+    }
+
+    function initStack(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-glsk-data]').textContent,
+      );
+      const el = (sel) => root.querySelector(sel);
+      const wrap = el('[data-wrap]');
+      const gradBtns = [...root.querySelectorAll('[data-grad-btn]')];
+      const layerBtns = [...root.querySelectorAll('[data-layer]')];
+      const zero = el('[data-zero]');
+      const stopsLayer = el('[data-stops]');
+      const endsLayer = el('[data-ends]');
+      const endNote = el('[data-end-note]');
+      const viewGrad = el('[data-grad-layer="view"]');
+      const out = {
+        zero: el('[data-out-zero]'),
+        cover: el('[data-out-cover]'),
+        ends: el('[data-out-ends]'),
+      };
+      const names = ['red', 'yellow', 'green'];
+
+      function text(parent, cls, x, y, value, anchor = 'middle') {
+        const t = document.createElementNS(NS, 'text');
+        t.setAttribute('class', cls);
+        t.setAttribute('x', x.toFixed(2));
+        t.setAttribute('y', y.toFixed(2));
+        t.setAttribute('text-anchor', anchor);
+        t.textContent = value;
+        parent.appendChild(t);
+      }
+
+      function render() {
+        const id = wrap.dataset.grad;
+        const mode = data.modes[id];
+
+        // Panel 1: location 0 and the stops around the edge.
+        const [zx, zy] = pt(mode.zero, 212);
+        zero.setAttribute('x2', zx.toFixed(2));
+        zero.setAttribute('y2', zy.toFixed(2));
+        stopsLayer.textContent = '';
+        mode.stops.forEach((stop) => {
+          const deg = mode.zero + stop.at * 360;
+          const [x1, y1] = pt(deg, 128);
+          const [x2, y2] = pt(deg, 150);
+          const tick = document.createElementNS(NS, 'line');
+          tick.setAttribute('class', 'glsk__stop');
+          tick.setAttribute('x1', x1.toFixed(2));
+          tick.setAttribute('y1', y1.toFixed(2));
+          tick.setAttribute('x2', x2.toFixed(2));
+          tick.setAttribute('y2', y2.toFixed(2));
+          stopsLayer.appendChild(tick);
+          // Labels sit inside; the 0 and 1 stops share a direction in the original.
+          const shift = stop.at === 1 ? 14 : stop.at === 0 ? -14 : 0;
+          const [lx, ly] = pt(deg + shift, 104);
+          text(stopsLayer, 'glsk__stop-label', lx, ly, stop.label);
+        });
+        endNote.textContent =
+          id === 'original' ? 'endPoint (0.23, 2) ↓' : 'endPoint (0.5, 1)';
+        endNote.setAttribute('y', '292');
+
+        // Panel 3: the locations at the arc's two ends.
+        const startLoc = ((((120 - mode.zero) % 360) + 360) % 360) / 360;
+        const endLoc = ((((420 - mode.zero) % 360) + 360) % 360) / 360;
+        endsLayer.textContent = '';
+        // Just below the two ends of the arc, inside the gap.
+        const [sx] = pt(120, 138);
+        const [ex] = pt(60, 138);
+        text(endsLayer, 'glsk__end-label', sx, 288, startLoc.toFixed(3));
+        text(endsLayer, 'glsk__end-label', ex, 288, endLoc.toFixed(3));
+
+        out.zero.textContent =
+          id === 'original'
+            ? 'atan2(1.5, −0.27) = 100.2°, just past straight down'
+            : '90°, straight down, the middle of the gap';
+        out.cover.textContent = `${startLoc.toFixed(3)} → ${endLoc.toFixed(3)}`;
+        const startText = describe(startLoc, mode.stops, names);
+        const endText = describe(endLoc, mode.stops, names);
+        out.ends.textContent = `start: ${startText} · end: ${endText}`;
+        out.ends.className = `viz-chip ${id === 'original' ? 'viz-chip--bad' : 'viz-chip--sound'}`;
+      }
+
+      gradBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          wrap.dataset.grad = btn.dataset.gradBtn;
+          gradBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+      layerBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const on = btn.getAttribute('aria-pressed') !== 'true';
+          btn.setAttribute('aria-pressed', String(on));
+          const layer = btn.dataset.layer;
+          if (layer === 'mask') {
+            viewGrad.classList.toggle('glsk__grad--masked', on);
+            return;
+          }
+          root
+            .querySelectorAll(`[data-part="${layer}"]`)
+            .forEach((node) => node.toggleAttribute('hidden', !on));
+        }),
+      );
+
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-glsk]').forEach(initStack);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .glsk__controls {
+    display: grid;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .glsk__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+  }
+  .glsk__bar .viz-label {
+    min-width: 8.5rem;
+  }
+  .glsk__toggles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .glsk__toggles .viz-btn[aria-pressed='false'] {
+    color: var(--fg-faint);
+    text-decoration: line-through;
+  }
+  .glsk__toggles .viz-btn[aria-pressed='true'] {
+    border-color: var(--accent);
+  }
+
+  .glsk__grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--sp-3);
+  }
+  .glsk__cell {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    min-width: 0;
+  }
+  .glsk__cap {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 6px;
+  }
+  .glsk__num {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--viz-meta);
+  }
+  .glsk__title {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .glsk__cap .viz-label {
+    width: 100%;
+  }
+
+  .glsk__box {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--viz-panel);
+    overflow: hidden;
+  }
+  .glsk__box svg,
+  .glsk__grad {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  /* Transparent pixels, drawn as a checkerboard. */
+  .glsk__box--mask {
+    background-color: var(--viz-panel);
+    background-image:
+      linear-gradient(45deg, var(--viz-grid) 25%, transparent 25%),
+      linear-gradient(-45deg, var(--viz-grid) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, var(--viz-grid) 75%),
+      linear-gradient(-45deg, transparent 75%, var(--viz-grid) 75%);
+    background-size: 16px 16px;
+    background-position:
+      0 0,
+      0 8px,
+      8px -8px,
+      -8px 0;
+  }
+  .glsk__mask-arc {
+    fill: none;
+    stroke: var(--fg);
+    stroke-width: 18;
+  }
+
+  /* CSS conic-gradient starts at 12 o'clock, so "from" is the UIKit angle + 90°. */
+  .glsk__wrap[data-grad='original'] .glsk__grad {
+    background: conic-gradient(
+      from 190.204deg,
+      var(--viz-bad) 0%,
+      var(--viz-level) 40%,
+      var(--viz-sound) 100%
+    );
+  }
+  .glsk__wrap[data-grad='fixed'] .glsk__grad {
+    background: conic-gradient(
+      from 180deg,
+      var(--viz-bad) 8.333%,
+      var(--viz-level) 50%,
+      var(--viz-sound) 91.667%
+    );
+  }
+  .glsk__grad--masked {
+    -webkit-mask: var(--arc-mask) center / 100% 100% no-repeat;
+    mask: var(--arc-mask) center / 100% 100% no-repeat;
+  }
+
+  .glsk__outline {
+    fill: none;
+    stroke: var(--viz-panel);
+    stroke-width: 1.5;
+    stroke-dasharray: 5 5;
+  }
+  .glsk__zero {
+    stroke: var(--viz-panel);
+    stroke-width: 3;
+    stroke-dasharray: 8 5;
+  }
+  .glsk__start {
+    fill: var(--viz-panel);
+    stroke: var(--fg);
+    stroke-width: 2;
+  }
+  /* Stops and end labels are created by the script. */
+  .glsk__box :global(.glsk__stop) {
+    stroke: var(--fg);
+    stroke-width: 4;
+  }
+  .glsk__box :global(.glsk__stop-label),
+  .glsk__note,
+  .glsk__box :global(.glsk__end-label) {
+    font-family: var(--font-mono);
+    font-size: 20px;
+    font-weight: 700;
+    fill: var(--fg);
+    paint-order: stroke;
+    stroke: var(--viz-panel);
+    stroke-width: 4px;
+    dominant-baseline: central;
+  }
+  .glsk__note {
+    font-size: 17px;
+    text-anchor: middle;
+  }
+  .glsk__box :global(.glsk__end-label) {
+    font-size: 19px;
+    text-anchor: middle;
+  }
+
+  .glsk__track {
+    fill: none;
+    stroke: color-mix(in srgb, var(--fg) 8%, transparent);
+    stroke-width: 18;
+  }
+  .glsk__labels text {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    fill: var(--fg-muted);
+    text-anchor: middle;
+    dominant-baseline: central;
+  }
+  .glsk__needle {
+    stroke: var(--fg);
+    stroke-width: 5;
+    stroke-linecap: round;
+  }
+  .glsk__hub {
+    fill: var(--fg);
+  }
+
+  .glsk__read {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-3);
+    margin-top: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .glsk__read div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .glsk__read .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  @media (max-width: 720px) {
+    .glsk__grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .glsk__read {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (max-width: 560px) {
+    .glsk__bar .viz-label {
+      min-width: 0;
+      width: 100%;
+    }
+  }
+</style>

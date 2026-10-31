@@ -1,0 +1,513 @@
+---
+/**
+ * The gauge, rebuilt from the article's GaugeView in its own coordinates: a
+ * 300 x 300 pt view, centre (150, 150), arc radius 138 (side / 2 - 12), arc
+ * width 18, labels at 113 (radius - width / 2 - 16), needle 92 long
+ * (side / 2 - width - 40), value label 90 below the centre. SVG is y-down like
+ * UIKit, so the angles are used as they are: rotate(θ) turns the needle
+ * clockwise, like transform.rotation.z.
+ *
+ * The gradient is the article's: conic, startPoint (0.5, 0.5), endPoint
+ * (0.5, 1), so location 0 points straight down (CSS conic "from 180deg"), and
+ * the stops sit at 1/12, 1/2 and 11/12: the arc's start, top and end. It is a
+ * real conic gradient masked by the arc, as in Core Animation. The three
+ * colours are the figure palette standing in for systemRed, systemYellow and
+ * systemGreen.
+ *
+ * Tick modes: the representable's default .range(0...500, 10 parts), and an
+ * uneven .values list placed two ways: by index, as the repo's
+ * calculateLabelAngle does, and by value, through the same angle(for:) as the
+ * needle.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '02',
+  caption = 'Move the value. One function turns it into an angle, θ = 120° + f × 300°, and every mark on the dial goes through it: the needle, the tick labels and, in the next section, the gradient stops. The original computed the needle as 210° + f × 300° and then subtracted 90° before taking cos and sin. That is the same angle: the −90° cancels the extra 90° in 210°, it does not convert between conventions. Its labels, though, were spaced by index, not by value. With an uneven .values list they drift away from the values the needle points at. The gradient’s red, amber and blue stand in for the code’s systemRed, systemYellow and systemGreen.',
+} = Astro.props;
+
+const SIZE = 300;
+const C = SIZE / 2;
+const ARC_R = C - 12;
+const ARC_W = 18;
+const START = 120;
+const END = 420;
+const rad = (d: number) => (d * Math.PI) / 180;
+const pt = (deg: number, r: number) => [
+  C + r * Math.cos(rad(deg)),
+  C + r * Math.sin(rad(deg)),
+];
+const [sx, sy] = pt(START, ARC_R);
+const [ex, ey] = pt(END, ARC_R);
+// UIBezierPath(arcCenter: c, radius: 138, startAngle: 120°, endAngle: 420°, clockwise: true)
+const ARC_D = `M ${sx.toFixed(2)} ${sy.toFixed(2)} A ${ARC_R} ${ARC_R} 0 1 1 ${ex.toFixed(2)} ${ey.toFixed(2)}`;
+const MASK_SVG = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 ${SIZE} ${SIZE}'><path d='${ARC_D}' fill='none' stroke='black' stroke-width='${ARC_W}'/></svg>`;
+const MASK_URL = `url("data:image/svg+xml,${encodeURIComponent(MASK_SVG)}")`;
+const DEFAULT_VALUE = 300;
+---
+
+<VizFrame
+  fig={fig}
+  title="One formula places every mark"
+  caption={caption}
+  class="gvl"
+  data-gvl
+>
+  <div class="gvl__controls">
+    <label class="gvl__slider">
+      <span class="viz-label">setValue</span>
+      <input
+        type="range"
+        min="0"
+        max="500"
+        step="1"
+        value={DEFAULT_VALUE}
+        data-value
+        aria-label="Gauge value, 0 to 500"
+      />
+      <span class="viz-chip viz-chip--level" data-value-out
+        >{DEFAULT_VALUE}</span
+      >
+    </label>
+    <div class="gvl__bar">
+      <span class="viz-label">tick labels</span>
+      <div class="viz-seg" role="group" aria-label="Tick labels">
+        <button type="button" aria-pressed="true" data-ticks="range"
+          >.range(0…500, 10)</button
+        >
+        <button type="button" aria-pressed="false" data-ticks="index"
+          >.values, by index</button
+        >
+        <button type="button" aria-pressed="false" data-ticks="value"
+          >.values, by value</button
+        >
+      </div>
+    </div>
+    <div class="gvl__bar">
+      <span class="viz-label">construction</span>
+      <div class="viz-seg" role="group" aria-label="Construction lines">
+        <button type="button" aria-pressed="true" data-construction="on"
+          >show</button
+        >
+        <button type="button" aria-pressed="false" data-construction="off"
+          >hide</button
+        >
+      </div>
+    </div>
+  </div>
+
+  <div class="gvl__main">
+    <div class="gvl__panel viz-panel">
+      <div
+        class="gvl__dial"
+        data-dial
+        role="img"
+        aria-label="A 300 degree gauge from 0 to 500 with a gradient arc, tick labels and a needle."
+      >
+        <svg viewBox={`0 0 ${SIZE} ${SIZE}`} aria-hidden="true">
+          <path class="gvl__track" d={ARC_D}></path>
+        </svg>
+        <div class="gvl__grad" style={`--arc-mask:${MASK_URL}`}></div>
+        <svg viewBox={`0 0 ${SIZE} ${SIZE}`} aria-hidden="true" data-top>
+          <g class="gvl__construction" data-construction-layer>
+            <path class="gvl__gap" data-gap d=""></path>
+            <line class="gvl__ray" data-ray-start x1={C} y1={C} x2="0" y2="0"
+            ></line>
+            <line class="gvl__ray" data-ray-end x1={C} y1={C} x2="0" y2="0"
+            ></line>
+            <text class="gvl__ray-label" data-ray-start-label x="0" y="0"
+              >120°</text
+            >
+            <text class="gvl__ray-label" data-ray-end-label x="0" y="0"
+              >420° = 60°</text
+            >
+            <path class="gvl__theta" data-theta d=""></path>
+            <text class="gvl__theta-label" data-theta-label x="0" y="0">θ</text>
+          </g>
+          <g data-ticks-layer></g>
+          <text class="gvl__value" data-value-label x={C} y={C + 90}
+            >{DEFAULT_VALUE}</text
+          >
+          <line
+            class="gvl__needle"
+            data-needle
+            x1={C}
+            y1={C}
+            x2={C + 92}
+            y2={C}
+            transform={`rotate(${START} ${C} ${C})`}></line>
+          <circle class="gvl__hub" cx={C} cy={C} r="5"></circle>
+        </svg>
+      </div>
+    </div>
+
+    <div class="gvl__read viz-panel" aria-live="polite">
+      <div>
+        <span class="viz-label">fraction(for:)</span>
+        <span class="viz-chip viz-chip--level" data-out-f></span>
+      </div>
+      <div>
+        <span class="viz-label">angle(for:)</span>
+        <span class="viz-chip viz-chip--level" data-out-angle></span>
+        <span class="viz-chip viz-chip--level" data-out-rad></span>
+      </div>
+      <div>
+        <span class="viz-label">needle tip, 92 pt from (150, 150)</span>
+        <span class="viz-chip viz-chip--meta" data-out-tip></span>
+      </div>
+      <div>
+        <span class="viz-label">the original’s spelling</span>
+        <span class="viz-chip" data-out-original></span>
+      </div>
+      <div>
+        <span class="viz-label">tick labels</span>
+        <span class="viz-chip" data-out-ticks></span>
+      </div>
+    </div>
+  </div>
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const C = 150;
+    const LABEL_R = 113;
+    const NEEDLE = 92;
+    const START = 120;
+    const SWEEP = 300;
+    const MAX = 500;
+    const RANGE_TICKS = Array.from({ length: 11 }, (_, i) => i * 50);
+    const UNEVEN = [0, 50, 100, 200, 350, 500];
+    const NS = 'http://www.w3.org/2000/svg';
+    const rad = (d) => (d * Math.PI) / 180;
+    const pt = (deg, r) => [
+      C + r * Math.cos(rad(deg)),
+      C + r * Math.sin(rad(deg)),
+    ];
+    const angleFor = (v) => START + (v / MAX) * SWEEP;
+    const fmt = (n, digits) => {
+      const v = Math.abs(n) < 5e-4 ? 0 : n;
+      return v.toFixed(digits).replace('-', '−');
+    };
+
+    function arc(a, b, r) {
+      const [x1, y1] = pt(a, r);
+      const [x2, y2] = pt(b, r);
+      const large = Math.abs(b - a) > 180 ? 1 : 0;
+      return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+    }
+
+    function initLab(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const el = (sel) => root.querySelector(sel);
+      const input = el('[data-value]');
+      const valueOut = el('[data-value-out]');
+      const needle = el('[data-needle]');
+      const valueLabel = el('[data-value-label]');
+      const ticksLayer = el('[data-ticks-layer]');
+      const construction = el('[data-construction-layer]');
+      const theta = el('[data-theta]');
+      const thetaLabel = el('[data-theta-label]');
+      const tickBtns = [...root.querySelectorAll('[data-ticks]')];
+      const consBtns = [...root.querySelectorAll('[data-construction]')];
+      const out = {
+        f: el('[data-out-f]'),
+        angle: el('[data-out-angle]'),
+        rad: el('[data-out-rad]'),
+        tip: el('[data-out-tip]'),
+        original: el('[data-out-original]'),
+        ticks: el('[data-out-ticks]'),
+      };
+      let mode = 'range';
+
+      // Static construction: the gap, and the start and end rays.
+      el('[data-gap]').setAttribute(
+        'd',
+        `M ${C} ${C} L ${pt(60, 150)
+          .map((n) => n.toFixed(2))
+          .join(' ')} A 150 150 0 0 1 ${pt(120, 150)
+          .map((n) => n.toFixed(2))
+          .join(' ')} Z`,
+      );
+      [
+        ['[data-ray-start]', '[data-ray-start-label]', 120, 'end'],
+        ['[data-ray-end]', '[data-ray-end-label]', 60, 'start'],
+      ].forEach(([lineSel, labelSel, deg, anchor]) => {
+        const [x, y] = pt(deg, 149);
+        const line = el(lineSel);
+        line.setAttribute('x2', x.toFixed(2));
+        line.setAttribute('y2', y.toFixed(2));
+        const label = el(labelSel);
+        label.setAttribute('x', String(C + (anchor === 'end' ? -10 : 10)));
+        label.setAttribute('y', String(C + 142));
+        label.setAttribute('text-anchor', anchor);
+      });
+
+      function drawTicks() {
+        ticksLayer.textContent = '';
+        const values = mode === 'range' ? RANGE_TICKS : UNEVEN;
+        let drift = 0;
+        values.forEach((v, i) => {
+          const byIndex = START + (i / (values.length - 1)) * SWEEP;
+          const deg = mode === 'index' ? byIndex : angleFor(v);
+          const off = Math.abs(deg - angleFor(v)) > 0.5;
+          if (off) {
+            drift += 1;
+            // Where the label belongs, through the needle's formula.
+            const [gx, gy] = pt(angleFor(v), LABEL_R);
+            const ghost = document.createElementNS(NS, 'circle');
+            ghost.setAttribute('class', 'gvl__ghost');
+            ghost.setAttribute('cx', gx.toFixed(2));
+            ghost.setAttribute('cy', gy.toFixed(2));
+            ghost.setAttribute('r', '3');
+            ticksLayer.appendChild(ghost);
+          }
+          const [x, y] = pt(deg, LABEL_R);
+          const t = document.createElementNS(NS, 'text');
+          t.setAttribute(
+            'class',
+            off ? 'gvl__tick gvl__tick--off' : 'gvl__tick',
+          );
+          t.setAttribute('x', x.toFixed(2));
+          t.setAttribute('y', y.toFixed(2));
+          t.textContent = String(v);
+          ticksLayer.appendChild(t);
+        });
+        if (mode === 'range') {
+          out.ticks.textContent = '11 labels, 50 apart: index and value agree';
+          out.ticks.className = 'viz-chip viz-chip--meta';
+        } else if (mode === 'index') {
+          out.ticks.textContent = `${drift} of ${values.length} labels off their value`;
+          out.ticks.className = 'viz-chip viz-chip--bad';
+        } else {
+          out.ticks.textContent = 'every label through angle(for:)';
+          out.ticks.className = 'viz-chip viz-chip--sound';
+        }
+      }
+
+      function render() {
+        const v = Number(input.value);
+        const f = v / MAX;
+        const deg = angleFor(v);
+        valueOut.textContent = String(v);
+        valueLabel.textContent = String(v);
+        needle.setAttribute('transform', `rotate(${deg.toFixed(2)} ${C} ${C})`);
+
+        theta.setAttribute('d', deg - START < 0.5 ? '' : arc(START, deg, 34));
+        const [lx, ly] = pt((START + deg) / 2, 46);
+        thetaLabel.setAttribute('x', lx.toFixed(2));
+        thetaLabel.setAttribute('y', ly.toFixed(2));
+        thetaLabel.style.display = deg - START < 20 ? 'none' : '';
+
+        const [tx, ty] = pt(deg, NEEDLE);
+        out.f.textContent = `(${v} − 0) / (500 − 0) = ${fmt(f, 3)}`;
+        out.angle.textContent = `120° + ${fmt(f, 3)} × 300° = ${fmt(deg, 1)}°`;
+        out.rad.textContent = `${fmt(rad(deg), 3)} rad`;
+        out.tip.textContent = `(${fmt(tx, 1)}, ${fmt(ty, 1)})`;
+        out.original.textContent = `210° + ${fmt(f * SWEEP, 1)}° − 90° = ${fmt(deg, 1)}°`;
+      }
+
+      input.addEventListener('input', render);
+      tickBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          mode = btn.dataset.ticks;
+          tickBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          drawTicks();
+        }),
+      );
+      consBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          construction.style.display =
+            btn.dataset.construction === 'on' ? '' : 'none';
+          consBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+        }),
+      );
+
+      drawTicks();
+      render();
+    }
+
+    const boot = () => document.querySelectorAll('[data-gvl]').forEach(initLab);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .gvl__controls {
+    display: grid;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .gvl__slider {
+    display: grid;
+    grid-template-columns: 7.5rem minmax(0, 1fr) 4.5em;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+  .gvl__slider .viz-chip {
+    justify-content: center;
+  }
+  .gvl__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+  }
+  .gvl__bar .viz-label {
+    min-width: 7.5rem;
+  }
+  .gvl__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+
+  .gvl__main {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: var(--sp-3);
+    align-items: start;
+  }
+  .gvl__panel {
+    padding: var(--sp-3);
+  }
+  .gvl__dial {
+    position: relative;
+    width: 100%;
+    max-width: 340px;
+    aspect-ratio: 1;
+    margin: 0 auto;
+  }
+  .gvl__dial svg,
+  .gvl__grad {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .gvl__dial svg {
+    overflow: visible;
+  }
+  .gvl__track {
+    fill: none;
+    stroke: color-mix(in srgb, var(--fg) 8%, transparent);
+    stroke-width: 18;
+  }
+  /* A conic gradient over the whole square, cut to the arc by a mask: the
+     same two layers as CAGradientLayer and its CAShapeLayer mask. */
+  .gvl__grad {
+    background: conic-gradient(
+      from 180deg,
+      var(--viz-bad) 8.333%,
+      var(--viz-level) 50%,
+      var(--viz-sound) 91.667%
+    );
+    -webkit-mask: var(--arc-mask) center / 100% 100% no-repeat;
+    mask: var(--arc-mask) center / 100% 100% no-repeat;
+  }
+  .gvl__gap {
+    fill: color-mix(in srgb, var(--viz-meta) 10%, transparent);
+  }
+  .gvl__ray {
+    stroke: var(--viz-meta);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 4;
+  }
+  .gvl__ray-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    fill: var(--viz-meta);
+  }
+  .gvl__theta {
+    fill: none;
+    stroke: var(--viz-level);
+    stroke-width: 2.5;
+  }
+  .gvl__theta-label {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 700;
+    fill: var(--viz-level);
+    text-anchor: middle;
+    dominant-baseline: central;
+  }
+  /* Ticks are created by the script, so outside the scoped selector. */
+  .gvl__dial :global(.gvl__tick) {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    fill: var(--fg-muted);
+    text-anchor: middle;
+    dominant-baseline: central;
+  }
+  .gvl__dial :global(.gvl__tick--off) {
+    fill: var(--viz-bad);
+    font-weight: 700;
+  }
+  .gvl__dial :global(.gvl__ghost) {
+    fill: none;
+    stroke: var(--viz-meta);
+    stroke-width: 1.5;
+  }
+  .gvl__value {
+    font-family: var(--font-mono);
+    font-size: 28px;
+    font-weight: 600;
+    fill: var(--fg);
+    text-anchor: middle;
+    dominant-baseline: central;
+    font-variant-numeric: tabular-nums;
+  }
+  .gvl__needle {
+    stroke: var(--fg);
+    stroke-width: 4;
+    stroke-linecap: round;
+  }
+  .gvl__hub {
+    fill: var(--fg);
+  }
+
+  .gvl__read {
+    display: grid;
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .gvl__read div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .gvl__read .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+    font-variant-numeric: tabular-nums;
+  }
+
+  @media (max-width: 720px) {
+    .gvl__main {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (max-width: 560px) {
+    .gvl__slider {
+      grid-template-columns: minmax(0, 1fr) 4.5em;
+      gap: 4px var(--sp-3);
+    }
+    .gvl__slider .viz-label {
+      grid-column: 1 / -1;
+    }
+    .gvl__bar .viz-label {
+      min-width: 0;
+      width: 100%;
+    }
+  }
+</style>
