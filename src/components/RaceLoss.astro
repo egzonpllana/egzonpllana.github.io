@@ -1,0 +1,300 @@
+---
+/**
+ * The race from the study: 400,000 increments from 8 concurrent writers
+ * against a plain `var`, versus the same count behind a `Mutex`. The run is
+ * replayed as two counters: increments attempted, and increments that landed.
+ * The lost part is the hatched remainder of the bar. Numbers are the author's
+ * recorded run; the replay speed is not a measurement.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '03',
+  caption = 'An unsynchronised counter rarely crashes. In this recorded run it lost more than half of its increments and reported the rest as the total, with exit code 0 and no diagnostic; the loss varies from run to run. The Mutex version records exactly 400,000 every run, and Swift 6 accepts it as Sendable without @unchecked. Swift 6 rejects the unsynchronised version outright: it only compiles behind an opt-out such as nonisolated(unsafe) or @unchecked Sendable, which is exactly where races survive in real SDKs.',
+} = Astro.props;
+
+const TOTAL = 400_000;
+const LOST = 213_622;
+const fmt = (n: number) => n.toLocaleString('en-GB');
+---
+
+<VizFrame
+  fig={fig}
+  title="A data race that does not crash"
+  caption={caption}
+  class="rl"
+  data-rl
+  label={`Two counters receive 400,000 increments from 8 writers. The unsynchronised one records ${fmt(TOTAL - LOST)}; the Mutex records all ${fmt(TOTAL)}.`}
+>
+  <div slot="tools">
+    <AnimControls label="Run" />
+  </div>
+
+  <div class="rl__head">
+    <span class="viz-label">8 concurrent writers · 50,000 increments each</span>
+    <span class="viz-mono rl__attempted">attempted <b data-attempted>0</b></span
+    >
+  </div>
+
+  <div class="rl__rows">
+    <div class="rl__row" data-row="racy">
+      <div class="rl__name">
+        <code>var count = 0</code>
+        <span class="rl__sub">no synchronisation · nonisolated(unsafe)</span>
+      </div>
+      <div class="rl__track">
+        <span class="rl__fill rl__fill--racy" data-fill></span>
+        <span class="rl__lost viz-mono" data-lost hidden
+          >{fmt(LOST)} lost · {((LOST / TOTAL) * 100).toFixed(1)}%</span
+        >
+      </div>
+      <span class="rl__value viz-mono" data-value>0</span>
+    </div>
+
+    <div class="rl__row" data-row="mutex">
+      <div class="rl__name">
+        <code>Mutex&lt;Int&gt;</code>
+        <span class="rl__sub">state lives inside the lock</span>
+      </div>
+      <div class="rl__track">
+        <span class="rl__fill rl__fill--ok" data-fill></span>
+      </div>
+      <span class="rl__value rl__value--ok viz-mono" data-value>0</span>
+    </div>
+  </div>
+
+  <p class="rl__console viz-mono" data-console hidden>
+    <span>Program ended with exit code: 0</span>
+    <span class="rl__console-note">no crash · no warning · wrong total</span>
+  </p>
+
+  <script
+    is:inline
+    type="application/json"
+    data-rl-data
+    set:html={JSON.stringify({ total: TOTAL, lost: LOST })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const DURATION_MS = 2600;
+
+    function initRaceLoss(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(root.querySelector('[data-rl-data]').textContent);
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const attemptedEl = root.querySelector('[data-attempted]');
+      const racy = root.querySelector('[data-row="racy"]');
+      const mutex = root.querySelector('[data-row="mutex"]');
+      const lostEl = root.querySelector('[data-lost]');
+      const consoleEl = root.querySelector('[data-console]');
+      const landedRatio = (data.total - data.lost) / data.total;
+      const fmt = (n) => Math.round(n).toLocaleString('en-GB');
+
+      let progress = 0;
+      let raf = 0;
+      let since = null;
+
+      function render() {
+        const attempted = data.total * progress;
+        const racyLanded = attempted * landedRatio;
+        attemptedEl.textContent = fmt(attempted);
+        racy.querySelector('[data-fill]').style.width =
+          `${(racyLanded / data.total) * 100}%`;
+        racy.querySelector('[data-value]').textContent = fmt(racyLanded);
+        mutex.querySelector('[data-fill]').style.width = `${progress * 100}%`;
+        mutex.querySelector('[data-value]').textContent = fmt(attempted);
+        const done = progress >= 1;
+        lostEl.hidden = !done;
+        consoleEl.hidden = !done;
+        lostEl.style.left = `${landedRatio * 100}%`;
+      }
+
+      function frame(ts) {
+        if (since === null) since = ts - progress * DURATION_MS;
+        const t = Math.min(1, (ts - since) / DURATION_MS);
+        progress = t;
+        render();
+        if (t < 1) {
+          raf = requestAnimationFrame(frame);
+          return;
+        }
+        raf = 0;
+        since = null;
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
+      function play() {
+        if (raf) return;
+        if (progress >= 1) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        raf = requestAnimationFrame(frame);
+      }
+
+      function pause() {
+        cancelAnimationFrame(raf);
+        raf = 0;
+        since = null;
+      }
+
+      function reset() {
+        pause();
+        progress = 0;
+        render();
+      }
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause,
+        reset,
+      });
+
+      // Reduced motion rests on the recorded outcome.
+      progress = reduce ? 1 : 0;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-rl]').forEach(initRaceLoss);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .rl__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .rl__attempted {
+    font-size: 11.5px;
+    color: var(--fg-muted);
+  }
+  .rl__attempted b {
+    display: inline-block;
+    min-width: 7ch;
+    text-align: right;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rl__rows {
+    display: grid;
+    gap: var(--sp-4);
+  }
+  .rl__row {
+    display: grid;
+    grid-template-columns: 11rem minmax(0, 1fr) 6rem;
+    gap: var(--sp-3);
+    align-items: center;
+  }
+  .rl__name {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .rl__name code {
+    justify-self: start;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .rl__sub {
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+  .rl__track {
+    position: relative;
+    height: 28px;
+    overflow: hidden;
+    background: repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--viz-bad) 16%, transparent) 0 4px,
+      transparent 4px 9px
+    );
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .rl__row[data-row='mutex'] .rl__track {
+    background: color-mix(in srgb, var(--fg) 5%, transparent);
+  }
+  .rl__fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0;
+    border-radius: 6px;
+  }
+  .rl__fill--racy {
+    background: color-mix(in srgb, var(--viz-sound) 40%, var(--viz-panel));
+  }
+  .rl__fill--ok {
+    background: var(--viz-sound);
+  }
+  .rl__lost {
+    position: absolute;
+    top: 50%;
+    padding-left: 0.6rem;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--viz-bad);
+    transform: translateY(-50%);
+    font-variant-numeric: tabular-nums;
+  }
+  .rl__value {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    text-align: right;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+  .rl__value--ok {
+    color: var(--viz-sound-text);
+  }
+
+  .rl__console {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 4px var(--sp-3);
+    margin: var(--sp-4) 0 0;
+    padding: var(--sp-2) var(--sp-3);
+    font-size: 11.5px;
+    color: var(--fg-muted);
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--viz-bad);
+    border-radius: var(--radius-sm);
+  }
+  .rl__console-note {
+    color: var(--viz-bad);
+  }
+
+  @media (max-width: 560px) {
+    .rl__row {
+      grid-template-columns: minmax(0, 1fr) 5.5rem;
+    }
+    .rl__track {
+      grid-column: 1 / -1;
+      grid-row: 2;
+    }
+  }
+</style>

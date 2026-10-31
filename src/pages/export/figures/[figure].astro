@@ -1,0 +1,151 @@
+---
+/**
+ * One page per figure, sized and coloured for rasterising.
+ *
+ * The article renders in the site's own theme. These pages render the same
+ * figures ink on white, with the destination's yellow only as a highlight,
+ * because the images are pasted into someone else's site. Animated figures
+ * are captured with reduced motion forced on, so each rests on the frame it
+ * argues from. Nothing here touches the article itself.
+ *
+ * Rasterised by scripts/export-package.mjs. Not linked, noindex, kept out of
+ * the sitemap by the /export/ filter in astro.config.mjs.
+ */
+import '../../../styles/global.css';
+import '../../../styles/prose.css';
+import '../../../styles/export-light.css';
+import SdkBoundary from '../../../components/SdkBoundary.astro';
+import ContractMap from '../../../components/ContractMap.astro';
+import RaceLoss from '../../../components/RaceLoss.astro';
+import MechanismBench from '../../../components/MechanismBench.astro';
+import CrossingsChart from '../../../components/CrossingsChart.astro';
+import CallCrossing from '../../../components/CallCrossing.astro';
+import StalenessLadder from '../../../components/StalenessLadder.astro';
+import TransferStates from '../../../components/TransferStates.astro';
+import ChangeClassifier from '../../../components/ChangeClassifier.astro';
+import DefectPropagation from '../../../components/DefectPropagation.astro';
+import PhaseRail from '../../../components/PhaseRail.astro';
+import { REVIEW_PHASES } from '../../../data/review-phases';
+
+/** Figure pages in reading order; the packager rasterises each one. */
+const FIGURES = [
+  'sdk-boundary',
+  'contract-map',
+  'race-loss',
+  'mechanism-bench',
+  'crossings-chart',
+  'call-crossing',
+  'staleness-ladder',
+  'transfer-states',
+  'change-classifier',
+  'defect-propagation',
+  'design-review-rail',
+] as const;
+
+export function getStaticPaths() {
+  return [
+    'sdk-boundary',
+    'contract-map',
+    'race-loss',
+    'mechanism-bench',
+    'crossings-chart',
+    'call-crossing',
+    'staleness-ladder',
+    'transfer-states',
+    'change-classifier',
+    'defect-propagation',
+    'design-review-rail',
+  ].map((figure) => ({ params: { figure } }));
+}
+
+const { figure } = Astro.params;
+if (!FIGURES.includes(figure as (typeof FIGURES)[number])) {
+  throw new Error(`Unknown figure: ${figure}`);
+}
+---
+
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>{figure}</title>
+    <script is:inline>
+      // Reveal everything at once: a rasteriser has no scroll position, and the
+      // bar widths are driven by the same class the observer would add.
+      document.documentElement.classList.add('js');
+      const paint = () => {
+        document
+          .querySelectorAll('[data-reveal]')
+          .forEach((el) => el.classList.add('is-visible'));
+      };
+      if (document.readyState !== 'loading') paint();
+      else document.addEventListener('DOMContentLoaded', paint);
+    </script>
+  </head>
+  <body>
+    <div class="shot" data-figure={figure}>
+      {figure === 'sdk-boundary' && <SdkBoundary />}
+      {figure === 'contract-map' && <ContractMap />}
+      {figure === 'race-loss' && <RaceLoss />}
+      {figure === 'mechanism-bench' && <MechanismBench />}
+      {figure === 'crossings-chart' && <CrossingsChart />}
+      {figure === 'call-crossing' && <CallCrossing />}
+      {figure === 'staleness-ladder' && <StalenessLadder />}
+      {figure === 'transfer-states' && <TransferStates />}
+      {figure === 'change-classifier' && <ChangeClassifier />}
+      {figure === 'defect-propagation' && <DefectPropagation />}
+      {figure === 'design-review-rail' && <PhaseRail phases={REVIEW_PHASES} />}
+    </div>
+  </body>
+</html>
+
+<style is:global>
+  html,
+  body {
+    background: #ffffff;
+  }
+
+  .shot {
+    width: 960px;
+    padding: 28px;
+    background: #ffffff;
+  }
+  .shot > * {
+    margin-block: 0;
+  }
+
+  /* The caption travels as markdown text, so it is not part of the image.
+     It stays in the DOM because the packager reads it from here. */
+  .shot figcaption {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* A control in a static image promises interaction the image cannot give.
+     Figures mark their control rows with data-shot-hide; the animation
+     controls live in the frame's tool slot. */
+  .shot [data-shot-hide],
+  .shot .viz__tools {
+    display: none !important;
+  }
+
+  /* No entrance animation in a still. The reveal offset lives on the figure
+     root only; descendants keep their own transforms, which SVG groups need
+     for positioning. */
+  .shot [data-reveal] {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .shot *,
+  .shot *::before,
+  .shot *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+</style>

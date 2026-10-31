@@ -1,0 +1,258 @@
+---
+/**
+ * The one diagram every SDK design turns on: the host app on one side, the
+ * internals on the other, and the public API drawn as a line between them.
+ * Everything behind the line can change in a patch. Everything on the line is
+ * a commitment.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '01',
+  caption = 'Four entry points, one configuration object, and a documented threading guarantee placed on the boundary itself: the documentation comment is part of the API. Everything to the right of the line can change in a patch release. Anything on the line that changes is a migration for every consuming team.',
+} = Astro.props;
+
+const ENTRY_POINTS = ['configure(_:)', 'track(_:)', 'setUserID(_:)', 'flush()'];
+
+const HOST = [
+  {
+    title: 'Their screens',
+    note: 'UIKit and SwiftUI, calling from whichever thread is convenient',
+  },
+  {
+    title: 'Their release schedule',
+    note: 'Weeks between builds, with review in between',
+  },
+  {
+    title: 'Their crash reporting',
+    note: 'Where an SDK crash lands, against the SDK’s symbols',
+  },
+];
+
+const INTERNALS = [
+  {
+    title: 'capture → buffer → persist → batch → upload → ack',
+    note: 'The event path; every step is free to change in a patch',
+  },
+  {
+    title: 'Mutex<State>',
+    note: 'One synchronised store behind every public setter',
+  },
+  {
+    title: 'Retry, backoff with jitter, dead letter',
+    note: 'Never holds the host process open',
+  },
+  {
+    title: 'Kill switch',
+    note: 'Turns the subsystem off by remote configuration, no build needed',
+  },
+];
+---
+
+<VizFrame
+  fig={fig}
+  title="Whose process is it?"
+  caption={caption}
+  class="sb"
+  label="The SDK boundary: the host application on the left, four public entry points on the boundary, the SDK internals on the right."
+>
+  <div class="sb__grid">
+    <div class="sb__col">
+      <span class="viz-label">host app · not the SDK’s</span>
+      {
+        HOST.map((h) => (
+          <div class="sb__card viz-panel">
+            <span class="sb__card-title">{h.title}</span>
+            <span class="sb__card-note">{h.note}</span>
+          </div>
+        ))
+      }
+    </div>
+
+    <div class="sb__rail" aria-label="Public API boundary">
+      <span class="sb__rail-label">public API</span>
+      <span class="sb__rail-line" aria-hidden="true"></span>
+      <ul class="sb__pills">
+        {
+          ENTRY_POINTS.map((e) => (
+            <li>
+              <code class="sb__pill">{e}</code>
+            </li>
+          ))
+        }
+      </ul>
+      <span class="sb__contract viz-mono">
+        /// Thread-safe. All members may be called from any thread.
+      </span>
+      <span class="sb__rail-label">permanent</span>
+    </div>
+
+    <div class="sb__col">
+      <span class="viz-label sb__label-sdk">behind the line · rewritable</span>
+      {
+        INTERNALS.map((i) => (
+          <div class="sb__card sb__card--sdk viz-panel">
+            <span class="sb__card-title viz-mono">{i.title}</span>
+            <span class="sb__card-note">{i.note}</span>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+
+  <div class="sb__cost" aria-hidden="true">
+    <span class="viz-chip viz-chip--sound"
+      ><i class="viz-dot"></i>change behind the line · patch</span
+    >
+    <span class="viz-chip viz-chip--bad"
+      ><i class="viz-dot"></i>change on the line · every consumer migrates</span
+    >
+  </div>
+</VizFrame>
+
+<style>
+  .sb__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.15fr);
+    gap: var(--sp-4);
+  }
+  .sb__col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  .sb__label-sdk {
+    color: var(--viz-meta);
+  }
+  .sb__card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.55rem 0.7rem;
+  }
+  .sb__card--sdk {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--viz-meta) 55%, var(--border));
+  }
+  .sb__card-title {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .sb__card-note {
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+    color: var(--fg-muted);
+  }
+
+  .sb__rail {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 150px;
+    padding-inline: var(--sp-2);
+  }
+  .sb__rail-line {
+    position: absolute;
+    top: 1.4rem;
+    bottom: 1.4rem;
+    left: 50%;
+    width: 3px;
+    transform: translateX(-50%);
+    border-radius: 2px;
+    background: var(--viz-sound);
+  }
+  .sb__rail-label {
+    z-index: 1;
+    padding: 1px 6px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--viz-sound-text);
+    background: var(--bg-subtle);
+    border-radius: 4px;
+  }
+  .sb__pills {
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-block: var(--sp-2) !important;
+  }
+  .sb__pill {
+    display: block;
+    padding: 0.25rem 0.6rem;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--viz-sound-text);
+    /* Opaque base under the tint, so the rail does not strike the name out. */
+    background-color: var(--surface);
+    background-image: linear-gradient(var(--accent-soft), var(--accent-soft));
+    border: 1px solid var(--viz-sound);
+    border-radius: 999px;
+  }
+  .sb__contract {
+    z-index: 1;
+    max-width: 170px;
+    padding: 0.35rem 0.5rem;
+    font-size: 11px;
+    line-height: 1.45;
+    text-align: center;
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+  }
+
+  .sb__cost {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    margin-top: var(--sp-4);
+  }
+  .sb__cost .viz-chip {
+    white-space: normal;
+  }
+
+  @media (max-width: 680px) {
+    .sb__grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .sb__rail {
+      flex-direction: row;
+      flex-wrap: wrap;
+      justify-content: center;
+      min-width: 0;
+      padding-block: var(--sp-3);
+    }
+    .sb__rail-line {
+      top: 50%;
+      right: 0;
+      bottom: auto;
+      left: 0;
+      width: auto;
+      height: 3px;
+      transform: translateY(-50%);
+    }
+    .sb__pills {
+      flex-direction: row;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-block: 0 !important;
+    }
+    .sb__contract {
+      max-width: none;
+    }
+  }
+</style>

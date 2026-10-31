@@ -1,0 +1,476 @@
+---
+/**
+ * Three staleness defences, applied in order, tried against six arrivals.
+ * The first two guard the request path (the client asked for something); the
+ * third guards everything that carries a server sequence, including the
+ * stream. Each scenario shows which gate catches the update, which ones it
+ * slips past, and which ones never apply to it. The scenarios are constructed
+ * to separate the defences; they are not traces.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '07',
+  caption = 'Cancelling the old request saves work but cannot stop a response that already resumed. A generation token checks at the moment of applying, but only orders the client’s own requests. Only a server-assigned sequence orders what the server sent, which is why it is the one that protects a balance. Timestamps are not a substitute: client and server clocks disagree, and a wall clock can step backwards.',
+} = Astro.props;
+
+type Verdict = 'stop' | 'miss' | 'pass' | 'na' | 'skip';
+interface Gate {
+  verdict: Verdict;
+  note: string;
+}
+interface Scenario {
+  id: string;
+  label: string;
+  arrives: string;
+  gates: [Gate, Gate, Gate];
+  applied: boolean;
+}
+
+const GATES = [
+  { name: 'Cancel previous', where: 'request path · at departure' },
+  { name: 'Generation token', where: 'request path · at application' },
+  { name: 'Server sequence', where: 'every channel · before state changes' },
+];
+
+const STATE = 'showing account B · generation 2 · last applied sequence 41';
+
+const SCENARIOS: Scenario[] = [
+  {
+    id: 'inflight',
+    label: 'old request still in flight',
+    arrives: 'GET balance for account A, sent at generation 1, not back yet',
+    gates: [
+      { verdict: 'stop', note: 'Cancelled when the account switched' },
+      { verdict: 'skip', note: 'Never reached' },
+      { verdict: 'skip', note: 'Never reached' },
+    ],
+    applied: false,
+  },
+  {
+    id: 'resumed',
+    label: 'old response resumed first',
+    arrives:
+      'Response for account A, generation 1, finished a moment before the cancel',
+    gates: [
+      {
+        verdict: 'miss',
+        note: 'Too late: it had already resumed. Cancellation is cooperative',
+      },
+      { verdict: 'stop', note: 'Carries generation 1; current is 2' },
+      { verdict: 'skip', note: 'Never reached' },
+    ],
+    applied: false,
+  },
+  {
+    id: 'fresh',
+    label: 'fresh response',
+    arrives: 'Response for account B, generation 2, sequence 43',
+    gates: [
+      { verdict: 'pass', note: 'Current request' },
+      { verdict: 'pass', note: 'Generation matches' },
+      { verdict: 'pass', note: '43 is newer than 41' },
+    ],
+    applied: true,
+  },
+  {
+    id: 'overtaken',
+    label: 'pushed events overtake',
+    arrives: 'Push: balance at sequence 40, overtaken in transit by 41',
+    gates: [
+      { verdict: 'na', note: 'A push is not a request' },
+      {
+        verdict: 'na',
+        note: 'Orders the client’s requests, not the server’s events',
+      },
+      { verdict: 'stop', note: '40 is not newer than 41' },
+    ],
+    applied: false,
+  },
+  {
+    id: 'replay',
+    label: 'reconnect replays a buffer',
+    arrives: 'Push: sequences 39, 40, 41 replayed after a reconnect',
+    gates: [
+      { verdict: 'na', note: 'A push is not a request' },
+      { verdict: 'na', note: 'No generation on a push' },
+      { verdict: 'stop', note: 'All three are 41 or older' },
+    ],
+    applied: false,
+  },
+  {
+    id: 'newer',
+    label: 'newer event',
+    arrives: 'Push: balance at sequence 44',
+    gates: [
+      { verdict: 'na', note: 'A push is not a request' },
+      { verdict: 'na', note: 'No generation on a push' },
+      { verdict: 'pass', note: '44 is newer than 41' },
+    ],
+    applied: true,
+  },
+];
+
+const VERDICT_LABEL: Record<Verdict, string> = {
+  stop: 'stops it',
+  miss: 'misses it',
+  pass: 'passes',
+  na: 'does not apply',
+  skip: '–',
+};
+---
+
+<VizFrame
+  fig={fig}
+  title="Three gates before an update touches state"
+  caption={caption}
+  class="sl"
+  data-sl
+  label="Three staleness defences, cancel previous, generation token and server sequence, tried against six arrivals."
+>
+  <div slot="tools">
+    <AnimControls label="Arrivals" />
+  </div>
+
+  <div class="sl__chips" role="group" aria-label="Arrival" data-shot-hide>
+    {
+      SCENARIOS.map((s, i) => (
+        <button
+          type="button"
+          class="sl__chip"
+          data-scenario={i}
+          aria-pressed={i === 0 ? 'true' : 'false'}
+        >
+          {s.label}
+        </button>
+      ))
+    }
+  </div>
+
+  <div class="sl__state viz-mono">
+    <span class="viz-label">client state</span>
+    <span>{STATE}</span>
+  </div>
+
+  <div class="sl__arrival viz-panel">
+    <span class="viz-label">arrives</span>
+    <span class="sl__arrives" data-arrives></span>
+  </div>
+
+  <ol class="sl__gates">
+    {
+      GATES.map((g, i) => (
+        <li class="sl__gate viz-panel" data-gate={i}>
+          <span class="sl__gate-n viz-mono">0{i + 1}</span>
+          <span class="sl__gate-name">{g.name}</span>
+          <span class="sl__gate-where viz-mono">{g.where}</span>
+          <span class="sl__verdict viz-mono" data-verdict />
+          <span class="sl__note" data-note />
+        </li>
+      ))
+    }
+  </ol>
+
+  <div class="sl__outcome" data-outcome aria-live="polite"></div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-sl-data
+    set:html={JSON.stringify({ scenarios: SCENARIOS, labels: VERDICT_LABEL })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const PHASE_MS = 900;
+    const HOLD_MS = 1800;
+
+    function initStaleness(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(root.querySelector('[data-sl-data]').textContent);
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const chips = [...root.querySelectorAll('[data-scenario]')];
+      const gates = [...root.querySelectorAll('[data-gate]')];
+      const arrivesEl = root.querySelector('[data-arrives]');
+      const outcomeEl = root.querySelector('[data-outcome]');
+      const total = data.scenarios.length;
+      // Phases per scenario: 0 arrival, 1..3 gates, 4 outcome.
+      const LAST_PHASE = 4;
+
+      let scenario = 0;
+      let phase = 0;
+      let playing = false;
+      let timer = 0;
+
+      function render() {
+        const s = data.scenarios[scenario];
+        chips.forEach((c, i) =>
+          c.setAttribute('aria-pressed', String(i === scenario)),
+        );
+        arrivesEl.textContent = s.arrives;
+        gates.forEach((g, i) => {
+          const gate = s.gates[i];
+          const shown = phase > i;
+          g.dataset.verdict = shown ? gate.verdict : 'pending';
+          g.querySelector('[data-verdict]').textContent = shown
+            ? data.labels[gate.verdict]
+            : '';
+          g.querySelector('[data-note]').textContent = shown ? gate.note : '';
+        });
+        const done = phase >= LAST_PHASE;
+        outcomeEl.dataset.applied = done ? String(s.applied) : 'pending';
+        outcomeEl.textContent = done
+          ? s.applied
+            ? 'Applied: one whole new state, delivered in one crossing.'
+            : 'Dropped as stale: counted, never rendered.'
+          : '';
+      }
+
+      const isEnd = () => scenario >= total - 1 && phase >= LAST_PHASE;
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        const wait = phase >= LAST_PHASE ? HOLD_MS : PHASE_MS;
+        timer = setTimeout(() => {
+          if (phase >= LAST_PHASE) {
+            scenario += 1;
+            phase = 0;
+          } else {
+            phase += 1;
+          }
+          render();
+          if (isEnd()) {
+            playing = false;
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          schedule();
+        }, wait);
+      }
+
+      function play() {
+        if (playing) return;
+        if (isEnd()) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        schedule();
+      }
+
+      function reset() {
+        stop();
+        scenario = 0;
+        phase = 0;
+        render();
+      }
+
+      chips.forEach((chip) =>
+        chip.addEventListener('click', () => {
+          stop();
+          scenario = Number(chip.dataset.scenario);
+          phase = LAST_PHASE;
+          render();
+          root.dispatchEvent(
+            new CustomEvent(isEnd() ? 'anim:ended' : 'anim:paused'),
+          );
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      // Reduced motion rests on the case the figure argues from.
+      scenario = reduce ? 1 : 0;
+      phase = reduce ? LAST_PHASE : 0;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-sl]').forEach(initStaleness);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .sl__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: var(--sp-3);
+  }
+  .sl__chip {
+    padding: 4px 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+    transition:
+      color 0.18s var(--ease),
+      border-color 0.18s var(--ease),
+      background 0.18s var(--ease);
+  }
+  .sl__chip:hover {
+    color: var(--fg);
+    border-color: var(--border-strong);
+  }
+  .sl__chip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .sl__chip[aria-pressed='true'] {
+    font-weight: 600;
+    color: var(--viz-sound-text);
+    background: var(--accent-soft);
+    border-color: var(--viz-sound);
+  }
+
+  .sl__state {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px var(--sp-2);
+    margin-bottom: var(--sp-2);
+    font-size: 11.5px;
+    color: var(--fg-muted);
+  }
+  .sl__arrival {
+    display: grid;
+    gap: 2px;
+    padding: var(--sp-2) var(--sp-3);
+    border-color: color-mix(in srgb, var(--viz-net) 50%, var(--border));
+    border-left: 3px solid var(--viz-net);
+  }
+  .sl__arrives {
+    min-height: 1.5em;
+    font-size: var(--fs-sm);
+    color: var(--fg);
+  }
+
+  .sl__gates {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-2);
+    margin-top: var(--sp-3) !important;
+  }
+  .sl__gate {
+    display: grid;
+    grid-template-rows: auto auto auto auto 1fr;
+    gap: 3px;
+    min-width: 0;
+    padding: var(--sp-3);
+    --c: var(--border-strong);
+    transition:
+      border-color 0.25s var(--ease),
+      background 0.25s var(--ease);
+  }
+  .sl__gate[data-gate='2'] {
+    border-width: 2px;
+  }
+  .sl__gate-n {
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+  .sl__gate-name {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .sl__gate-where {
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .sl__verdict {
+    justify-self: start;
+    min-height: 22px;
+    margin-top: var(--sp-2);
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--c);
+    border: 1px solid transparent;
+    border-radius: 999px;
+  }
+  .sl__note {
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+    color: var(--fg-muted);
+  }
+  .sl__gate[data-verdict='stop'] {
+    --c: var(--viz-sound-text);
+    border-color: var(--viz-sound);
+    background: color-mix(in srgb, var(--viz-sound) 9%, var(--viz-panel));
+  }
+  .sl__gate[data-verdict='miss'] {
+    --c: var(--viz-bad);
+    border-color: var(--viz-bad);
+  }
+  .sl__gate[data-verdict='pass'] {
+    --c: var(--viz-meta);
+    border-color: color-mix(in srgb, var(--viz-meta) 60%, var(--border));
+  }
+  .sl__gate[data-verdict='na'],
+  .sl__gate[data-verdict='skip'] {
+    --c: var(--fg-faint);
+    opacity: 0.7;
+  }
+  .sl__gate:not([data-verdict='pending']):not([data-verdict='skip'])
+    .sl__verdict {
+    border-color: color-mix(in srgb, var(--c) 50%, transparent);
+  }
+
+  .sl__outcome {
+    min-height: 2.6em;
+    margin-top: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--fg-muted);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-sm);
+  }
+  .sl__outcome[data-applied='true'] {
+    color: var(--viz-sound-text);
+    border-style: solid;
+    border-color: var(--viz-sound);
+  }
+  .sl__outcome[data-applied='false'] {
+    color: var(--fg);
+  }
+
+  @media (max-width: 640px) {
+    .sl__gates {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sl__chip,
+    .sl__gate {
+      transition: none;
+    }
+  }
+</style>

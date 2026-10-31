@@ -1,0 +1,697 @@
+---
+/**
+ * The transfer state machine, with the one state most designs leave out:
+ * `unknown`, entered on a timeout. A timeout is not a failure. It is an outcome
+ * the client does not know yet, and the only correct exit from it is to
+ * reconcile with the server. Pick a path to walk it edge by edge; the log under
+ * the diagram is what the SDK records on the way: transitions, never values.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '08',
+  caption = 'Every state has a fixed set of legal exits, which is what separates a state machine from a set of flags. The step-up authentication state is persisted because a second-factor flow can leave the app and come back after the process was killed. A timeout leads to unknown, not failed: the answer did not arrive, which says nothing about whether the money moved. Retrying with the same idempotency key lets the server answer “already done” instead of moving it twice.',
+} = Astro.props;
+
+interface Path {
+  id: string;
+  label: string;
+  edges: string[];
+  log: string[];
+}
+
+// Each edge id is "<from>-<to>".
+const PATHS: Path[] = [
+  {
+    id: 'timeout-yes',
+    label: 'timeout, it happened',
+    edges: [
+      'draft-validating',
+      'validating-submitted',
+      'submitted-unknown',
+      'unknown-settled',
+    ],
+    log: [
+      'draft → validating',
+      'validating → submitted   key=7f3a…',
+      'submitted → unknown      reason=timeout',
+      'unknown → settled        via=reconcile key=7f3a…',
+    ],
+  },
+  {
+    id: 'timeout-no',
+    label: 'timeout, it did not',
+    edges: [
+      'draft-validating',
+      'validating-submitted',
+      'submitted-unknown',
+      'unknown-failed',
+    ],
+    log: [
+      'draft → validating',
+      'validating → submitted   key=7f3a…',
+      'submitted → unknown      reason=timeout',
+      'unknown → failed         via=reconcile, safe to retry with key=7f3a…',
+    ],
+  },
+  {
+    id: 'happy',
+    label: 'no step-up',
+    edges: [
+      'draft-validating',
+      'validating-submitted',
+      'submitted-pending',
+      'pending-settled',
+    ],
+    log: [
+      'draft → validating',
+      'validating → submitted   key=7f3a…',
+      'submitted → pending',
+      'pending → settled',
+    ],
+  },
+  {
+    id: 'stepup',
+    label: 'step-up passed',
+    edges: [
+      'draft-validating',
+      'validating-awaitingAuth',
+      'awaitingAuth-submitted',
+      'submitted-pending',
+      'pending-settled',
+    ],
+    log: [
+      'draft → validating',
+      'validating → awaitingAuth   persisted',
+      'awaitingAuth → submitted    key=7f3a…',
+      'submitted → pending',
+      'pending → settled',
+    ],
+  },
+  {
+    id: 'expired',
+    label: 'step-up expired',
+    edges: [
+      'draft-validating',
+      'validating-awaitingAuth',
+      'awaitingAuth-failed',
+    ],
+    log: [
+      'draft → validating',
+      'validating → awaitingAuth   persisted',
+      'awaitingAuth → failed       reason=authExpired',
+    ],
+  },
+  {
+    id: 'rejected',
+    label: 'rejected',
+    edges: [
+      'draft-validating',
+      'validating-submitted',
+      'submitted-pending',
+      'pending-failed',
+    ],
+    log: [
+      'draft → validating',
+      'validating → submitted   key=7f3a…',
+      'submitted → pending',
+      'pending → failed         reason=rejected',
+    ],
+  },
+];
+
+interface StateBox {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  sub?: string;
+  tone?: 'warn' | 'ok' | 'stop' | 'meta';
+}
+const STATES: StateBox[] = [
+  { id: 'draft', x: 20, y: 30, w: 100 },
+  { id: 'validating', x: 164, y: 30, w: 116 },
+  { id: 'submitted', x: 324, y: 30, w: 116 },
+  { id: 'pending', x: 484, y: 30, w: 116 },
+  {
+    id: 'awaitingAuth',
+    x: 164,
+    y: 124,
+    w: 116,
+    sub: 'persisted',
+    tone: 'meta',
+  },
+  {
+    id: 'unknown',
+    x: 324,
+    y: 124,
+    w: 116,
+    sub: 'not a failure',
+    tone: 'warn',
+  },
+  { id: 'settled', x: 644, y: 124, w: 96, tone: 'ok' },
+  { id: 'failed', x: 336, y: 262, w: 116, tone: 'stop' },
+];
+
+interface Edge {
+  id: string;
+  d: string;
+  label?: string;
+  lx?: number;
+  ly?: number;
+  anchor?: 'start' | 'middle' | 'end';
+  warn?: boolean;
+}
+const EDGES: Edge[] = [
+  { id: 'draft-validating', d: 'M120 48 L162 48' },
+  {
+    id: 'validating-submitted',
+    d: 'M280 48 L322 48',
+    label: 'no step-up',
+    lx: 301,
+    ly: 22,
+    anchor: 'middle',
+  },
+  {
+    id: 'validating-awaitingAuth',
+    d: 'M222 66 L222 122',
+    label: 'step-up required',
+    lx: 230,
+    ly: 98,
+  },
+  {
+    id: 'awaitingAuth-submitted',
+    d: 'M280 134 C 300 134, 318 84, 336 68',
+    label: 'passed',
+    lx: 300,
+    ly: 120,
+  },
+  {
+    id: 'awaitingAuth-failed',
+    d: 'M222 160 C 222 220, 300 250, 334 270',
+    label: 'expired',
+    lx: 212,
+    ly: 222,
+    anchor: 'end',
+  },
+  { id: 'submitted-pending', d: 'M440 48 L482 48' },
+  {
+    id: 'submitted-unknown',
+    d: 'M382 66 L382 122',
+    label: 'timeout',
+    lx: 390,
+    ly: 98,
+    warn: true,
+  },
+  { id: 'pending-settled', d: 'M600 48 C 640 48, 676 90, 686 122' },
+  {
+    id: 'pending-failed',
+    d: 'M542 66 C 542 190, 480 250, 454 270',
+    label: 'rejected',
+    lx: 552,
+    ly: 196,
+  },
+  {
+    id: 'unknown-settled',
+    d: 'M440 142 L642 142',
+    label: 'reconcile: it happened',
+    lx: 541,
+    ly: 134,
+    anchor: 'middle',
+    warn: true,
+  },
+  {
+    id: 'unknown-failed',
+    d: 'M382 160 C 382 210, 394 236, 394 260',
+    label: 'reconcile: it did not',
+    lx: 404,
+    ly: 214,
+    warn: true,
+  },
+];
+---
+
+<VizFrame
+  fig={fig}
+  title="A transfer, with the state most designs leave out"
+  caption={caption}
+  class="ts"
+  data-ts
+  label="Transfer state machine: draft, validating, awaiting authentication, submitted, pending, unknown, settled, failed. A timeout leads to unknown, which is resolved by reconciling with the server."
+>
+  <div slot="tools" class="ts__tools">
+    <button type="button" class="viz-btn" data-next aria-label="Next step"
+      >step</button
+    >
+    <AnimControls label="Path" />
+  </div>
+
+  <div class="ts__chips" role="group" aria-label="Path" data-shot-hide>
+    {
+      PATHS.map((p, i) => (
+        <button
+          type="button"
+          class="ts__chip"
+          data-path={p.id}
+          aria-pressed={i === 0 ? 'true' : 'false'}
+        >
+          {p.label}
+        </button>
+      ))
+    }
+  </div>
+
+  <div class="ts__scroll viz-panel">
+    <svg
+      viewBox="0 0 760 320"
+      xmlns="http://www.w3.org/2000/svg"
+      role="img"
+      aria-labelledby={`ts-title-${fig}`}
+      class="ts__svg"
+    >
+      <title id={`ts-title-${fig}`}>
+        Transfer state machine with an unknown state entered on timeout.
+      </title>
+      <defs>
+        <marker
+          id={`ts-arrow-${fig}`}
+          viewBox="0 0 10 10"
+          refX="9"
+          refY="5"
+          markerWidth="7"
+          markerHeight="7"
+          orient="auto-start-reverse"
+        >
+          <path d="M0 0 L10 5 L0 10 z" class="ts__head"></path>
+        </marker>
+      </defs>
+
+      <g class="ts__edges">
+        {
+          EDGES.map((e) => (
+            <g
+              class:list={['ts__edge', { 'ts__edge--warn': e.warn }]}
+              data-edge={e.id}
+            >
+              <path d={e.d} fill="none" marker-end={`url(#ts-arrow-${fig})`} />
+              {e.label && (
+                <text
+                  x={e.lx}
+                  y={e.ly}
+                  text-anchor={e.anchor ?? 'start'}
+                  class="ts__edge-label"
+                >
+                  {e.label}
+                </text>
+              )}
+            </g>
+          ))
+        }
+      </g>
+
+      <g class="ts__states">
+        {
+          STATES.map((s) => (
+            <g
+              class:list={['ts__state', s.tone && `ts__state--${s.tone}`]}
+              data-state={s.id}
+              transform={`translate(${s.x},${s.y})`}
+            >
+              <rect width={s.w} height="36" rx="8" />
+              <text
+                x={s.w / 2}
+                y={s.sub ? 17 : 23}
+                text-anchor="middle"
+                class="ts__name"
+              >
+                {s.id}
+              </text>
+              {s.sub && (
+                <text x={s.w / 2} y="30" text-anchor="middle" class="ts__sub">
+                  {s.sub}
+                </text>
+              )}
+            </g>
+          ))
+        }
+      </g>
+
+      <g transform="translate(20,232)" class="ts__note">
+        <rect width="290" height="64" rx="8"></rect>
+        <text x="12" y="22">idempotencyKey: generated once per</text>
+        <text x="12" y="38">transfer, reused on every retry.</text>
+        <text x="12" y="54" class="ts__note-strong">Never per attempt.</text>
+      </g>
+      <g transform="translate(484,232)" class="ts__note ts__note--warn">
+        <rect width="256" height="64" rx="8"></rect>
+        <text x="12" y="22">A timeout means the answer did not</text>
+        <text x="12" y="38">arrive. It says nothing about whether</text>
+        <text x="12" y="54" class="ts__note-strong"
+          >the money moved. Reconcile.</text
+        >
+      </g>
+    </svg>
+  </div>
+
+  <div class="ts__log">
+    <span class="viz-label">what the SDK logs · transitions, never amounts</span
+    >
+    <ol class="ts__lines viz-mono" data-log></ol>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-ts-data
+    set:html={JSON.stringify(PATHS)}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = 1500;
+
+    function initTransfer(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const paths = JSON.parse(
+        root.querySelector('[data-ts-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const edges = [...root.querySelectorAll('[data-edge]')];
+      const states = [...root.querySelectorAll('[data-state]')];
+      const chips = [...root.querySelectorAll('[data-path]')];
+      const logEl = root.querySelector('[data-log]');
+
+      let path = paths[0];
+      let current = 0; // edges walked
+      let playing = false;
+      let timer = 0;
+
+      const last = () => path.edges.length;
+
+      function render() {
+        const walked = path.edges.slice(0, current);
+        const visited = new Set(['draft']);
+        walked.forEach((e) => visited.add(e.split('-')[1]));
+        const now =
+          current === 0 ? 'draft' : walked[walked.length - 1].split('-')[1];
+        edges.forEach((el) => {
+          const i = walked.indexOf(el.dataset.edge);
+          el.classList.toggle('is-on', i >= 0);
+          el.classList.toggle('is-now', i >= 0 && i === walked.length - 1);
+          el.classList.toggle('is-off', current > 0 && i < 0);
+        });
+        states.forEach((el) => {
+          el.classList.toggle('is-on', visited.has(el.dataset.state));
+          el.classList.toggle('is-now', el.dataset.state === now);
+          el.classList.toggle(
+            'is-off',
+            current > 0 && !visited.has(el.dataset.state),
+          );
+        });
+        logEl.replaceChildren(
+          ...path.log.slice(0, current).map((line) => {
+            const li = document.createElement('li');
+            li.textContent = line;
+            return li;
+          }),
+        );
+        if (current === 0) {
+          const li = document.createElement('li');
+          li.className = 'ts__idle';
+          li.textContent = 'draft';
+          logEl.append(li);
+        }
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(() => {
+          current += 1;
+          render();
+          if (current >= last()) {
+            playing = false;
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          schedule();
+        }, STEP_MS);
+      }
+
+      function play() {
+        if (playing) return;
+        if (current >= last()) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        schedule();
+      }
+
+      function reset() {
+        stop();
+        current = 0;
+        render();
+      }
+
+      root.querySelector('[data-next]').addEventListener('click', () => {
+        stop();
+        current = current >= last() ? 0 : current + 1;
+        render();
+        root.dispatchEvent(
+          new CustomEvent(current >= last() ? 'anim:ended' : 'anim:paused'),
+        );
+      });
+
+      chips.forEach((chip) =>
+        chip.addEventListener('click', () => {
+          path = paths.find((p) => p.id === chip.dataset.path);
+          chips.forEach((c) =>
+            c.setAttribute('aria-pressed', String(c === chip)),
+          );
+          reset();
+          if (reduce) {
+            current = last();
+            render();
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          play();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      current = reduce ? last() : 0;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-ts]').forEach(initTransfer);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .ts__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ts__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: var(--sp-3);
+  }
+  .ts__chip {
+    padding: 4px 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .ts__chip:hover {
+    color: var(--fg);
+    border-color: var(--border-strong);
+  }
+  .ts__chip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .ts__chip[aria-pressed='true'] {
+    font-weight: 600;
+    color: var(--viz-sound-text);
+    background: var(--accent-soft);
+    border-color: var(--viz-sound);
+  }
+
+  .ts__scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .ts__svg {
+    display: block;
+    width: 100%;
+    min-width: 600px;
+    height: auto;
+    padding: var(--sp-3);
+    font-family: var(--font-mono);
+  }
+
+  .ts__edge path {
+    stroke: var(--border-strong);
+    stroke-width: 1.5;
+    transition:
+      stroke 0.25s var(--ease),
+      opacity 0.25s var(--ease);
+  }
+  .ts__edge--warn path {
+    stroke-dasharray: 4 3;
+  }
+  .ts__head {
+    fill: var(--fg-faint);
+  }
+  .ts__edge-label {
+    font-size: 10px;
+    fill: var(--fg-faint);
+  }
+  .ts__edge--warn .ts__edge-label {
+    fill: var(--viz-level);
+  }
+  .ts__edge.is-on path {
+    stroke: var(--fg);
+    stroke-width: 2.2;
+  }
+  .ts__edge.is-on .ts__edge-label {
+    fill: var(--fg);
+    font-weight: 600;
+  }
+  .ts__edge--warn.is-on path {
+    stroke: var(--viz-level);
+  }
+  .ts__edge.is-off {
+    opacity: 0.35;
+  }
+
+  .ts__state rect {
+    fill: var(--viz-panel);
+    stroke: var(--border-strong);
+    stroke-width: 1.2;
+    transition:
+      fill 0.25s var(--ease),
+      stroke 0.25s var(--ease),
+      opacity 0.25s var(--ease);
+  }
+  .ts__name {
+    font-size: 12.5px;
+    font-weight: 600;
+    fill: var(--fg);
+  }
+  .ts__sub {
+    font-size: 8.5px;
+    fill: var(--fg-faint);
+  }
+  .ts__state--meta rect {
+    stroke: var(--viz-meta);
+  }
+  .ts__state--warn rect {
+    stroke: var(--viz-level);
+    fill: color-mix(in srgb, var(--viz-level) 12%, var(--viz-panel));
+  }
+  .ts__state--warn .ts__name,
+  .ts__state--warn .ts__sub {
+    fill: var(--viz-level);
+  }
+  .ts__state--ok rect {
+    stroke: var(--viz-sound);
+    fill: color-mix(in srgb, var(--viz-sound) 16%, var(--viz-panel));
+  }
+  .ts__state--ok .ts__name {
+    fill: var(--viz-sound-text);
+  }
+  .ts__state--stop rect {
+    stroke: var(--viz-bad);
+    fill: color-mix(in srgb, var(--viz-bad) 10%, var(--viz-panel));
+  }
+  .ts__state--stop .ts__name {
+    fill: var(--viz-bad);
+  }
+  .ts__state.is-now rect {
+    stroke-width: 2.6;
+  }
+  .ts__state.is-off {
+    opacity: 0.4;
+  }
+
+  .ts__note rect {
+    fill: var(--viz-panel);
+    stroke: var(--border);
+  }
+  .ts__note--warn rect {
+    stroke: var(--viz-level);
+    stroke-dasharray: 4 3;
+  }
+  .ts__note text {
+    font-size: 10.5px;
+    fill: var(--fg-muted);
+  }
+  .ts__note .ts__note-strong {
+    font-weight: 600;
+    fill: var(--fg);
+  }
+
+  .ts__log {
+    display: grid;
+    gap: 6px;
+    margin-top: var(--sp-3);
+  }
+  .ts__lines {
+    display: grid;
+    gap: 2px;
+    min-height: 6.6em;
+    padding: var(--sp-2) var(--sp-3) !important;
+    overflow-x: auto;
+    font-size: 11.5px;
+    white-space: pre;
+    color: var(--fg);
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .ts__lines :global(.ts__idle) {
+    color: var(--fg-faint);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ts__edge path,
+    .ts__state rect {
+      transition: none;
+    }
+  }
+</style>

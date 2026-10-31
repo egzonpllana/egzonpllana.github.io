@@ -42,6 +42,9 @@ export default defineConfig({
   integrations: [
     mdx(),
     sitemap({
+      // /export/ holds standalone article builds for submission elsewhere.
+      // They duplicate published content, so they stay out of the sitemap.
+      filter: (page) => !page.includes('/export/'),
       serialize(item) {
         const match = item.url.match(/\/(articles|talks)\/([^/]+)\/$/);
         const lastmod = match && CONTENT_DATES.get(`${match[1]}/${match[2]}`);

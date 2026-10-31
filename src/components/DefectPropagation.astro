@@ -1,0 +1,653 @@
+---
+/**
+ * How one defect in an SDK reaches users, and how long the fix takes to follow
+ * it: the SDK ships a patch, then each consuming app picks it up on its own
+ * release schedule, passes review, and waits for its users to update. The
+ * lower chart is the share of all users still running the defective code.
+ * The kill-switch variant turns the subsystem off by remote configuration
+ * the day after the defect is found.
+ *
+ * Everything here is a constructed scenario. Release cadences, review times,
+ * user shares and the update curve (exponential, five-day time constant) are
+ * assumptions chosen to be ordinary, not measurements of any real consumer.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '10',
+  caption = 'A constructed scenario: five consuming apps with ordinary release cadences, one to two days of review, and users who update with a five-day time constant. The patch exists on day 2; the last consumer ships it on day 29, and a tail of users stays exposed well past that. A kill switch does not depend on any of those schedules, which is why it belongs in the first release rather than the incident.',
+} = Astro.props;
+
+interface Consumer {
+  name: string;
+  share: number;
+  pickup: number;
+  review: number;
+  release: number;
+  note: string;
+}
+
+const DAYS = 42;
+const PATCH_DAY = 2;
+const KILL_DAY = 1;
+const CONSUMERS: Consumer[] = [
+  {
+    name: 'App A',
+    share: 0.1,
+    pickup: 2,
+    review: 4,
+    release: 5,
+    note: 'pilot',
+  },
+  {
+    name: 'App B',
+    share: 0.3,
+    pickup: 7,
+    review: 10,
+    release: 11,
+    note: 'weekly',
+  },
+  {
+    name: 'App C',
+    share: 0.25,
+    pickup: 9,
+    review: 14,
+    release: 16,
+    note: 'fortnightly',
+  },
+  {
+    name: 'App D',
+    share: 0.2,
+    pickup: 14,
+    review: 19,
+    release: 21,
+    note: 'release train',
+  },
+  {
+    name: 'App E',
+    share: 0.15,
+    pickup: 21,
+    review: 27,
+    release: 29,
+    note: 'monthly',
+  },
+];
+const TICKS = [0, 7, 14, 21, 28, 35, 42];
+---
+
+<VizFrame
+  fig={fig}
+  title="One defect, five release schedules"
+  caption={caption}
+  class="dp"
+  data-dp
+  label="Constructed timeline of an SDK patch reaching five consuming apps and their users over 42 days, with and without a kill switch."
+>
+  <div slot="tools">
+    <AnimControls label="42 days" />
+  </div>
+
+  <div class="dp__bar" data-shot-hide>
+    <div class="viz-seg" role="group" aria-label="Response">
+      <button type="button" aria-pressed="true" data-mode="patch"
+        >patch only</button
+      >
+      <button type="button" aria-pressed="false" data-mode="kill"
+        >patch + kill switch</button
+      >
+    </div>
+    <span class="viz-chip viz-chip--level">constructed scenario</span>
+  </div>
+
+  <div class="dp__readout">
+    <span class="dp__day viz-mono">day <b data-day>0</b></span>
+    <span class="dp__exposed viz-mono"
+      >users on the defective code <b data-exposed>100%</b></span
+    >
+  </div>
+
+  <div class="dp__plot" style={`--days:${DAYS}`}>
+    <ol class="dp__lanes">
+      <li class="dp__lane dp__lane--sdk">
+        <span class="dp__name"><b>SDK</b><small>fix, patch 4.2.1</small></span>
+        <span class="dp__track">
+          <i
+            class="dp__seg dp__seg--work"
+            data-seg
+            data-from="0"
+            data-to={PATCH_DAY}></i>
+          <i class="dp__mark" style={`--at:${PATCH_DAY}`} data-mark={PATCH_DAY}
+            >4.2.1</i
+          >
+        </span>
+      </li>
+      {
+        CONSUMERS.map((c) => (
+          <li class="dp__lane">
+            <span class="dp__name">
+              <b>{c.name}</b>
+              <small>
+                {Math.round(c.share * 100)}% of users · {c.note}
+              </small>
+            </span>
+            <span class="dp__track">
+              <i
+                class="dp__seg dp__seg--wait"
+                data-seg
+                data-from={PATCH_DAY}
+                data-to={c.pickup}
+              />
+              <i
+                class="dp__seg dp__seg--work"
+                data-seg
+                data-from={c.pickup}
+                data-to={c.review}
+              />
+              <i
+                class="dp__seg dp__seg--review"
+                data-seg
+                data-from={c.review}
+                data-to={c.release}
+              />
+              <i
+                class="dp__seg dp__seg--users"
+                data-seg
+                data-from={c.release}
+                data-to={DAYS}
+              />
+            </span>
+          </li>
+        ))
+      }
+    </ol>
+
+    <div class="dp__chart">
+      <span class="dp__name dp__name--chart"
+        ><b>Exposed</b><small>share of all users</small></span
+      >
+      <span class="dp__curve">
+        <svg
+          viewBox="0 0 420 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <line x1="0" y1="50" x2="420" y2="50" class="dp__grid"></line>
+          <path class="dp__line dp__line--ghost" data-ghost></path>
+          <path class="dp__line" data-line></path>
+        </svg>
+        <i class="dp__y dp__y--top viz-mono">100%</i>
+        <i class="dp__y dp__y--mid viz-mono">50%</i>
+      </span>
+    </div>
+
+    <div class="dp__axis viz-mono" aria-hidden="true">
+      <span></span>
+      <span class="dp__axis-track">
+        {
+          TICKS.map((t) => (
+            <i style={`--at:${t}`}>{t === DAYS ? `${t} days` : t}</i>
+          ))
+        }
+      </span>
+    </div>
+    <span class="dp__cursor" data-cursor aria-hidden="true"></span>
+  </div>
+
+  <div class="viz-legend dp__legend" aria-hidden="true">
+    <span
+      ><i style="--c:var(--border-strong)"></i>waiting for its next release</span
+    >
+    <span><i style="--c:var(--viz-meta)"></i>integrate and test</span>
+    <span><i style="--c:var(--viz-level)"></i>review</span>
+    <span><i style="--c:var(--viz-sound)"></i>users updating</span>
+    <span><i style="--c:var(--viz-bad)"></i>users exposed</span>
+  </div>
+
+  <p class="dp__note" data-note aria-live="polite"></p>
+
+  <script
+    is:inline
+    type="application/json"
+    data-dp-data
+    set:html={JSON.stringify({
+      days: DAYS,
+      killDay: KILL_DAY,
+      consumers: CONSUMERS,
+    })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const DURATION_MS = 8000;
+    const TAU_UPDATE = 5; // days, assumed user update time constant
+    const TAU_KILL = 0.4; // days, assumed time for remote config to reach active sessions
+
+    function initDefect(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(root.querySelector('[data-dp-data]').textContent);
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const segs = [...root.querySelectorAll('[data-seg]')];
+      const marks = [...root.querySelectorAll('[data-mark]')];
+      const lineEl = root.querySelector('[data-line]');
+      const ghostEl = root.querySelector('[data-ghost]');
+      const cursor = root.querySelector('[data-cursor]');
+      const dayEl = root.querySelector('[data-day]');
+      const exposedEl = root.querySelector('[data-exposed]');
+      const noteEl = root.querySelector('[data-note]');
+      const modeBtns = [...root.querySelectorAll('[data-mode]')];
+
+      let mode = 'patch';
+      let now = 0;
+      let raf = 0;
+      let since = null;
+
+      function exposurePatch(t) {
+        return data.consumers.reduce((sum, c) => {
+          const updated =
+            t <= c.release ? 0 : 1 - Math.exp(-(t - c.release) / TAU_UPDATE);
+          return sum + c.share * (1 - updated);
+        }, 0);
+      }
+      function exposure(t, m) {
+        const base = exposurePatch(t);
+        if (m !== 'kill' || t <= data.killDay) return base;
+        const off = 1 - Math.exp(-(t - data.killDay) / TAU_KILL);
+        return base * (1 - off);
+      }
+      function pathFor(m, until) {
+        const pts = [];
+        for (let t = 0; t <= until + 1e-9; t += 0.25) {
+          pts.push(
+            `${((t / data.days) * 420).toFixed(1)} ${(100 - exposure(t, m) * 100).toFixed(1)}`,
+          );
+        }
+        return pts.length ? `M${pts.join(' L')}` : '';
+      }
+
+      const NOTES = [
+        [
+          0,
+          'Day 0: the defect is found in the field. Every user of every consuming app is on the affected version.',
+        ],
+        [1, 'Day 1: triage done.'],
+        [
+          2,
+          'Day 2: patch 4.2.1 is released. Not one user is protected yet: the patch has to travel through five other teams.',
+        ],
+        [
+          5,
+          'Day 5: the pilot consumer ships first, and its users start updating.',
+        ],
+        [11, 'Day 11: the second consumer ships on its weekly schedule.'],
+        [
+          21,
+          'Day 21: four of five consumers have shipped, and about half of all users are still exposed.',
+        ],
+        [
+          29,
+          'Day 29: the last consumer ships on its monthly train. About a fifth of users are still exposed.',
+        ],
+        [
+          42,
+          'Day 42: most consumers shipped the fix weeks ago, and the users who have not updated are still running the defective code.',
+        ],
+      ];
+      const KILL_NOTES = [
+        [
+          1,
+          'Day 1: the kill switch turns the subsystem off by remote configuration. It reaches active sessions within hours, on no one else’s schedule.',
+        ],
+        [
+          2,
+          'Day 2: exposure is under a tenth and falling. The patch now restores the feature rather than stopping the damage.',
+        ],
+        [
+          42,
+          'Day 42: the feature came back app by app as each consumer shipped the patch; after day 3 almost nobody ran the defective path.',
+        ],
+      ];
+
+      function noteFor(t) {
+        const list =
+          mode === 'kill' ? [...NOTES.slice(0, 1), ...KILL_NOTES] : NOTES;
+        let text = list[0][1];
+        list.forEach(([d, s]) => {
+          if (t >= d) text = s;
+        });
+        return text;
+      }
+
+      function render() {
+        segs.forEach((seg) => {
+          const from = Number(seg.dataset.from);
+          const to = Number(seg.dataset.to);
+          const shownTo = Math.min(to, now);
+          seg.style.left = `${(from / data.days) * 100}%`;
+          seg.style.width =
+            shownTo > from ? `${((shownTo - from) / data.days) * 100}%` : '0';
+        });
+        marks.forEach((m) => (m.hidden = now < Number(m.dataset.mark)));
+        lineEl.setAttribute('d', pathFor(mode, now));
+        ghostEl.setAttribute('d', mode === 'kill' ? pathFor('patch', now) : '');
+        cursor.style.setProperty('--at', String(now));
+        dayEl.textContent = String(Math.floor(now));
+        const e = exposure(now, mode) * 100;
+        exposedEl.textContent = `${e >= 10 ? Math.round(e) : e.toFixed(1)}%`;
+        noteEl.textContent = noteFor(now);
+        root.dataset.mode = mode;
+      }
+
+      function frame(ts) {
+        if (since === null) since = ts - (now / data.days) * DURATION_MS;
+        now = Math.min(data.days, ((ts - since) / DURATION_MS) * data.days);
+        render();
+        if (now < data.days) {
+          raf = requestAnimationFrame(frame);
+          return;
+        }
+        raf = 0;
+        since = null;
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
+      function play() {
+        if (raf) return;
+        if (now >= data.days) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        raf = requestAnimationFrame(frame);
+      }
+      function pause() {
+        cancelAnimationFrame(raf);
+        raf = 0;
+        since = null;
+      }
+      function reset() {
+        pause();
+        now = 0;
+        render();
+      }
+
+      modeBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.mode === mode) return;
+          mode = btn.dataset.mode;
+          modeBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          reset();
+          if (reduce) {
+            now = data.days;
+            render();
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          play();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause,
+        reset,
+      });
+
+      now = reduce ? data.days : 0;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-dp]').forEach(initDefect);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .dp__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .dp__readout {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 4px var(--sp-3);
+    margin-bottom: var(--sp-2);
+    font-size: 12px;
+    color: var(--fg-muted);
+  }
+  .dp__readout b {
+    display: inline-block;
+    min-width: 3.2ch;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+  .dp__exposed b {
+    color: var(--viz-bad);
+  }
+
+  .dp__plot {
+    --name: 9.5rem;
+    --gap: var(--sp-3);
+    position: relative;
+    display: grid;
+    gap: 6px;
+    padding: var(--sp-3);
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .dp__lanes {
+    display: grid;
+    gap: 5px;
+  }
+  .dp__lane,
+  .dp__chart,
+  .dp__axis {
+    display: grid;
+    grid-template-columns: var(--name) minmax(0, 1fr);
+    gap: var(--gap);
+    align-items: center;
+  }
+  .dp__name {
+    display: grid;
+    min-width: 0;
+  }
+  .dp__name b {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .dp__name small {
+    font-size: 10.5px;
+    line-height: 1.3;
+    color: var(--fg-faint);
+  }
+  .dp__track {
+    position: relative;
+    height: 20px;
+    background: color-mix(in srgb, var(--fg) 4%, transparent);
+    border-radius: 4px;
+  }
+  .dp__seg {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    width: 0;
+    border-radius: 3px;
+  }
+  .dp__seg--wait {
+    background: repeating-linear-gradient(
+      135deg,
+      var(--border-strong) 0 3px,
+      transparent 3px 6px
+    );
+  }
+  .dp__seg--work {
+    background: var(--viz-meta);
+  }
+  .dp__seg--review {
+    background: var(--viz-level);
+  }
+  .dp__seg--users {
+    background: linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--viz-sound) 45%, transparent),
+      var(--viz-sound) 40%
+    );
+  }
+  .dp__mark {
+    position: absolute;
+    top: 50%;
+    left: calc(var(--at) / var(--days) * 100%);
+    padding: 0 4px;
+    margin-left: 4px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-style: normal;
+    font-weight: 600;
+    color: var(--viz-sound-text);
+    transform: translateY(-50%);
+  }
+  .dp__lane--sdk {
+    padding-bottom: 5px;
+    border-bottom: 1px dashed var(--border);
+  }
+
+  .dp__chart {
+    margin-top: var(--sp-2);
+  }
+  .dp__curve {
+    position: relative;
+    height: 96px;
+    border-bottom: 1px solid var(--border-strong);
+    border-left: 1px solid var(--border-strong);
+  }
+  .dp__curve svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+  .dp__grid {
+    stroke: var(--border);
+    stroke-dasharray: 3 3;
+    vector-effect: non-scaling-stroke;
+  }
+  .dp__line {
+    fill: none;
+    stroke: var(--viz-bad);
+    stroke-width: 2.4;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+  }
+  .dp__line--ghost {
+    stroke: var(--fg-faint);
+    stroke-width: 1.4;
+    stroke-dasharray: 4 3;
+  }
+  .dp__y {
+    position: absolute;
+    right: calc(100% + 4px);
+    font-size: 10px;
+    font-style: normal;
+    color: var(--fg-faint);
+    transform: translateY(-50%);
+  }
+  .dp__y--top {
+    top: 0;
+  }
+  .dp__y--mid {
+    top: 50%;
+  }
+
+  .dp__axis-track {
+    position: relative;
+    height: 14px;
+  }
+  .dp__axis-track i {
+    position: absolute;
+    left: calc(var(--at) / var(--days) * 100%);
+    font-size: 10px;
+    font-style: normal;
+    white-space: nowrap;
+    color: var(--fg-faint);
+    transform: translateX(-50%);
+  }
+  .dp__axis-track i:first-child {
+    transform: none;
+  }
+  .dp__axis-track i:last-child {
+    transform: translateX(-100%);
+  }
+
+  .dp__cursor {
+    position: absolute;
+    top: var(--sp-3);
+    bottom: calc(var(--sp-3) + 16px);
+    left: calc(
+      var(--sp-3) + var(--name) + var(--gap) +
+        (100% - 2 * var(--sp-3) - var(--name) - var(--gap)) * var(--at) /
+        var(--days)
+    );
+    width: 1px;
+    background: var(--fg);
+    opacity: 0.35;
+    pointer-events: none;
+  }
+
+  .dp__legend {
+    margin-top: var(--sp-3);
+  }
+  .dp__note {
+    min-height: 3em;
+    margin: var(--sp-3) 0 0;
+    padding-left: var(--sp-3);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg);
+    border-left: 3px solid var(--viz-bad);
+  }
+  :global(.dp[data-mode='kill']) .dp__note {
+    border-left-color: var(--viz-sound);
+  }
+
+  @media (max-width: 560px) {
+    .dp__plot {
+      --name: 4.2rem;
+      --gap: var(--sp-2);
+      padding: var(--sp-2);
+    }
+    .dp__name small,
+    .dp__y {
+      display: none;
+    }
+    .dp__cursor {
+      top: var(--sp-2);
+      bottom: calc(var(--sp-2) + 16px);
+      left: calc(
+        var(--sp-2) + var(--name) + var(--gap) +
+          (100% - 2 * var(--sp-2) - var(--name) - var(--gap)) * var(--at) /
+          var(--days)
+      );
+    }
+  }
+</style>

@@ -1,0 +1,443 @@
+---
+/**
+ * The main-thread arithmetic, made adjustable. Pairs times ticks per second is
+ * the number of main-actor crossings a naive pipeline pays; divided by the
+ * refresh rate it is crossings per frame. A per-key coalescer with a per-frame
+ * flush pays one, whatever the inputs.
+ *
+ * Underneath: the measured cost of a crossing on the author's hardware, and an
+ * estimate of the hop overhead per second that follows from it. The estimate
+ * is labelled as one: it counts the hop only, not the work the host does for
+ * each delivery, which is usually the larger cost.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '05',
+  caption = 'The upper strip is one frame of a naive pipeline: one main-actor crossing per tick. The lower strip is a per-key buffer flushed once per frame: one crossing, whatever feeds it. The thirty-pairs-at-twenty-updates scenario is constructed on real constraints, not taken from a production system. The hop cost below it is measured; the overhead line multiplies that cost out and is an estimate.',
+} = Astro.props;
+
+const HOP = {
+  items: 10_000,
+  perItemMin: 76,
+  perItemMax: 99,
+  batchedMin: 0.84,
+  batchedMax: 0.87,
+  ratioMin: 91,
+  ratioMax: 117,
+};
+---
+
+<VizFrame
+  fig={fig}
+  title="Crossings onto the main actor, per frame"
+  caption={caption}
+  class="cx"
+  data-cx
+  label="Main-actor crossings per frame: one per tick for a naive pipeline against one per frame for a per-key buffer, above the measured cost of a crossing."
+>
+  <div class="cx__controls" data-shot-hide>
+    <label class="cx__control">
+      <span class="cx__control-name viz-mono"
+        >currency pairs <b data-pairs-out>30</b></span
+      >
+      <input
+        type="range"
+        min="1"
+        max="200"
+        value="30"
+        step="1"
+        data-pairs
+        aria-label="Number of currency pairs"
+      />
+    </label>
+    <label class="cx__control">
+      <span class="cx__control-name viz-mono"
+        >ticks per pair per second <b data-ticks-out>20</b></span
+      >
+      <input
+        type="range"
+        min="1"
+        max="200"
+        value="20"
+        step="1"
+        data-ticks
+        aria-label="Ticks per pair per second"
+      />
+    </label>
+    <div class="viz-seg" role="group" aria-label="Display refresh rate">
+      <button type="button" aria-pressed="true" data-hz="60">60 Hz</button>
+      <button type="button" aria-pressed="false" data-hz="120">120 Hz</button>
+    </div>
+  </div>
+
+  <div class="cx__strips">
+    <div class="cx__strip-row">
+      <span class="cx__strip-name">
+        <b>one crossing per tick</b>
+        <small class="viz-mono" data-naive-sub>600 / s</small>
+      </span>
+      <span class="cx__strip" data-naive-strip aria-hidden="true"></span>
+      <span class="cx__strip-val viz-mono" data-naive-val>10</span>
+    </div>
+    <div class="cx__strip-row">
+      <span class="cx__strip-name">
+        <b>coalesce per key, flush per frame</b>
+        <small class="viz-mono" data-coal-sub>60 / s</small>
+      </span>
+      <span class="cx__strip cx__strip--ok" aria-hidden="true">
+        <i class="cx__tick cx__tick--ok" style="left:calc(100% - 5px)"></i>
+      </span>
+      <span class="cx__strip-val cx__strip-val--ok viz-mono">1</span>
+    </div>
+    <div class="cx__frame-axis viz-mono" aria-hidden="true">
+      <span>frame start</span>
+      <span data-frame-len>16.7 ms</span>
+    </div>
+  </div>
+
+  <p class="cx__reading" data-reading aria-live="polite"></p>
+
+  <div class="cx__hop viz-panel">
+    <span class="viz-label"
+      >what one crossing costs · measured, {HOP.items.toLocaleString('en-GB')} items,
+      3 runs</span
+    >
+    <div class="cx__hop-row">
+      <span class="cx__hop-name">10,000 crossings, one per item</span>
+      <span class="cx__hop-track"
+        ><i class="cx__hop-fill cx__hop-fill--many" style="--w:100%"></i></span
+      >
+      <span class="cx__hop-val viz-mono"
+        >{HOP.perItemMin}–{HOP.perItemMax} ms</span
+      >
+    </div>
+    <div class="cx__hop-row">
+      <span class="cx__hop-name">1 crossing, 10,000 items batched</span>
+      <span class="cx__hop-track"
+        ><i
+          class="cx__hop-fill cx__hop-fill--one"
+          style={`--w:${(HOP.batchedMax / HOP.perItemMax) * 100}%`}></i></span
+      >
+      <span class="cx__hop-val viz-mono"
+        >{HOP.batchedMin}–{HOP.batchedMax} ms</span
+      >
+    </div>
+    <p class="cx__hop-note">
+      {HOP.ratioMin}–{HOP.ratioMax}× on one machine: about 7.6 to 9.9 µs per
+      hop. The ratio travels; the microseconds do not.
+    </p>
+    <p class="cx__estimate" data-estimate></p>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-cx-data
+    set:html={JSON.stringify({
+      hopMinUs: (HOP.perItemMin * 1000) / HOP.items,
+      hopMaxUs: (HOP.perItemMax * 1000) / HOP.items,
+    })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const MAX_TICKS_DRAWN = 48;
+
+    function initCrossings(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(root.querySelector('[data-cx-data]').textContent);
+      const pairs = root.querySelector('[data-pairs]');
+      const ticks = root.querySelector('[data-ticks]');
+      const pairsOut = root.querySelector('[data-pairs-out]');
+      const ticksOut = root.querySelector('[data-ticks-out]');
+      const naiveStrip = root.querySelector('[data-naive-strip]');
+      const naiveVal = root.querySelector('[data-naive-val]');
+      const naiveSub = root.querySelector('[data-naive-sub]');
+      const coalSub = root.querySelector('[data-coal-sub]');
+      const frameLen = root.querySelector('[data-frame-len]');
+      const reading = root.querySelector('[data-reading]');
+      const estimate = root.querySelector('[data-estimate]');
+      const hzBtns = [...root.querySelectorAll('[data-hz]')];
+
+      let hz = 60;
+      const fmt = (n) => n.toLocaleString('en-GB');
+      const one = (n) => Math.round(n * 10) / 10;
+
+      function drawTicks(perFrame) {
+        const drawn = Math.min(Math.ceil(perFrame), MAX_TICKS_DRAWN);
+        const marks = [];
+        for (let i = 0; i < drawn; i += 1) {
+          const tick = document.createElement('i');
+          tick.className = 'cx__tick';
+          tick.style.left = `calc(${((i + 0.5) / drawn) * 100}% - 1px)`;
+          marks.push(tick);
+        }
+        naiveStrip.replaceChildren(...marks);
+        naiveStrip.classList.toggle('is-dense', perFrame > MAX_TICKS_DRAWN);
+      }
+
+      function render() {
+        const p = Number(pairs.value);
+        const t = Number(ticks.value);
+        const perSecond = p * t;
+        const perFrame = perSecond / hz;
+        const shown = perFrame >= 10 ? Math.round(perFrame) : one(perFrame);
+
+        pairsOut.textContent = String(p);
+        ticksOut.textContent = String(t);
+        naiveVal.textContent = String(shown);
+        naiveSub.textContent = `${fmt(perSecond)} / s`;
+        coalSub.textContent = `${hz} / s`;
+        frameLen.textContent = `${one(1000 / hz)} ms`;
+        drawTicks(perFrame);
+
+        const perKeyPerFrame = t / hz;
+        let perKey;
+        if (perKeyPerFrame > 1) {
+          perKey = `Each pair updates ${one(perKeyPerFrame)} times per frame, so latest-wins also discards values no frame could have shown.`;
+        } else if (perKeyPerFrame === 1) {
+          perKey =
+            'Each pair updates exactly once per frame, so no value is overwritten before it is shown.';
+        } else {
+          perKey = `Each pair updates once every ${one(hz / t)} frames, so no value is overwritten before it is shown.`;
+        }
+
+        reading.textContent =
+          perFrame <= 1
+            ? `${fmt(perSecond)} crossings a second against ${hz} frames a second is under one per frame. At this rate the transport is not the problem; the design still has to hold on the day the rate rises.`
+            : `${fmt(perSecond)} crossings a second against ${hz} frames a second is ${shown} per frame. ${perKey} The saving is ${shown} separate main-thread jobs per frame collapsed into one.`;
+
+        const lo = (perSecond * data.hopMinUs) / 1000;
+        const hi = (perSecond * data.hopMaxUs) / 1000;
+        const pct = (hi / 1000) * 100;
+        estimate.textContent = `Estimate at these settings: ${one(lo)}–${one(hi)} ms of hop overhead per second (${pct < 1 ? 'under 1' : Math.round(pct)}% of the main thread), before the host does any work per delivery.`;
+        estimate.classList.toggle('is-bad', pct >= 10);
+      }
+
+      pairs.addEventListener('input', render);
+      ticks.addEventListener('input', render);
+      hzBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          hz = Number(btn.dataset.hz);
+          hzBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-cx]').forEach(initCrossings);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .cx__controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: var(--sp-4);
+    align-items: end;
+    margin-bottom: var(--sp-4);
+  }
+  .cx__control {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+  .cx__control-name {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .cx__control-name b {
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cx__strips {
+    display: grid;
+    gap: var(--sp-3);
+  }
+  .cx__strip-row,
+  .cx__frame-axis {
+    display: grid;
+    grid-template-columns: 13rem minmax(0, 1fr) 3rem;
+    gap: var(--sp-3);
+    align-items: center;
+  }
+  .cx__frame-axis {
+    margin-top: -4px;
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .cx__frame-axis span {
+    grid-row: 1;
+    grid-column: 2;
+  }
+  .cx__frame-axis span:last-child {
+    justify-self: end;
+  }
+  .cx__strip-name {
+    display: grid;
+    min-width: 0;
+  }
+  .cx__strip-name b {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .cx__strip-name small {
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .cx__strip {
+    position: relative;
+    height: 30px;
+    overflow: hidden;
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .cx__strip.is-dense {
+    background: repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--viz-net) 70%, transparent) 0 2px,
+      transparent 2px 4px
+    );
+  }
+  .cx__strip :global(.cx__tick) {
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--viz-net);
+  }
+  .cx__strip.is-dense :global(.cx__tick) {
+    display: none;
+  }
+  .cx__tick--ok {
+    width: 4px !important;
+    background: var(--viz-sound) !important;
+  }
+  .cx__strip-val {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    text-align: right;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+  .cx__strip-val--ok {
+    color: var(--viz-sound-text);
+  }
+
+  .cx__reading {
+    min-height: 3em;
+    margin: var(--sp-4) 0;
+    padding-left: var(--sp-3);
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg);
+    border-left: 3px solid var(--viz-sound);
+  }
+
+  .cx__hop {
+    display: grid;
+    gap: var(--sp-2);
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .cx__hop-row {
+    display: grid;
+    grid-template-columns: 13rem minmax(0, 1fr) 6.5rem;
+    gap: var(--sp-3);
+    align-items: center;
+  }
+  .cx__hop-name {
+    font-size: var(--fs-xs);
+    color: var(--fg-muted);
+  }
+  .cx__hop-track {
+    height: 18px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--fg) 5%, transparent);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .cx__hop-fill {
+    display: block;
+    width: 0;
+    min-width: 3px;
+    height: 100%;
+    transition: width 0.7s var(--ease);
+  }
+  .cx__hop-fill--many {
+    background: color-mix(in srgb, var(--viz-net) 55%, var(--viz-panel));
+  }
+  .cx__hop-fill--one {
+    background: var(--viz-sound);
+  }
+  :global(.is-visible) .cx__hop-fill,
+  :global(html:not(.js)) .cx__hop-fill {
+    width: var(--w);
+  }
+  .cx__hop-val {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    text-align: right;
+    white-space: nowrap;
+    color: var(--fg);
+  }
+  .cx__hop-note,
+  .cx__estimate {
+    margin: 0;
+    font-size: var(--fs-xs);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+  .cx__estimate {
+    padding-top: var(--sp-2);
+    border-top: 1px dashed var(--border-strong);
+    color: var(--viz-level);
+  }
+  .cx__estimate.is-bad {
+    color: var(--viz-bad);
+    font-weight: 600;
+  }
+
+  @media (max-width: 640px) {
+    .cx__controls {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .cx__strip-row,
+    .cx__hop-row,
+    .cx__frame-axis {
+      grid-template-columns: minmax(0, 1fr) 5.5rem;
+    }
+    .cx__strip-name,
+    .cx__hop-name {
+      grid-column: 1 / -1;
+    }
+    .cx__frame-axis span {
+      grid-column: 1 / -1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cx__hop-fill {
+      transition: none;
+    }
+  }
+</style>

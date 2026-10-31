@@ -1,0 +1,152 @@
+/**
+ * Print palette for everything that leaves this site: ink on white, with the
+ * brand yellow as a highlight rather than as the ink.
+ *
+ * The site itself runs its own dark and light theme. Yellow inverts badly on
+ * paper and inside someone else's light page, where #f5d74b sits at 1.4:1
+ * against white. Here the structure, labels and ordinary data marks are
+ * near-black, and the yellow lands only on the element each figure argues
+ * for, the way the cover uses it.
+ *
+ * Imported by the standalone article export and by the figure pages that get
+ * rasterised, so both look like the same document.
+ *
+ * The highlight rules carry !important because they have to win over each
+ * component's own accent styling whatever order the bundler emits.
+ */
+
+/**
+ * Type matches the destination: Amalia first, exactly as the receiving site
+ * declares it, then Arial and Helvetica. Amalia is a licensed Monotype face,
+ * so it is named rather than shipped. On their pages their own stylesheet
+ * serves it and the article inherits it; anywhere else the stack falls back
+ * to Arial, which is the metric-compatible neighbour they named themselves.
+ */
+:root {
+  --font-sans: Amalia, Arial, Helvetica, sans-serif !important;
+  --font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace !important;
+
+  --brand: #f5d74b;
+  --brand-tint: rgba(245, 215, 75, 0.4);
+  --brand-edge: #14110a;
+  --mark-edge: #d4d9e0;
+  --accent: #14110a;
+  --accent-text: #14110a;
+  --accent-fg: #14110a;
+  --accent-soft: rgba(245, 215, 75, 0.34);
+  --accent-line: #14110a;
+}
+
+/* Links carry ink like the body, so they need the underline to stay visible. */
+.doc .prose a {
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--brand-edge);
+  background: linear-gradient(var(--accent-soft), var(--accent-soft));
+  padding: 0 0.12em;
+}
+
+/**
+ * The shared figure frame (VizFrame) on white. Its role colours become shades
+ * of ink, so structure reads in one voice; --viz-sound, the role each figure
+ * argues for, becomes the yellow fill, and its text twin stays ink. Only lost
+ * data and breaking changes keep a colour of their own, a muted red. The
+ * tokens carry !important because the frame declares them on the same
+ * selector weight, later in the bundle.
+ */
+:where(.doc, .shot) .viz {
+  --viz-sound: var(--brand) !important;
+  --viz-sound-text: var(--brand-edge) !important;
+  --viz-level: #6b5a1e !important;
+  --viz-meta: #3a3d45 !important;
+  --viz-net: #6a6f7a !important;
+  --viz-bad: #a03636 !important;
+  --viz-grid: transparent !important;
+  --viz-panel: #ffffff !important;
+  background: #ffffff !important;
+  border-color: #d4d9e0 !important;
+}
+:where(.doc, .shot) .viz__head,
+:where(.doc, .shot) .viz__body {
+  background: #ffffff !important;
+}
+:where(.doc, .shot) .viz__fig {
+  background: var(--brand) !important;
+  border-color: var(--brand-edge) !important;
+  color: var(--brand-edge) !important;
+}
+:where(.doc, .shot) .viz-seg button[aria-pressed='true'],
+:where(.doc, .shot) .viz-btn--primary {
+  background: var(--brand) !important;
+  color: var(--brand-edge) !important;
+}
+:where(.doc, .shot) .viz-legend i {
+  box-shadow: inset 0 0 0 1px var(--mark-edge);
+}
+
+/* The boundary itself is the subject of figure one. */
+:where(.doc, .shot) .sb__rail-line {
+  background: var(--brand) !important;
+  opacity: 1;
+  box-shadow: 0 0 0 1px rgba(20, 17, 10, 0.35);
+}
+:where(.doc, .shot) .sb__pill {
+  border-color: var(--brand-edge) !important;
+}
+
+/* The step number is a label in a full-height grid cell, so a fill there
+   paints a bar down the row. It stays ink. */
+:where(.doc, .shot) .rail__num {
+  color: var(--brand-edge) !important;
+  background: none !important;
+}
+
+/**
+ * Data bars carry the brand, outlined in light grey so a pale fill still has
+ * an edge on white. Intensity does the ranking: the outcome each figure
+ * argues for is the solid yellow, the case it argues against is the same hue
+ * held back to a tint.
+ */
+:where(.doc, .shot) .rl__fill--ok,
+:where(.doc, .shot) .cx__hop-fill--one,
+:where(.doc, .shot) .cx__tick--ok,
+:where(.doc, .shot) .dp__seg--users {
+  background: var(--brand) !important;
+  box-shadow: inset 0 0 0 1px var(--mark-edge);
+}
+:where(.doc, .shot) .rl__fill--racy,
+:where(.doc, .shot) .cx__hop-fill--many,
+:where(.doc, .shot) .mb__range--defers {
+  background: var(--brand-tint) !important;
+  box-shadow: inset 0 0 0 1px var(--mark-edge);
+}
+:where(.doc, .shot) .mb__range--waits {
+  background: #8a8371 !important;
+}
+
+/* The property under discussion, the step that carries the guarantee, the
+   state that settles, the change being classified. */
+/* The property under discussion: the gate that stops the update, the state
+   that settles, the verdict a fix should earn, the selected contract. */
+:where(.doc, .shot) .sl__gate[data-verdict='stop'] .sl__verdict,
+:where(.doc, .shot) .cc__pill[data-verdict='patch'],
+:where(.doc, .shot) .cm__contract[aria-pressed='true'] .cm__n,
+:where(.doc, .shot) .rail__param {
+  background: var(--brand) !important;
+  border-color: var(--brand-edge) !important;
+  color: var(--brand-edge) !important;
+}
+:where(.doc, .shot) .sl__gate[data-verdict='stop'],
+:where(.doc, .shot) .cm__contract[aria-pressed='true'],
+:where(.doc, .shot) .cc__row[aria-pressed='true'],
+:where(.doc, .shot) .sl__outcome[data-applied='true'] {
+  border-color: var(--brand-edge) !important;
+}
+:where(.doc, .shot) .ts__state--ok rect {
+  fill: var(--brand) !important;
+  stroke: var(--brand-edge) !important;
+}
+:where(.doc, .shot) .cc6__boundary::before {
+  border-top-color: var(--brand) !important;
+  opacity: 1 !important;
+}

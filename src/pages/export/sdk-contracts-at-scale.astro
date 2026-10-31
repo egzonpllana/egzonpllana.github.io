@@ -1,0 +1,174 @@
+---
+/**
+ * Standalone export of the SDK contracts article.
+ *
+ * Renders the same MDX and the same figure components as the public talk page,
+ * with every site element removed: no header, no footer, no navigation, no
+ * theme toggle, no share actions, no view counter, no author, no site links.
+ * The result is a single self-contained document suitable for submission to
+ * another organisation's engineering blog.
+ *
+ * Set COMPANY below to print an eyebrow above the title and a colophon under
+ * it. Left empty, neither renders and the document carries no attribution.
+ *
+ * Build the portable single file with: npm run export:article
+ * Not linked from anywhere on the site and marked noindex.
+ */
+import '../../styles/global.css';
+import '../../styles/prose.css';
+import '../../styles/export-light.css';
+import { getCollection, render } from 'astro:content';
+import { readFileSync } from 'node:fs';
+
+const COMPANY = '';
+
+const talk = (await getCollection('talks')).find((t) =>
+  t.id.startsWith('sdk-contracts-at-scale'),
+);
+if (!talk) throw new Error('sdk-contracts-at-scale.mdx not found in talks');
+const { Content } = await render(talk);
+const { title, description } = talk.data;
+
+// The export carries its own ink-on-yellow cover (scripts/gen-cover-sdk-contracts.mjs);
+// the site's dark cover would read as a foreign object on a light page.
+// Inlined so the document stays a single portable file with no asset requests.
+const cover = readFileSync('exports/sdk-contracts-at-scale-cover.png');
+const coverSrc = `data:image/png;base64,${cover.toString('base64')}`;
+---
+
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <script is:inline>
+      // One ground in every context: ink on white, so the document prints and
+      // pastes the same way for every reader. No system preference, no toggle.
+      document.documentElement.classList.add('js');
+    </script>
+  </head>
+  <body>
+    <main>
+      <article class="doc">
+        <header class="doc__header">
+          {COMPANY && <p class="doc__eyebrow">{COMPANY} Engineering</p>}
+          <h1 class="doc__title">{title}</h1>
+          <p class="doc__lede">{description}</p>
+        </header>
+
+        <figure class="doc__cover">
+          <img src={coverSrc} alt="" width="1920" height="1080" />
+        </figure>
+
+        <div class="prose">
+          <Content />
+        </div>
+
+        {
+          COMPANY && (
+            <footer class="doc__colophon">
+              <p>
+                Written by the {COMPANY} SDK team. Figures are measured on the
+                team's hardware; workloads are stated alongside each number.
+              </p>
+            </footer>
+          )
+        }
+      </article>
+    </main>
+
+    <script is:inline>
+      // Scroll-reveal for the figures, matching the site behaviour.
+      (() => {
+        const reduce = window.matchMedia(
+          '(prefers-reduced-motion: reduce)',
+        ).matches;
+        const reveal = () => {
+          const els = document.querySelectorAll(
+            '[data-reveal]:not(.is-visible)',
+          );
+          if (reduce || !('IntersectionObserver' in window)) {
+            els.forEach((el) => el.classList.add('is-visible'));
+            return;
+          }
+          const io = new IntersectionObserver(
+            (entries, obs) => {
+              entries.forEach((entry) => {
+                if (entry.isIntersecting) {
+                  entry.target.classList.add('is-visible');
+                  obs.unobserve(entry.target);
+                }
+              });
+            },
+            { rootMargin: '0px 0px -8% 0px', threshold: 0.08 },
+          );
+          els.forEach((el) => io.observe(el));
+        };
+        if (document.readyState !== 'loading') reveal();
+        else document.addEventListener('DOMContentLoaded', reveal);
+      })();
+    </script>
+  </body>
+</html>
+
+<style>
+  .doc {
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: var(--sp-8) var(--sp-5) var(--sp-9);
+  }
+  .doc__header {
+    margin-bottom: var(--sp-7);
+    padding-bottom: var(--sp-5);
+    border-bottom: 1px solid var(--border);
+  }
+  .doc__eyebrow {
+    margin: 0 0 var(--sp-3);
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+  .doc__title {
+    margin: 0;
+    font-size: var(--fs-2xl);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    color: var(--fg);
+  }
+  .doc__lede {
+    margin: var(--sp-4) 0 0;
+    font-size: var(--fs-lg);
+    line-height: 1.6;
+    color: var(--fg-muted);
+  }
+  .doc__cover {
+    margin: 0 0 var(--sp-7);
+  }
+  .doc__cover img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+  }
+  .doc__colophon {
+    margin-top: var(--sp-8);
+    padding-top: var(--sp-5);
+    border-top: 1px solid var(--border);
+    font-size: var(--fs-sm);
+    color: var(--fg-faint);
+  }
+  .doc__colophon p {
+    margin: 0;
+  }
+  @media (max-width: 600px) {
+    .doc {
+      padding: var(--sp-6) var(--sp-4) var(--sp-8);
+    }
+  }
+</style>

@@ -1,4 +1,5 @@
 User-agent: *
 Allow: /
+Disallow: /export/
 
 Sitemap: https://egzonpllana.github.io/sitemap-index.xml

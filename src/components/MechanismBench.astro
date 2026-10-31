@@ -1,0 +1,323 @@
+---
+/**
+ * Four thread-safe mechanisms behind one coalescer contract, measured on the
+ * author's hardware: 60,000 receives from 30 concurrent producers, four runs.
+ * Ranges are drawn as ranges. The ratio column is computed from the extremes
+ * of those ranges against the serial queue, so it is as wide as the data.
+ * The point of the figure is the right-hand column: whether the producer
+ * waits for its write to happen.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '04',
+  caption = 'Thirty concurrent tasks awaiting receive, sixty thousand times in total, four runs on one machine. The queues accept a write with async and return before it runs, so producers never wait for each other; the Mutex performs the write before it returns, and the actor makes each caller wait for its job. The ranking measures who defers work, not which primitive is faster. The often-quoted result that puts an unfair lock an order of magnitude ahead measures uncontended synchronous increments: a different workload.',
+} = Astro.props;
+
+interface Row {
+  name: string;
+  detail: string;
+  min: number;
+  max: number;
+  waits: boolean;
+  syncApi: boolean;
+}
+
+const ROWS: Row[] = [
+  {
+    name: 'Serial queue',
+    detail: 'DispatchQueue, writes with async',
+    min: 44,
+    max: 52,
+    waits: false,
+    syncApi: true,
+  },
+  {
+    name: 'Concurrent + barrier',
+    detail: 'every write is a barrier',
+    min: 48,
+    max: 52,
+    waits: false,
+    syncApi: true,
+  },
+  {
+    name: 'Mutex',
+    detail: 'Synchronization, iOS 18+',
+    min: 79,
+    max: 92,
+    waits: true,
+    syncApi: true,
+  },
+  {
+    name: 'Actor',
+    detail: 'compiler-enforced isolation',
+    min: 104,
+    max: 128,
+    waits: true,
+    syncApi: false,
+  },
+];
+
+const BASE = ROWS[0];
+const ratio = (r: Row) => {
+  const lo = r.min / BASE.max;
+  const hi = r.max / BASE.min;
+  if (hi < 1.25) return '≈ 1×';
+  return `${lo.toFixed(1)}–${hi.toFixed(1)}×`;
+};
+
+const SCALE = 140;
+const TICKS = [0, 35, 70, 105, 140];
+---
+
+<VizFrame
+  fig={fig}
+  title="One contract, four mechanisms"
+  caption={caption}
+  class="mb"
+  label="Range bars for four thread-safe mechanisms under the same workload: serial queue 44 to 52 ms, concurrent queue with barrier 48 to 52 ms, Mutex 79 to 92 ms, actor 104 to 128 ms."
+>
+  <div class="mb__head">
+    <span class="viz-label">wall time, ms · lower is faster</span>
+    <span class="viz-mono mb__meta"
+      >60,000 receives · 30 producers · 4 runs · one machine · measured</span
+    >
+  </div>
+
+  <div class="mb__table">
+    <div class="mb__row mb__row--axis" aria-hidden="true">
+      <span></span>
+      <span class="mb__axis">
+        {TICKS.map((t) => <i style={`left:${(t / SCALE) * 100}%`}>{t}</i>)}
+      </span>
+      <span class="viz-label mb__col">vs serial</span>
+      <span class="viz-label mb__col">producer</span>
+    </div>
+
+    <ol class="mb__rows">
+      {
+        ROWS.map((r, i) => (
+          <li class="mb__row" style={`--d:${i * 90}ms`}>
+            <span class="mb__name">
+              <b>{r.name}</b>
+              <small>{r.detail}</small>
+            </span>
+            <span
+              class="mb__track"
+              role="img"
+              aria-label={`${r.name}: ${r.min} to ${r.max} milliseconds`}
+            >
+              {TICKS.slice(1, -1).map((t) => (
+                <i class="mb__grid" style={`left:${(t / SCALE) * 100}%`} />
+              ))}
+              <span
+                class:list={[
+                  'mb__range',
+                  r.waits ? 'mb__range--waits' : 'mb__range--defers',
+                ]}
+                style={`--l:${(r.min / SCALE) * 100}%; --w:${((r.max - r.min) / SCALE) * 100}%`}
+              />
+              <span
+                class:list={[
+                  'mb__range-text viz-mono',
+                  // A range ending near the axis top labels on its left side.
+                  { 'mb__range-text--before': r.max / SCALE > 0.8 },
+                ]}
+                style={
+                  r.max / SCALE > 0.8
+                    ? `left:calc(${(r.min / SCALE) * 100}% - 6px)`
+                    : `left:calc(${(r.max / SCALE) * 100}% + 6px)`
+                }
+              >
+                {r.min}–{r.max}
+              </span>
+            </span>
+            <span class="mb__ratio viz-mono">{ratio(r)}</span>
+            <span class="mb__tags">
+              <span
+                class:list={[
+                  'viz-chip',
+                  r.waits ? 'viz-chip--level' : 'viz-chip--net',
+                ]}
+              >
+                {r.waits ? 'waits for write' : 'returns first'}
+              </span>
+              <span class="mb__api viz-mono">
+                {r.syncApi ? 'sync getter possible' : 'async only'}
+              </span>
+            </span>
+          </li>
+        ))
+      }
+    </ol>
+  </div>
+
+  <div class="viz-legend mb__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-net)"></i>write deferred to a queue</span>
+    <span><i style="--c:var(--viz-level)"></i>write done before return</span>
+  </div>
+</VizFrame>
+
+<style>
+  .mb__head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+  }
+  .mb__meta {
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+
+  .mb__table {
+    display: grid;
+    gap: var(--sp-2);
+  }
+  .mb__rows {
+    display: grid;
+    gap: var(--sp-3);
+  }
+  .mb__row {
+    display: grid;
+    grid-template-columns: 10rem minmax(0, 1fr) 5.2rem 9.5rem;
+    gap: var(--sp-3);
+    align-items: center;
+  }
+  .mb__axis {
+    position: relative;
+    height: 1rem;
+  }
+  .mb__axis i {
+    position: absolute;
+    top: 0;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-style: normal;
+    color: var(--fg-faint);
+    transform: translateX(-50%);
+  }
+  .mb__axis i:first-child {
+    transform: none;
+  }
+  .mb__axis i:last-child {
+    transform: translateX(-100%);
+  }
+  .mb__col {
+    font-size: 10px;
+  }
+  .mb__name {
+    display: grid;
+    min-width: 0;
+  }
+  .mb__name b {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .mb__name small {
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+  .mb__track {
+    position: relative;
+    height: 26px;
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .mb__grid {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--border);
+  }
+  .mb__range {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: var(--l);
+    width: 0;
+    min-width: 2px;
+    border-radius: 4px;
+    transition: width 0.6s var(--ease) var(--d);
+  }
+  .mb__range--defers {
+    background: var(--viz-net);
+  }
+  .mb__range--waits {
+    background: var(--viz-level);
+  }
+  :global(.is-visible) .mb__range,
+  :global(html:not(.js)) .mb__range {
+    width: var(--w);
+  }
+  .mb__range-text {
+    position: absolute;
+    top: 50%;
+    font-size: 11px;
+    white-space: nowrap;
+    color: var(--fg-muted);
+    transform: translateY(-50%);
+    font-variant-numeric: tabular-nums;
+  }
+  .mb__range-text--before {
+    transform: translate(-100%, -50%);
+  }
+  .mb__ratio {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    text-align: right;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+  .mb__tags {
+    display: grid;
+    justify-items: start;
+    gap: 3px;
+  }
+  .mb__api {
+    font-size: 10.5px;
+    color: var(--fg-faint);
+  }
+  .mb__legend {
+    margin-top: var(--sp-4);
+  }
+
+  @media (max-width: 640px) {
+    .mb__row {
+      grid-template-columns: minmax(0, 1fr) 4.5rem;
+    }
+    .mb__row--axis {
+      display: none;
+    }
+    .mb__name {
+      grid-column: 1;
+    }
+    .mb__ratio {
+      grid-column: 2;
+      grid-row: 1;
+    }
+    .mb__track {
+      grid-column: 1 / -1;
+    }
+    .mb__tags {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--sp-2);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .mb__range {
+      transition: none;
+    }
+  }
+</style>

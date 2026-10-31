@@ -1,0 +1,336 @@
+---
+/**
+ * Semantic versioning, applied strictly, for an SDK integrated by many apps.
+ * Every candidate change is listed with the release it costs; the toggle
+ * switches between a binary framework built with library evolution and a
+ * source package, because some verdicts depend on that choice. Pick a row to
+ * see why. The enum and default-parameter rows were checked with compiled
+ * probes on Swift 6.4.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '09',
+  caption = 'Verdicts flip with the distribution model. With library evolution, Swift 6 clients must write @unknown default, which is what lets a new enum case ship in a minor release; a source package’s enums are exhaustive and any new case breaks a switch. A binary exports symbols, so even a source-compatible change like a new defaulted parameter removes the old entry point. Applied strictly, the table reduces to one rule: fixing a defect in the library must never require a consumer to migrate.',
+} = Astro.props;
+
+type Verdict = 'patch' | 'minor' | 'major';
+interface Change {
+  key: string;
+  label: string;
+  binary: Verdict;
+  source: Verdict;
+  why: string;
+  whySource?: string;
+}
+
+const CHANGES: Change[] = [
+  {
+    key: 'race',
+    label: 'fix an internal data race with a lock',
+    binary: 'patch',
+    source: 'patch',
+    why: 'No signature moves. This is what a patch is for: a defect fixed, and nothing for a consumer to do but take the new version.',
+  },
+  {
+    key: 'field',
+    label: 'add a defaulted property to Configuration',
+    binary: 'minor',
+    source: 'minor',
+    why: 'Additive. Nothing a consumer wrote stops compiling, and a non-frozen struct can grow stored properties under library evolution. This is the reason to take one configuration object rather than a parameter list.',
+  },
+  {
+    key: 'param',
+    label: 'add a defaulted parameter to a public method',
+    binary: 'major',
+    source: 'minor',
+    why: 'Call sites still compile, but the exported symbol changes: track(_:) becomes track(_:flush:) and the old one is gone. Any prebuilt binary linked against it fails to load. Add an overload and keep the old entry point instead, and it is a minor.',
+    whySource:
+      'Clients recompile, so existing calls pick up the default. Function references and overrides are the edge cases that break; strict teams still ship it as a minor with a note.',
+  },
+  {
+    key: 'deprecate',
+    label: 'deprecate a method with renamed:',
+    binary: 'minor',
+    source: 'minor',
+    why: 'The old symbol still compiles and warns, with a fix-it pointing at the replacement. Removal waits for the next major. One minor release of overlap is the minimum.',
+  },
+  {
+    key: 'case',
+    label: 'add a case to a public non-frozen enum',
+    binary: 'minor',
+    source: 'major',
+    why: 'With library evolution, a Swift 6 client that switches without @unknown default does not compile (Swift 5 mode warns), so every switch already has a path for a case it has not seen.',
+    whySource:
+      'Without library evolution every public enum is exhaustive, @frozen or not. A new case breaks every switch over it in every consumer.',
+  },
+  {
+    key: 'frozen',
+    label: 'add a case to a public @frozen enum',
+    binary: 'major',
+    source: 'major',
+    why: '@frozen is a promise never to add a case. Breaking it is a major, and every exhaustive switch in every consumer stops compiling.',
+  },
+  {
+    key: 'async',
+    label: 'change a public method from sync to async',
+    binary: 'major',
+    source: 'major',
+    why: 'Every call site changes: await spreads outward until it reaches something that cannot be async. Every consuming team pays a migration to absorb one internal decision.',
+  },
+  {
+    key: 'typed',
+    label: 'change the error type of a typed-throws method',
+    binary: 'major',
+    source: 'major',
+    why: 'throws(SDKError) puts the error type in the signature. Every catch that names it and every caller that rethrows it stops compiling. Adopt typed throws only where the type is genuinely stable.',
+  },
+  {
+    key: 'remove',
+    label: 'remove a deprecated method',
+    binary: 'major',
+    source: 'major',
+    why: 'Source-breaking by definition. Correct in a major, after the deprecation window, with a migration guide that says why and not only what.',
+  },
+];
+
+const COST: Record<Verdict, string> = {
+  patch: 'Consumers take a new version. Nothing else.',
+  minor: 'Consumers adopt when they like. Nothing they wrote breaks.',
+  major: 'Every consuming team schedules a migration.',
+};
+const PILL: Record<Verdict, string> = {
+  patch: 'patch',
+  minor: 'minor',
+  major: 'major',
+};
+---
+
+<VizFrame
+  fig={fig}
+  title="What does this change cost the consuming apps?"
+  caption={caption}
+  class="cc"
+  data-cc
+  label="Candidate API changes with the release each one costs, patch, minor or major, for a binary framework with library evolution and for a source package."
+>
+  <div class="cc__bar" data-shot-hide>
+    <div class="viz-seg" role="group" aria-label="Distribution model">
+      <button type="button" aria-pressed="true" data-mode="binary"
+        >binary · library evolution</button
+      >
+      <button type="button" aria-pressed="false" data-mode="source"
+        >source package</button
+      >
+    </div>
+  </div>
+
+  <ul class="cc__list">
+    {
+      CHANGES.map((c, i) => (
+        <li>
+          <button
+            type="button"
+            class="cc__row"
+            data-change={c.key}
+            aria-pressed={i === 2 ? 'true' : 'false'}
+          >
+            <span class="cc__label">{c.label}</span>
+            <span class="cc__pill viz-mono" data-pill data-verdict={c.binary}>
+              {PILL[c.binary]}
+            </span>
+          </button>
+        </li>
+      ))
+    }
+  </ul>
+
+  <div class="cc__detail viz-panel" aria-live="polite">
+    <div class="cc__detail-head">
+      <span class="cc__pill viz-mono" data-detail-pill></span>
+      <span class="cc__cost" data-cost></span>
+    </div>
+    <p class="cc__why" data-why></p>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-cc-data
+    set:html={JSON.stringify({ changes: CHANGES, cost: COST, pill: PILL })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initClassifier(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(root.querySelector('[data-cc-data]').textContent);
+      const rows = [...root.querySelectorAll('[data-change]')];
+      const modeBtns = [...root.querySelectorAll('[data-mode]')];
+      const detailPill = root.querySelector('[data-detail-pill]');
+      const costEl = root.querySelector('[data-cost]');
+      const whyEl = root.querySelector('[data-why]');
+
+      let mode = 'binary';
+      let selected = 'param';
+
+      function render() {
+        rows.forEach((row) => {
+          const c = data.changes.find((x) => x.key === row.dataset.change);
+          const v = c[mode];
+          const pill = row.querySelector('[data-pill]');
+          pill.textContent = data.pill[v];
+          pill.dataset.verdict = v;
+          row.classList.toggle('is-flipped', c.binary !== c.source);
+          row.setAttribute('aria-pressed', String(c.key === selected));
+        });
+        const c = data.changes.find((x) => x.key === selected);
+        const v = c[mode];
+        detailPill.textContent = data.pill[v];
+        detailPill.dataset.verdict = v;
+        costEl.textContent = data.cost[v];
+        whyEl.textContent =
+          mode === 'source' && c.whySource ? c.whySource : c.why;
+      }
+
+      rows.forEach((row) =>
+        row.addEventListener('click', () => {
+          selected = row.dataset.change;
+          render();
+        }),
+      );
+      modeBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          mode = btn.dataset.mode;
+          modeBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-cc]').forEach(initClassifier);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .cc__bar {
+    margin-bottom: var(--sp-3);
+  }
+  .cc__bar .viz-seg {
+    flex-wrap: wrap;
+    border-radius: 16px;
+  }
+  .cc__list {
+    display: grid;
+    gap: 4px;
+  }
+  .cc__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    width: 100%;
+    padding: 6px 8px 6px 12px;
+    font: inherit;
+    text-align: left;
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition:
+      border-color 0.18s var(--ease),
+      background 0.18s var(--ease);
+  }
+  .cc__row:hover {
+    border-color: var(--border-strong);
+  }
+  .cc__row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .cc__row[aria-pressed='true'] {
+    border-color: var(--viz-sound);
+    background: var(--accent-soft);
+  }
+  .cc__label {
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--fg);
+  }
+  .cc__row.is-flipped .cc__label::after {
+    content: ' · depends on distribution';
+    color: var(--fg-faint);
+    font-size: 10.5px;
+  }
+
+  .cc__pill {
+    flex: none;
+    min-width: 4.4rem;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+    border: 1px solid var(--c);
+    border-radius: 999px;
+    color: var(--c);
+    background: color-mix(in srgb, var(--c) 12%, transparent);
+  }
+  .cc__pill[data-verdict='patch'] {
+    --c: var(--viz-sound-text);
+  }
+  .cc__pill[data-verdict='minor'] {
+    --c: var(--viz-level);
+  }
+  .cc__pill[data-verdict='major'] {
+    --c: var(--viz-bad);
+  }
+
+  .cc__detail {
+    margin-top: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .cc__detail-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+  }
+  .cc__cost {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .cc__why {
+    min-height: 4.8em;
+    margin: var(--sp-2) 0 0;
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    color: var(--fg-muted);
+  }
+
+  @media (max-width: 560px) {
+    .cc__row.is-flipped .cc__label::after {
+      display: block;
+      content: 'depends on distribution';
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cc__row {
+      transition: none;
+    }
+  }
+</style>

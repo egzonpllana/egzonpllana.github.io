@@ -1,0 +1,445 @@
+---
+/**
+ * The whole article on one screen: the five constraints of running inside a
+ * host process (plus the one premise about the backend), the four contracts
+ * they force, and for each contract the mechanism that keeps it and the test
+ * that proves it. Pick a contract to see where it comes from; pick a
+ * constraint to see which contracts it drives.
+ */
+import VizFrame from './viz/VizFrame.astro';
+
+interface Props {
+  fig?: string;
+  caption?: string;
+}
+const {
+  fig = '02',
+  caption = 'Each contract follows from one or more constraints of living in a process the SDK does not own, and each one ends in something a test can check. Select a contract to see its sources, its mechanism and its proof, or a constraint to see what it drives.',
+} = Astro.props;
+
+interface Source {
+  id: string;
+  text: string;
+  premise?: boolean;
+}
+interface Contract {
+  id: string;
+  n: string;
+  name: string;
+  from: string[];
+  mechanism: string[];
+  proof: string;
+  href: string;
+}
+
+const SOURCES: Source[] = [
+  { id: 'crash', text: 'Never crash the host' },
+  { id: 'block', text: 'Never block the host’s threads' },
+  { id: 'life', text: 'Never assume the host’s lifecycle' },
+  { id: 'adopt', text: 'Never require a restructure to adopt' },
+  { id: 'perm', text: 'Every public symbol is permanent' },
+  { id: 'backend', text: 'Many clients, one backend', premise: true },
+];
+
+const CONTRACTS: Contract[] = [
+  {
+    id: 'safety',
+    n: '1',
+    name: 'Thread safety is part of the API',
+    from: ['crash', 'perm'],
+    mechanism: [
+      'A threading guarantee written on the public type',
+      'Mutex behind a synchronous API; an actor only for a new async one',
+      'Never call out while holding a lock',
+    ],
+    proof:
+      'Every public entry point hammered from many threads under Thread Sanitizer in CI.',
+    href: '#contract-one-thread-safety-is-part-of-the-api',
+  },
+  {
+    id: 'block',
+    n: '2',
+    name: 'Never block the host’s threads',
+    from: ['block', 'life'],
+    mechanism: [
+      'Coalesce per key, cross to the main actor once per frame',
+      'CPU work marked @concurrent so it never runs on the caller’s actor',
+      'Every task the SDK starts has an owner that cancels it',
+    ],
+    proof:
+      'A counting MainDelivering double: deliveryCount == 1 per frame, and bounded waits that fail rather than hang.',
+    href: '#contract-two-never-block-the-hosts-threads',
+  },
+  {
+    id: 'truth',
+    n: '3',
+    name: 'The server holds the truth',
+    from: ['backend', 'life', 'crash'],
+    mechanism: [
+      'Server-assigned sequence per channel; older never overwrites newer',
+      'Generation token on the request path',
+      'Idempotency key per transfer; a timeout is unknown, not failed',
+    ],
+    proof:
+      'A hand-written interleaving test, and a stale-rejection counter shipped as telemetry.',
+    href: '#contract-three-the-server-holds-the-truth',
+  },
+  {
+    id: 'patch',
+    n: '4',
+    name: 'Defects ship as patch releases',
+    from: ['adopt', 'perm'],
+    mechanism: [
+      'Distribution model decided first: binary with library evolution',
+      'One configuration object, deprecate before remove, minimal surface',
+      'Pilot consumer, crash attribution across hosts, kill switch',
+    ],
+    proof:
+      'An API diff against the last release in CI, so a breaking change fails the build before it ships as a patch.',
+    href: '#contract-four-defects-ship-as-patch-releases',
+  },
+];
+---
+
+<VizFrame
+  fig={fig}
+  title="Five constraints, four contracts"
+  caption={caption}
+  class="cm"
+  data-cm
+  label="Map from the constraints of running inside a host process to the four contracts, each with its mechanism and its test."
+>
+  <div class="cm__grid">
+    <div class="cm__sources">
+      <span class="viz-label">constraints</span>
+      <ul class="cm__source-list">
+        {
+          SOURCES.map((s) => (
+            <li>
+              <button
+                type="button"
+                class:list={[
+                  'cm__source',
+                  { 'cm__source--premise': s.premise },
+                ]}
+                data-source={s.id}
+                aria-pressed="false"
+              >
+                {s.premise && <span class="cm__premise">premise</span>}
+                {s.text}
+              </button>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+
+    <div class="cm__contracts">
+      <span class="viz-label">contracts</span>
+      <ul class="cm__contract-list">
+        {
+          CONTRACTS.map((c, i) => (
+            <li>
+              <button
+                type="button"
+                class="cm__contract"
+                data-contract={c.id}
+                aria-pressed={i === 0 ? 'true' : 'false'}
+              >
+                <span class="cm__n">{c.n}</span>
+                <span class="cm__name">{c.name}</span>
+              </button>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+
+    <div class="cm__detail viz-panel" aria-live="polite">
+      {
+        CONTRACTS.map((c, i) => (
+          <div class="cm__card" data-card={c.id} hidden={i !== 0}>
+            <span class="viz-label">follows from</span>
+            <p class="cm__from">
+              {c.from.map((f) => (
+                <span class="viz-chip viz-chip--meta">
+                  {SOURCES.find((s) => s.id === f)?.text}
+                </span>
+              ))}
+            </p>
+            <span class="viz-label">mechanism</span>
+            <ul class="cm__mech">
+              {c.mechanism.map((m) => (
+                <li>{m}</li>
+              ))}
+            </ul>
+            <span class="viz-label">proof</span>
+            <p class="cm__proof">{c.proof}</p>
+            <a class="cm__link viz-mono" href={c.href}>
+              read contract {c.n} →
+            </a>
+          </div>
+        ))
+      }
+      <div class="cm__card" data-card="by-source" hidden>
+        <span class="viz-label" data-source-name></span>
+        <p class="cm__proof" data-source-text></p>
+      </div>
+    </div>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-cm-data
+    set:html={JSON.stringify({ sources: SOURCES, contracts: CONTRACTS })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    function initContractMap(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(root.querySelector('[data-cm-data]').textContent);
+      const sourceBtns = [...root.querySelectorAll('[data-source]')];
+      const contractBtns = [...root.querySelectorAll('[data-contract]')];
+      const cards = [...root.querySelectorAll('[data-card]')];
+      const bySource = root.querySelector('[data-card="by-source"]');
+      const sourceName = root.querySelector('[data-source-name]');
+      const sourceText = root.querySelector('[data-source-text]');
+
+      function showContract(id) {
+        const contract = data.contracts.find((c) => c.id === id);
+        contractBtns.forEach((b) => {
+          b.setAttribute('aria-pressed', String(b.dataset.contract === id));
+          b.classList.remove('is-lit');
+        });
+        sourceBtns.forEach((b) => {
+          b.setAttribute('aria-pressed', 'false');
+          b.classList.toggle(
+            'is-lit',
+            contract.from.includes(b.dataset.source),
+          );
+        });
+        cards.forEach((c) => (c.hidden = c.dataset.card !== id));
+      }
+
+      function showSource(id) {
+        const source = data.sources.find((s) => s.id === id);
+        const driven = data.contracts.filter((c) => c.from.includes(id));
+        sourceBtns.forEach((b) => {
+          b.setAttribute('aria-pressed', String(b.dataset.source === id));
+          b.classList.remove('is-lit');
+        });
+        contractBtns.forEach((b) => {
+          b.setAttribute('aria-pressed', 'false');
+          b.classList.toggle(
+            'is-lit',
+            driven.some((c) => c.id === b.dataset.contract),
+          );
+        });
+        cards.forEach((c) => (c.hidden = c !== bySource));
+        sourceName.textContent = source.premise ? 'premise' : 'constraint';
+        const names = driven.map((c) => `${c.n}. ${c.name}`);
+        sourceText.textContent = `${source.text} drives ${
+          names.length === 1 ? 'contract' : 'contracts'
+        } ${names.join('; ')}.`;
+      }
+
+      contractBtns.forEach((b) =>
+        b.addEventListener('click', () => showContract(b.dataset.contract)),
+      );
+      sourceBtns.forEach((b) =>
+        b.addEventListener('click', () => showSource(b.dataset.source)),
+      );
+      showContract(data.contracts[0].id);
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-cm]').forEach(initContractMap);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .cm__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 1.3fr);
+    gap: var(--sp-4);
+    align-items: start;
+  }
+  .cm__sources,
+  .cm__contracts {
+    display: grid;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  .cm__source-list,
+  .cm__contract-list {
+    display: grid;
+    gap: 6px;
+  }
+
+  .cm__source,
+  .cm__contract {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    width: 100%;
+    min-height: 34px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: var(--fs-xs);
+    line-height: 1.35;
+    text-align: left;
+    color: var(--fg-muted);
+    background: var(--viz-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition:
+      border-color 0.18s var(--ease),
+      background 0.18s var(--ease),
+      color 0.18s var(--ease);
+  }
+  .cm__source:hover,
+  .cm__contract:hover {
+    border-color: var(--border-strong);
+    color: var(--fg);
+  }
+  .cm__source:focus-visible,
+  .cm__contract:focus-visible,
+  .cm__link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .cm__source--premise {
+    border-style: dashed;
+  }
+  .cm__premise {
+    flex: none;
+    padding: 0 5px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--viz-net);
+    border: 1px solid color-mix(in srgb, var(--viz-net) 45%, transparent);
+    border-radius: 4px;
+  }
+  .cm__source.is-lit,
+  .cm__source[aria-pressed='true'] {
+    color: var(--fg);
+    border-color: var(--viz-meta);
+    background: color-mix(in srgb, var(--viz-meta) 10%, var(--viz-panel));
+  }
+
+  .cm__contract {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .cm__n {
+    display: inline-grid;
+    flex: none;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--viz-sound-text);
+    border: 1px solid var(--accent-line);
+    border-radius: 50%;
+  }
+  .cm__contract.is-lit {
+    border-color: var(--accent-line);
+  }
+  .cm__contract[aria-pressed='true'] {
+    border-color: var(--viz-sound);
+    background: var(--accent-soft);
+  }
+  .cm__contract[aria-pressed='true'] .cm__n {
+    color: var(--accent-fg);
+    background: var(--viz-sound);
+    border-color: var(--viz-sound);
+  }
+
+  .cm__detail {
+    min-width: 0;
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .cm__card {
+    display: grid;
+    gap: 6px;
+  }
+  .cm__from {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 0 0 var(--sp-2);
+  }
+  .cm__from .viz-chip {
+    white-space: normal;
+  }
+  .cm__mech {
+    display: grid;
+    gap: 4px;
+    margin-bottom: var(--sp-2) !important;
+  }
+  .cm__mech li {
+    position: relative;
+    padding-left: 14px;
+    font-size: var(--fs-sm);
+    line-height: 1.45;
+    color: var(--fg);
+  }
+  .cm__mech li::before {
+    content: '';
+    position: absolute;
+    top: 0.55em;
+    left: 2px;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--viz-sound);
+  }
+  .cm__proof {
+    margin: 0;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg-muted);
+  }
+  .cm__link {
+    justify-self: start;
+    margin-top: var(--sp-2);
+    font-size: 11.5px;
+    color: var(--viz-sound-text);
+    text-decoration: none;
+  }
+  .cm__link:hover {
+    text-decoration: underline;
+  }
+
+  @media (max-width: 820px) {
+    .cm__grid {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+    .cm__detail {
+      grid-column: 1 / -1;
+    }
+  }
+  @media (max-width: 560px) {
+    .cm__grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cm__source,
+    .cm__contract {
+      transition: none;
+    }
+  }
+</style>

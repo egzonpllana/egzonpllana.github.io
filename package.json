@@ -11,7 +11,9 @@
     "check": "astro check",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "astro": "astro"
+    "astro": "astro",
+    "export:article": "astro build && node scripts/export-article.mjs sdk-contracts-at-scale",
+    "export:package": "astro build && node scripts/export-package.mjs"
   },
   "dependencies": {
     "@astrojs/mdx": "^4.2.6",

@@ -1,0 +1,411 @@
+---
+title: 'Engineering an SDK at scale: the four contracts'
+description: 'A library that runs inside other teams’ processes, across many markets and millions of devices, signs four contracts whether or not anyone writes them down: thread safety is part of the API, the host’s threads are not the SDK’s to block, the server holds the truth, and defects ship as patch releases. What each one means, the measurements behind it, and the test that proves it.'
+date: 2026-10-08
+tags: ['SDK', 'Engineering', 'Concurrency', 'Architecture', 'Swift', 'iOS']
+heroImage: '../../assets/covers/sdk-contracts-at-scale.png'
+---
+
+import SdkBoundary from '../../components/SdkBoundary.astro';
+import ContractMap from '../../components/ContractMap.astro';
+import RaceLoss from '../../components/RaceLoss.astro';
+import MechanismBench from '../../components/MechanismBench.astro';
+import CrossingsChart from '../../components/CrossingsChart.astro';
+import CallCrossing from '../../components/CallCrossing.astro';
+import StalenessLadder from '../../components/StalenessLadder.astro';
+import TransferStates from '../../components/TransferStates.astro';
+import ChangeClassifier from '../../components/ChangeClassifier.astro';
+import DefectPropagation from '../../components/DefectPropagation.astro';
+import PhaseRail from '../../components/PhaseRail.astro';
+import { REVIEW_PHASES } from '../../data/review-phases';
+
+When an app has a bug, the team that shipped the app fixes it and ships a new build on its own schedule. When an SDK has a bug, the bug is inside every app that embeds it. It shows up in each of those apps' crash reports, it reaches users on each of those apps' release schedules, and the fix reaches users only after every one of those teams has picked it up, rebuilt, passed review and waited for its users to update. One defect, many owners, many clocks.
+
+That asymmetry is the whole subject of this article. It changes what "correct" means for code that runs inside someone else's process, and it turns a handful of ordinary engineering choices (a lock or an actor, a timeout, a new enum case) into commitments that last for years.
+
+**This is about any library that ships into a process it does not own.** A payments module embedded in a dozen banking apps, an analytics layer inside a storefront, a maps component inside a delivery app: all of them work under the same four contracts, written down or not. The examples are Swift, because that is where we measured them, but the reasoning carries to any platform.
+
+The material comes from an internal study we ran to make those contracts precise: two Swift packages, 130 tests, snippets compiled on Swift 6.3 at the time and re-checked on Swift 6.4 (Xcode 27.1) for this version. Every number is labelled. A **measured** number comes with its workload and machine. An **estimate** says so. A **constructed** scenario is built from real constraints but is not a report of any production system. No consuming app, partner or market is identified.
+
+## The boundary that cannot move
+
+Every design discussion about an SDK ends up at the same place: the public API. Not because the internals are simple, but because the internals are the only part the SDK team is free to change after release.
+
+<SdkBoundary />
+
+Running inside a process you do not own comes with five constraints:
+
+1. **Never crash the host.** The host's crash-free rate includes the SDK's crashes. They show up in the host's crash reporting, against the SDK's symbols, and the host team reads them first.
+2. **Never block the host's threads.** The SDK does not know which thread will call it, and no assumption about that holds across consumers.
+3. **Never assume the host's lifecycle.** Launch order, backgrounding, screen lifetimes and the other code sharing the process all belong to someone else.
+4. **Never require a restructure to adopt.** If integrating the SDK forces a consumer to rewrite their networking layer, the boundary is wrong.
+5. **Every public symbol is permanent.** Anything behind the API can be rewritten. Nothing in front of it can change without a cost to every consumer.
+
+The first three are concurrency and lifecycle constraints. "Never crash" is mostly a data-race question, "never block" is a main-thread budget question, and "never assume the lifecycle" is a question of who owns each task and who cancels it. The last two are about the shape and permanence of the API. Add one premise that is not a constraint but a fact, many clients talking to one backend, and the four contracts follow.
+
+<ContractMap />
+
+> **In plain words:** the SDK lives in someone else's house. It may not break things, hog the shared rooms, assume when the lights go off, demand a renovation to move in, or take back anything it has handed over.
+
+## Contract one: thread safety is part of the API
+
+Start with the kind of defect that does not crash.
+
+<RaceLoss />
+
+Several threads incrementing one unsynchronised counter almost never fault. In the recorded run above, more than half of the increments disappeared and the program reported the remainder as the total, with no crash and no diagnostic. Inside an analytics SDK, that bug shows no symptom in the host for months, until a consumer notices that event counts never reconcile with their backend.
+
+Two details about that run matter. First, Swift 6 rejects the unsynchronised version outright ("passing closure as a 'sending' parameter risks causing data races"); it compiles only behind an opt-out such as `nonisolated(unsafe)`, `@unchecked Sendable` or a module still in Swift 5 mode. Those opt-outs, plus Objective-C and C++ internals and callbacks from C libraries, are exactly where races survive in real SDKs. Second, the loss is not a constant. Re-running the same probe on Swift 6.4 in a debug build lost between 30% and 45% per run; in an optimised build the compiler folded each loop and the race vanished from the output altogether. A run that loses nothing proves nothing.
+
+The conclusion is not "use a lock". It is this: **a thread-safety guarantee that is not written down is one consumers will assume and the SDK team will never test.** If the documentation does not say which members may be called from which threads, consumers will call setters from whatever thread is convenient, which is normal app behaviour. With nothing published, there is nothing to test against, and when the integration breaks, neither side has violated anything. Code review catches wrong code. It cannot catch a contract that was never written.
+
+So the guarantee goes on the public boundary, as a commitment:
+
+```swift
+/// Thread-safe. All members may be called from any thread.
+public final class Analytics { ... }
+```
+
+Then it is enforced. Every public entry point is driven from many threads at once under Thread Sanitizer in continuous integration, so a regression fails the build instead of a consumer's release. Thread Sanitizer only reports races that actually execute, so the stress tests have to call every public member, not a representative few.
+
+### The decision the API shape forces
+
+A concrete case. A public cache type has shipped with a synchronous getter. Hosts read it on the main thread while configuring a cell, and one host calls it from Objective-C. A data race is found inside it. Which isolation mechanism should the fix use?
+
+The usual instinct is an actor, and in an app that is often right. For an existing synchronous API in an SDK it is wrong, and the reason is the boundary.
+
+Every method on an actor is `async` to callers outside it. Turning the cache into an actor turns every existing call site into an `await`, and the `await` spreads outward through the consumer's code until it reaches something that cannot be asynchronous, such as a table view data source or that Objective-C caller. With ten consuming apps, that is ten migrations to absorb one internal fix. Under strict semantic versioning it is a major release, paid to fix a data race. Contract four comes back to that cost.
+
+So the decision turns on one question, asked before any code is written: is this an existing API with live call sites that must keep compiling, or a new API whose shape is still open? A new asynchronous API can be an actor, and contract two uses one. An existing synchronous API cannot, before performance is even considered.
+
+That leaves two ways to keep the read synchronous: a lock, or a serial dispatch queue read with `sync`. We use the lock, `Mutex` from the `Synchronization` module on iOS 18 and later and `OSAllocatedUnfairLock` on iOS 16 and 17, for a reason that has nothing to do with speed:
+
+```swift
+import Synchronization
+
+public final class LockedCache<Value: Sendable>: Sendable {
+    private let entries = Mutex<[String: Value]>([:])
+
+    public func setValue(_ value: Value?, forKey key: String) {
+        entries.withLock { $0[key] = value }
+    }
+
+    public func getValue(forKey key: String) -> Value? {
+        entries.withLock { $0[key] }
+    }
+}
+```
+
+`Mutex` keeps the protected state inside the lock rather than next to it. The only way to reach the dictionary is through `withLock`, so the compiler rules out the bug where one code path forgets to synchronise, and the class conforms to `Sendable` with no `@unchecked`. `OSAllocatedUnfairLock<State>` gives the same two properties one OS generation earlier. A dispatch queue gives neither: state guarded by a queue is guarded by convention, the compiler cannot see that every access goes through `queue.sync`, and the type can only claim `Sendable` with `@unchecked`. That is an assertion every method added later can silently break. In an app the risk is bounded. In a library that many teams extend for years, compiler enforcement is worth more than any benchmark.
+
+Three rules come with any lock:
+
+- **Prefer `withLock` to a manual `lock()` / `unlock()` pair.** `Mutex` only offers the closure form. Primitives that do expose the pair, such as `NSLock` and `OSAllocatedUnfairLock`, leak the lock on an early return or a thrown error, and the next caller waits forever.
+- **Never call out while holding the lock.** A delegate, completion handler or notification can call straight back into the SDK. On Apple platforms `Mutex` and `OSAllocatedUnfairLock` are built on `os_unfair_lock`, which refuses a recursive lock: re-entering a `Mutex` from the same thread terminated our probe process outright (exit code 137, Swift 6.4, macOS 26). Inside a host, that is a crash in the host's crash report, under the SDK's symbol.
+- **Treat the primitive as a deployment-target decision.** `Mutex` where iOS 18 is the minimum, `OSAllocatedUnfairLock` below it. Same abstraction, one generation apart.
+
+### Measuring rather than repeating
+
+"An unfair lock beats a dispatch queue" is repeated everywhere, and it sat in one of our own code comments before anyone had measured it. So we put four mechanisms behind one contract, a rate coalescer with an `async` `receive` and `flush`, and drove each with thirty concurrent tasks sending sixty thousand receives in total.
+
+<MechanismBench />
+
+Two results contradicted the received wisdom. A concurrent queue with barrier writes was no slower than a serial queue on this write-only workload, because when every operation is a barrier the concurrent queue behaves as a serial one. And the lock was slower than both queues, by roughly one and a half to two times across the measured ranges.
+
+The reason is in the harness, and it matters more than the ranking. The queue versions accept a write with `queue.async` and return before it runs, so thirty producers never wait for each other. The `Mutex` version does the write before it returns, so producers contend. The queues win by deferring the work. On the synchronous getter from the previous section that option does not exist: a queue would have to use `sync`, wait its turn and possibly hop threads, which is the case the often-quoted microbenchmark measures when it puts an unfair lock an order of magnitude ahead over uncontended increments. Both results are real. They measure different workloads.
+
+The durable lesson is not the milliseconds, which belong to one machine. It is that a design note should record the trade-off that was measured, with its workload, rather than the one that was read somewhere. "The lock, for compiler-checked isolation behind a synchronous API; under thirty async producers it measured about 1.5 to 2 times the wall time of a serial queue, because the queue defers the write" is a sentence a reviewer can reproduce.
+
+> **In plain words:** write down which threads may call what, and test exactly that. Choose the lock or the actor from the shape of the API, not from a benchmark, and when you do quote a benchmark, quote its workload with it.
+
+## Contract two: never block the host's threads
+
+The second contract is about the one thread every component in the process shares, and about the tasks an SDK starts inside a process whose lifetime it does not control.
+
+Apple's documentation describes the first part plainly. The main thread runs the main run loop, and work submitted to the main dispatch queue, the main operation queue or the main actor all runs there, in turn, alongside the user's touch events. Discrete delays start to be noticeable as hangs at about 50 to 100 ms, most of Apple's tools report a hang once the main run loop is unresponsive for more than 250 ms, and a single missed refresh interval, 8 to 16 ms depending on the display, is enough to cause a hitch.
+
+An SDK cannot control how much work the host already puts on the main thread. It controls only how often it adds work, and how much each time. So the useful question is arithmetic: how many times per frame does the SDK cross onto the main actor, and what does each crossing cost?
+
+<CrossingsChart />
+
+Take thirty currency pairs, each updating twenty times a second. That is six hundred crossings a second; on a 60 Hz display, ten per frame. Each pair changes only once every three frames, so no value is overwritten before the display shows it. The waste is in the transport: ten separate main-thread jobs per frame deliver what one could carry, and the screen draws all ten cells in the same frame anyway.
+
+We measured the hop itself. Ten thousand items delivered to the main actor one crossing each took 76 to 99 ms across three runs; the same ten thousand items in one batched crossing took under a millisecond. That is 91 to 117 times, or roughly 8 to 10 µs per hop on that machine. Multiplied out, ten hops a frame cost well under 1% of the main thread, which is an important honest limit: at this rate the hop is not what hurts. What hurts is what each delivery triggers on the host's side, an observation update, a diff, a layout pass, once per hop instead of once per frame, and the rate. Push the sliders to two hundred pairs at two hundred updates and the hop overhead alone is an estimated third of every second.
+
+The remedy is a per-key buffer flushed once per frame. It collapses the ten jobs into one, and when a feed does outrun the display (a 200 Hz sensor, or a reconnect replaying a second of buffered ticks) its latest-wins rule drops the intermediate values no frame could have shown:
+
+```swift
+public struct RateTick: Sendable {
+    public let pair: String
+    public let sequence: Int
+    public let price: Decimal
+}
+
+public actor RateCoalescer {
+    private var pending: [String: RateTick] = [:]
+    private var newestSequence: [String: Int] = [:]
+    private let delivery: any MainDelivering<[RateTick]>   // introduced below
+
+    public init(delivery: any MainDelivering<[RateTick]>) {
+        self.delivery = delivery
+    }
+
+    /// Runs hundreds of times a second, so it stays cheap. No crossing, no formatting.
+    public func receive(_ tick: RateTick) {
+        guard tick.sequence > (newestSequence[tick.pair] ?? .min) else { return }
+        newestSequence[tick.pair] = tick.sequence
+        pending[tick.pair] = tick
+    }
+
+    /// Called once per frame by the SDK's frame driver.
+    public func flush() async {
+        guard !pending.isEmpty else { return }
+
+        // Snapshot and clear BEFORE the await. Every `await` is a point where this
+        // actor can be re-entered, and a `receive` arriving mid-flush must land in
+        // the next batch rather than be erased by a `removeAll` that runs after
+        // the suspension.
+        let batch = pending.values.sorted { $0.pair < $1.pair }
+        pending.removeAll(keepingCapacity: true)
+
+        await delivery.deliver(batch)
+    }
+}
+```
+
+Two details tie this type to the other contracts. It is an actor because its API is new and asynchronous by design: contract one rules out converting an existing synchronous API, not choosing an actor for a new one. And `receive` compares a sequence number carried by the tick instead of trusting arrival order, because network messages can arrive out of order. Contract three explains where that number comes from and why the client must not invent it.
+
+The comment inside `flush` is the important part. Move `removeAll` below the `await` and the code still has no data race and still compiles cleanly under Swift 6 strict concurrency, yet it is wrong: any tick received while the actor is suspended in `deliver` is erased when the actor resumes. That is a race condition, not a data race, a distinction contract three makes precise. Mutate state before the suspension point, not after it.
+
+### Where your async code actually runs
+
+Swift 6.2 changed a default that matters more to SDKs than to apps. SE-0461 lets a `nonisolated async` function be `nonisolated(nonsending)`: it runs on the caller's actor instead of hopping to the global executor. With the `NonisolatedNonsendingByDefault` feature, which Xcode's Approachable Concurrency setting turns on, that becomes the behaviour of every such function. For an SDK it means: if the host calls you from the main actor, your async function's body runs on the main thread until it reaches an `await` that leaves.
+
+We checked it with a probe: one library function that does CPU work, called from a `@MainActor` function, compiled three ways on Swift 6.4.
+
+- **Swift 6 language mode, defaults:** both the plain `async` function and the `@concurrent` one ran on a background thread.
+- **With `NonisolatedNonsendingByDefault`:** the plain `async` function ran **on the main thread**; the `@concurrent` one still ran off it.
+- **With default isolation `MainActor` (SE-0466):** the same split. Plain `async` on the main thread, `@concurrent` off it.
+
+The fix is to say where CPU work runs, explicitly, so the answer does not depend on build settings:
+
+```swift
+public struct BalanceClient: Sendable {
+    // Starts on the caller's actor under nonisolated(nonsending).
+    // It only awaits, so that costs the caller nothing.
+    public func balance(for id: AccountID) async throws -> Balance {
+        let request = URLRequest(url: baseURL.appending(path: "balance/\(id.raw)"))
+        let data = try await data(for: request)
+        return try await Self.decode(data)
+    }
+
+    // CPU work: never on the caller's actor, whoever the caller is.
+    @concurrent
+    private static func decode(_ data: Data) async throws -> Balance {
+        try JSONDecoder().decode(Balance.self, from: data)
+    }
+}
+```
+
+The last case is the other trap. Swift 6.2 also made default actor isolation a per-target setting, and new app projects default to `MainActor`. For an app that removes a lot of annotations and matches how UI code behaves. For a library it makes every unannotated declaration `@MainActor`, so background work forces a main-actor hop on every caller, a cost the consumer did not choose and cannot remove. App targets can adopt the default; library targets keep explicit isolation.
+
+### Making the main thread injectable
+
+"The interface froze" is not something a unit test can check: a test process has no display and no user. The cause of the freeze can be checked, provided delivery to the main thread sits behind a protocol:
+
+```swift
+public protocol MainDelivering<Value>: Sendable {
+    associatedtype Value: Sendable
+    func deliver(_ value: Value) async
+}
+```
+
+Production code conforms with a `@MainActor` type; tests conform with a counting double. Networking is routinely put behind a protocol. Main-thread delivery rarely is, although it is the delivery, not the network, that stalls the interface. With the counting double in place, "the list stutters" becomes the assertion `deliveryCount == 600` for one second of ticks, and the fix becomes `deliveryCount == 60`, one per frame. Making the expensive operation injectable so its cost becomes a number is the general technique, and it is what separates a design that is shown to be better from one that is presumed to be.
+
+### The payload decides the policy
+
+Latest-wins is correct for the data the coalescer carries. Applied to other data it becomes a bug. A price the user never saw is a price that no longer exists. A transaction the user never saw is a missing transaction, and in a financial product that is a support case, not a dropped frame.
+
+That difference changes the data structure from a dictionary to a FIFO queue, the policy from latest-wins to keep-everything, and the test from "how few crossings" to "did every row arrive, in order, without blowing the frame budget". It also adds a second budget. Delivering five thousand rows in one crossing is one crossing and one main-thread job whose length is the per-row cost times five thousand. At 80 µs per row (an estimate, not a measurement, and modest for a configured cell) that is 400 ms: a hang by any of Apple's definitions. Fewer crossings and smaller crossings are separate goals, and an SDK feeding a host's list must meet both.
+
+| Payload                      | Policy                                | Why                                                  |
+| ---------------------------- | ------------------------------------- | ---------------------------------------------------- |
+| Price, FX rate, sensor value | Latest-wins, discard intermediates    | A stale price is worse than no price                 |
+| Transaction, ledger entry    | Queue everything, flush in slices     | A missing row is a correctness failure               |
+| Analytics event              | Bounded buffer, drop oldest, count it | Partial loss is acceptable; blocking the host is not |
+| Auth state change            | Deliver immediately, no batching      | Latency matters more than smoothness                 |
+
+The analytics row is the one that flips most easily. An analytics library that blocks the host to avoid losing an event has turned its own contract upside down. The owner of the process decides the policy.
+
+### Owning cancellation
+
+The third constraint, never assume the host's lifecycle, becomes a concrete rule about tasks: every task the SDK starts has an owner inside the SDK that cancels it, tied to something the SDK can observe, such as a subscription ending, a `configure` call being superseded, or the host stopping a feed. A task left to run until the process dies will one day resume against a screen that no longer exists.
+
+<CallCrossing />
+
+The walk-through above separates the two cases. When the host awaits an SDK call, the call runs inside the host's task, so the host's cancellation reaches the SDK for free, as long as the SDK does not break the chain by wrapping its work in a fresh `Task {}`. When the SDK starts long-lived work of its own, such as a socket stream, it must hand back something that owns that work:
+
+```swift
+public final class Subscription: Sendable {
+    private let task: Task<Void, Never>
+
+    init(_ task: Task<Void, Never>) { self.task = task }
+
+    public func cancel() { task.cancel() }
+    deinit { task.cancel() }
+}
+```
+
+Two details separate cancellation that works in a test from cancellation that works in production. Both surfaced in our own test suite before they could surface in a consumer's.
+
+**A cancelled `URLSession` request throws `URLError(.cancelled)`, not `CancellationError`.** We re-checked this against a local server: cancelling the task mid-request produced `URLError` code −999. A `catch is CancellationError` clause misses the case that actually happens, and the user sees an error banner on a screen they already left. Normalise it once, at the SDK's networking boundary, so no caller has to know two spellings of one event:
+
+```swift
+func data(for request: URLRequest) async throws -> Data {
+    do {
+        let (data, _) = try await session.data(for: request)
+        return data
+    } catch let error as URLError where error.code == .cancelled {
+        throw CancellationError()
+    }
+}
+```
+
+**`try? await Task.sleep(...)` swallows cancellation.** The `try?` discards the `CancellationError` and execution carries on as if the sleep had finished, with `Task.isCancelled` still true and ignored. In our suite this meant a hang could not be interrupted by the time limit meant to catch it. A bounded wait that fails tells you which assertion broke; an unbounded one hangs and tells you nothing.
+
+> **In plain words:** count how often you touch the main thread and keep it to once per frame. Say explicitly where heavy work runs, because the defaults changed in Swift 6.2. Make every task the SDK starts belong to something that will stop it.
+
+## Contract three: the server holds the truth
+
+The third contract is about correctness, and it is where "make it an actor" is most often the wrong answer.
+
+An account screen combines two paths. When the user switches account, the client requests that account's balance. While the screen is open, the server also pushes balance events over a stream. Now and then, the displayed balance moves backwards. Nothing in the code is a data race: it is `Sendable`-clean, passes Swift 6 strict checking, and Thread Sanitizer reports nothing. Two balance events left the server in order and overtook each other on the way. The older one arrived second and overwrote the newer value.
+
+The distinction is worth stating exactly. A **data race** is unsynchronised access to the same memory from more than one thread. A **race condition** is a result that depends on the order in which things happen to occur. Actors and Swift 6 checking remove the first class. Only the design removes the second.
+
+Serialising the updates does not order them. They were already serialised, in the wrong order, by the time they reached the client. Each path needs its own defence, and the two paths together need three.
+
+<StalenessLadder />
+
+The three defences complement each other; they are not alternatives. The first two protect the request path. Cancelling the previous request when the account switches saves wasted work, but cancellation is cooperative, so a request that completed just before the cancel has already resumed. A generation token closes that gap by checking at the moment of applying, not the moment of sending. Neither says anything about the stream: they order the client's own requests, not the server's events. Only a server-assigned sequence number per channel, with the rule that nothing older than what has been applied may change state, survives network reordering, a reconnect replaying a buffer, or two sockets racing during a failover. If the payload carries no sequence, that is a gap to close with the backend team, not one to paper over on the client.
+
+### Forcing the interleaving
+
+The property that makes an ordering bug hard to catch in production makes it easy in a test: the bad interleaving can be written out by hand instead of waited for.
+
+```swift
+@Test func lateBalanceUpdateCannotMoveTheBalanceBackwards() async {
+    let reducer = AccountStateReducer()
+
+    await reducer.apply(.balance(sequence: 2, value: 250))
+    await reducer.apply(.balance(sequence: 1, value: 100))  // overtaken in flight
+
+    #expect(await reducer.state.balance == 250)   // late arrival rejected
+    #expect(await reducer.rejectedAsStale == 1)   // and counted
+}
+```
+
+A stress test can show that a race exists. Only an interleaving written by hand reproduces a specific one, and only a reproduced bug stays fixed. The second assertion is deliberate: one rejected update is normal, but a high rejection rate means heavy reordering on the network, and that should be visible, not silent.
+
+### When correctness is money
+
+For an SDK that moves money on behalf of many apps, the same ordering discipline extends to the whole operation.
+
+<TransferStates />
+
+Two properties of that state machine carry the design. The idempotency key is generated once per logical transfer and reused on every retry; generating it per attempt means a retry after a lost response can charge the user twice. And a timeout leads to `unknown`, not `failed`. A timeout only says that the response did not arrive. It says nothing about whether the transfer happened. The client's job is to reconcile with the server, not to guess.
+
+The same reasoning settles what looks like a UI question. Optimistic UI is fine for low-stakes actions and wrong for transfers: show the pending state until the server confirms, and disable the submit button on tap, not on response.
+
+It also settles what the SDK may log. Transitions are logged; values are not. A balance in a crash report is personal financial data sitting in a third party's system, and the SDK team does not choose which crash-reporting vendor each host uploads to.
+
+> **In plain words:** actors stop threads from corrupting memory, not messages from arriving late. Let the server number its events, ignore anything older than what you have shown, and treat "no answer" as "unknown" until the server says otherwise.
+
+## Contract four: defects ship as patch releases
+
+The fourth contract turns every decision above into a versioning decision.
+
+Semantic versioning, applied strictly, has three rules. A major release contains a breaking change and costs every consumer a migration. A minor release adds things without breaking anything. A patch release fixes something without changing the public API. For an SDK team the consequence is simple to state and hard to live by: its own defects must ship as patch releases. Fixing a bug in the library must never require a consumer to migrate. That is the cost contract one put off, and the same rule that ruled out the actor there.
+
+What counts as breaking depends on how the library is distributed, so that decision comes first. A binary XCFramework built with library evolution enabled has a stable interface across compiler versions, and public enums are open by default: we checked that a Swift 6 client switching over one without `@unknown default` fails to compile, while a Swift 5-mode client gets a warning. That forced default case is what lets a new case ship in a minor release, and `@frozen` is the explicit promise that no case will ever be added. A source package has none of this. Consumers compile it themselves, every public enum is exhaustive, and adding any case breaks every switch over it. A binary also exports symbols, which a source package does not: adding a defaulted parameter keeps every call site compiling, but we confirmed with `nm` that `track(_:)` becomes `track(_:flush:)` and the old symbol disappears. For a library consumed by many teams on their own schedules we ship binary with library evolution, and the classifier below shows where that choice changes the answer.
+
+<ChangeClassifier />
+
+Several API rules follow from taking the patch rule seriously:
+
+- **One configuration object rather than a parameter list.** Adding a property with a default is additive. Adding a parameter changes a signature, and in a binary it removes a symbol.
+- **Keep the surface small.** Symbols become `public` deliberately, one at a time, with a reason. A multi-module SDK uses `package` access (SE-0386) to share code between its own modules without publishing it. Four entry points is a maintainable surface; forty is a support commitment made without review.
+- **`public` and `final` rather than `open`.** A consumer's subclass becomes part of the compatibility surface.
+- **`@frozen` only with strong justification.** It is a promise never to add a case.
+- **An owned error surface.** A public error type under the SDK's control beats exposing `URLError` or `DecodingError`, which are implementation details: exposing them makes changing the networking stack a breaking change. Typed throws (SE-0413) puts the error type in the signature, so changing it is a major release; adopt it only where the type is genuinely stable.
+- **Deprecate before removing.** At least one minor release of overlap, with `@available(*, deprecated, renamed:)` pointing at the replacement. Removal happens in the next major, with a migration guide that explains why as well as what.
+- **An API diff in CI.** `swift package diagnose-api-breaking-changes` for source packages, or a comparison of the generated `.swiftinterface` for binaries, run against the last release tag, so a breaking change fails the build before it can ship as a patch.
+- **No third-party dependencies.** An SDK's dependency becomes the consumer's version conflict, binary size and supply-chain audit finding. In regulated environments this is often a requirement, not a preference.
+- **Explicit `configure`, no work at load time.** An Objective-C `+load`, a C constructor or a static initialiser in a linked C++ dependency runs before `main` for every user of the host, including those who never reach the SDK's feature. Moving that work to a background queue at launch does not remove it; it adds contention during the busiest moment of the host's launch.
+- **Deliberate limits on configurability.** Every exposed setting is a permanent support commitment. Declining to expose the retry policy because the SDK owns its correctness is a defensible position; exposing it commits you to every value a consumer might choose.
+
+### Rollout as part of the design
+
+The patch rule makes fixes cheap for consumers. It does not make them fast. A patch reaches users only through every consumer's release schedule, review and update curve, and the slowest consumer sets the tail.
+
+<DefectPropagation />
+
+Three practices follow, and all three have to exist before the incident:
+
+- **A pilot consumer.** Where consumers ship on independent schedules, a release reaches one pilot consumer first, and the pilot is where a defect that would have been an incident is caught.
+- **Crash attribution across hosts.** Each consumer's crash reporting sees only its own app; nobody sees the SDK's crash rate across all of them unless the SDK team builds that view. It starts with shipping debug symbols inside the XCFramework (`xcodebuild -create-xcframework` with `-debug-symbols`), so SDK frames symbolicate in every host's reports.
+- **A kill switch.** A consumer, or the SDK team, can turn a subsystem off through remote configuration instead of a new build. Consumer release cycles can run to weeks, and in a regulated environment the rollback path cannot depend on submitting a binary and waiting for review. As the figure shows, it is the only lever that does not wait on anyone else's schedule.
+
+> **In plain words:** decide how you ship before you decide what is breaking. Then design so that every fix is a patch, and assume even a patch will take weeks to reach the last user, which is why the kill switch ships first.
+
+## Reviewing the design
+
+When the system under review is an account SDK consumed by several apps (the balance and transfer flows of contract three, packaged for hosts) we walk the same nine steps every time. Where reviews tend to stop is informative in itself.
+
+<PhaseRail phases={REVIEW_PHASES} />
+
+Many designs complete the first three steps and stop. Component diagrams are necessary, not sufficient. A review earns its keep when it describes what happens when a transfer times out mid-flight, what gets logged so the failure is visible without logging the amount, and what would be cut if the schedule were halved.
+
+Five dimensions decide whether a diagram is a design or a demonstration: **components** (the right ones, at the right granularity), **direction** (do the arrows show real dependencies), **concurrency** (what runs where, under which isolation), **failure** (what breaks, and what the host sees), and **authority** (which element is the source of truth). Most diagrams cover the first two. The other three are left out most often, which is exactly why they carry the most information. Isolation is marked on each component. The retry and reconciliation path is drawn. Exactly one element is marked as authoritative, and for this system it is the server.
+
+A review closes with the deferred scope stated out loud. For this design, with half the schedule, the offline write queue (transfers composed offline and submitted later) would be cut, and offline mode made read-only, because reconciling queued writes is where the risk concentrates. Sequence ordering and idempotency keys would stay, because they are correctness requirements, not features. The count of updates rejected as stale would ship in the first release, because it is the earliest signal that the ordering logic is wrong.
+
+## Honest limits
+
+- **The measurements are from one machine.** The mechanism comparison and the hop cost were measured on the author's hardware with the workloads stated. The ratios and the reasons behind them travel; the milliseconds do not. Re-measure on the devices you ship to.
+- **The scenarios are constructed.** Thirty currency pairs, the five consumers and their release cadences, the update curve and the 80 µs per row are chosen to be ordinary, not taken from a production system.
+- **Thread Sanitizer finds only races that run.** It runs on the simulator and macOS, not on device, and it is silent about code paths the stress tests never reach.
+- **Some defences need someone else.** Server sequence numbers need the backend to send them. A kill switch adds a remote-configuration dependency, which itself has to fail safe when the configuration cannot be fetched.
+- **The study cannot be shared.** The 130 tests and two packages are internal; every snippet in this article was re-compiled for it on Swift 6.4, and the probes behind the claims above (the recursive `Mutex`, the cancelled request, the enum diagnostics, the exported symbols, where `async` code runs) are small enough to reproduce in an afternoon.
+
+## Takeaways
+
+> **Write the thread-safety contract on the public type, and test exactly that** under Thread Sanitizer, from every public entry point.
+
+> **Let the API's shape choose between lock and actor.** An existing synchronous API keeps a `Mutex`; a new async one may be an actor. Quote any benchmark with its workload.
+
+> **Count main-thread crossings per frame, and say where CPU work runs.** Coalesce to one hop per frame, mark heavy async work `@concurrent`, and keep library targets off `MainActor` default isolation.
+
+> **Give every task an owner that cancels it,** and normalise `URLError.cancelled` to `CancellationError` once, at the networking boundary.
+
+> **Order by server sequence, not arrival.** Count what you reject as stale. Model transfers with an `unknown` state and an idempotency key generated once.
+
+> **Decide the distribution model first, then make every fix a patch.** Run an API diff in CI, ship debug symbols, and ship the kill switch before you need it.
+
+None of these practices is new. Together they are the difference between a library that is documented as safe and one that has been shown to be.
+
+---
+
+## References
+
+**Responsiveness** — [Understanding user interface responsiveness](https://developer.apple.com/documentation/xcode/understanding-user-interface-responsiveness) · [Understanding hangs in your app](https://developer.apple.com/documentation/xcode/understanding-hangs-in-your-app) · [Swift concurrency: Behind the scenes (WWDC21)](https://developer.apple.com/videos/play/wwdc2021/10254/)
+
+**Isolation and locks** — [`Mutex`](https://developer.apple.com/documentation/synchronization/mutex) · [SE-0433: Synchronous mutual exclusion lock](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0433-mutex.md) · [`OSAllocatedUnfairLock`](https://developer.apple.com/documentation/os/osallocatedunfairlock) · [`Sendable`](https://developer.apple.com/documentation/swift/sendable) · [Thread Sanitizer](https://developer.apple.com/documentation/xcode/diagnosing-memory-thread-and-crash-issues-early)
+
+**Where async code runs** — [SE-0461: Run nonisolated async functions on the caller's actor by default](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md) · [SE-0466: Control default actor isolation inference](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md) · [Updating an app to use strict concurrency](https://developer.apple.com/documentation/swift/updating-an-app-to-use-strict-concurrency)
+
+**Cancellation** — [`URLError`](https://developer.apple.com/documentation/foundation/urlerror) · [`CancellationError`](https://developer.apple.com/documentation/swift/cancellationerror) · [`Task.sleep(for:tolerance:clock:)`](<https://developer.apple.com/documentation/swift/task/sleep(for:tolerance:clock:)>)
+
+**API and ABI evolution** — [Library evolution in Swift](https://www.swift.org/blog/library-evolution/) · [Binary frameworks in Swift (WWDC19)](https://developer.apple.com/videos/play/wwdc2019/416/) · [SE-0192: Handling future enum cases](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0192-non-exhaustive-enums.md) · [SE-0413: Typed throws](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0413-typed-throws.md) · [SE-0386: `package` access modifier](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0386-package-access-modifier.md) · [Semantic Versioning 2.0.0](https://semver.org/)
+
+**Testing** — [Swift Testing](https://developer.apple.com/documentation/testing)
