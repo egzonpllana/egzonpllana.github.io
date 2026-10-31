@@ -34,7 +34,7 @@ export const SDKS: Sdk[] = [
     displayName: 'MemoryProfiler',
     repoUrl: 'https://github.com/egzonpllana/memory-profiler-ios',
     description:
-      'Real-time memory monitoring, leak detection, and usage analytics for iOS apps - instrument without Instruments.',
+      'Catches leaked view controllers, SwiftUI models and retain cycles while you use the app, with jetsam-accurate footprint monitoring.',
     tags: ['Profiling', 'Leaks', 'Diagnostics'],
     stars: 41,
     created: '2025-07-27',
