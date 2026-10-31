@@ -1,0 +1,536 @@
+---
+/**
+ * Two tasks call the same actor method one after the other. An actor runs one
+ * job at a time, but an await inside an actor method ends the job: the actor
+ * is free to run the second caller before the first one resumes. The naive
+ * method checks the cache and then awaits, so both callers see an empty cache.
+ * The fixed method stores the in-flight Task before its first await, so the
+ * second caller finds it and waits on it.
+ *
+ * Both variants match the code in the article; the counts match a run of that
+ * code in Swift 6 mode with three concurrent callers (3 requests vs 1).
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'The actor guarantees that only one task runs its code at a time, not that a method runs from start to end without interruption. Every await is a point where another caller can enter. Checking the cache and then awaiting leaves that window open; storing the Task before the await closes it.',
+} = Astro.props;
+
+type Where = { line: number; status: 'run' | 'wait' | 'done' } | null;
+interface Step {
+  a: Where;
+  b: Where;
+  actor: 'A' | 'B' | 'free';
+  cached: string;
+  inFlight?: string;
+  requests: number;
+  text: string;
+  bad?: boolean;
+}
+interface Variant {
+  code: string[];
+  steps: Step[];
+}
+
+const variants: Record<'naive' | 'shared', Variant> = {
+  naive: {
+    code: [
+      'func contacts() async throws -> Snapshot {',
+      '    if let cached { return cached }',
+      '    let fresh = try await remote.fetchContacts()',
+      '    cached = fresh',
+      '    return fresh',
+      '}',
+    ],
+    steps: [
+      {
+        a: { line: 1, status: 'run' },
+        b: null,
+        actor: 'A',
+        cached: 'nil',
+        requests: 0,
+        text: 'Task A enters contacts(). The actor runs it. cached is nil, so it falls through.',
+      },
+      {
+        a: { line: 2, status: 'wait' },
+        b: null,
+        actor: 'free',
+        cached: 'nil',
+        requests: 1,
+        text: 'A sends GET #1 and suspends at the await. Its job on the actor is over: the actor is free.',
+      },
+      {
+        a: { line: 2, status: 'wait' },
+        b: { line: 1, status: 'run' },
+        actor: 'B',
+        cached: 'nil',
+        requests: 1,
+        text: 'Task B enters. Nothing has been written yet, so cached is still nil for B too.',
+        bad: true,
+      },
+      {
+        a: { line: 2, status: 'wait' },
+        b: { line: 2, status: 'wait' },
+        actor: 'free',
+        cached: 'nil',
+        requests: 2,
+        text: 'B sends GET #2 for the same data and suspends.',
+        bad: true,
+      },
+      {
+        a: { line: 4, status: 'done' },
+        b: { line: 2, status: 'wait' },
+        actor: 'A',
+        cached: 'response #1',
+        requests: 2,
+        text: 'GET #1 answers. A resumes, writes cached and returns.',
+      },
+      {
+        a: { line: 4, status: 'done' },
+        b: { line: 4, status: 'done' },
+        actor: 'B',
+        cached: 'response #2',
+        requests: 2,
+        text: 'GET #2 answers. B resumes and overwrites cached with its own copy.',
+        bad: true,
+      },
+      {
+        a: null,
+        b: null,
+        actor: 'free',
+        cached: 'response #2',
+        requests: 2,
+        text: 'Two requests, two writes, and no compiler error: every access was isolated, so there is no data race. The race is in the logic, across the await.',
+        bad: true,
+      },
+    ],
+  },
+  shared: {
+    code: [
+      'func contacts() async throws -> Snapshot {',
+      '    if let cached { return cached }',
+      '    if let inFlight { return try await inFlight.value }',
+      '    let task = Task { try await remote.fetchContacts() }',
+      '    inFlight = task',
+      '    defer { inFlight = nil }',
+      '    let fresh = try await task.value',
+      '    cached = fresh',
+      '    return fresh',
+      '}',
+    ],
+    steps: [
+      {
+        a: { line: 2, status: 'run' },
+        b: null,
+        actor: 'A',
+        cached: 'nil',
+        inFlight: 'nil',
+        requests: 0,
+        text: 'Task A enters. cached is nil and nothing is in flight.',
+      },
+      {
+        a: { line: 4, status: 'run' },
+        b: null,
+        actor: 'A',
+        cached: 'nil',
+        inFlight: 'Task (GET #1)',
+        requests: 1,
+        text: 'A creates the Task and stores it in inFlight. No await sits between the check and the store, so no one can enter in between.',
+      },
+      {
+        a: { line: 6, status: 'wait' },
+        b: null,
+        actor: 'free',
+        cached: 'nil',
+        inFlight: 'Task (GET #1)',
+        requests: 1,
+        text: 'A suspends on task.value. The actor is free, exactly as before.',
+      },
+      {
+        a: { line: 6, status: 'wait' },
+        b: { line: 2, status: 'wait' },
+        actor: 'free',
+        cached: 'nil',
+        inFlight: 'Task (GET #1)',
+        requests: 1,
+        text: 'B enters. cached is nil, but inFlight is set, so B awaits the same Task instead of sending a request.',
+      },
+      {
+        a: { line: 8, status: 'done' },
+        b: { line: 2, status: 'wait' },
+        actor: 'A',
+        cached: 'response #1',
+        inFlight: 'nil',
+        requests: 1,
+        text: 'GET #1 answers. A resumes, writes cached, and the defer clears inFlight.',
+      },
+      {
+        a: { line: 8, status: 'done' },
+        b: { line: 2, status: 'done' },
+        actor: 'B',
+        cached: 'response #1',
+        inFlight: 'nil',
+        requests: 1,
+        text: 'B resumes with the same value. It writes nothing.',
+      },
+      {
+        a: null,
+        b: null,
+        actor: 'free',
+        cached: 'response #1',
+        inFlight: 'nil',
+        requests: 1,
+        text: 'One request, one write. The await is still there; what changed is that the state a second caller needs is written before it.',
+      },
+    ],
+  },
+};
+---
+
+<VizFrame
+  fig="02"
+  title="Actor reentrancy: two callers across one await"
+  caption={caption}
+  class="arw"
+  data-arw
+>
+  <div slot="tools" class="arw__tools">
+    <button type="button" class="viz-btn" data-next aria-label="Next step"
+      >step</button
+    >
+    <AnimControls label="Walk" />
+  </div>
+
+  <div class="arw__bar">
+    <div class="viz-seg" role="group" aria-label="Which actor method">
+      <button type="button" aria-pressed="true" data-variant="naive"
+        >check, then await</button
+      >
+      <button type="button" aria-pressed="false" data-variant="shared"
+        >Task first</button
+      >
+    </div>
+    <span class="viz-mono arw__counter" data-counter></span>
+  </div>
+
+  <div class="arw__state viz-panel">
+    <div>
+      <span class="viz-label">actor runs</span>
+      <span class="viz-chip viz-chip--meta" data-actor>nothing</span>
+    </div>
+    <div>
+      <span class="viz-label">cached</span>
+      <span class="viz-chip viz-chip--sound" data-cached>nil</span>
+    </div>
+    <div data-inflight-wrap>
+      <span class="viz-label">inFlight</span>
+      <span class="viz-chip viz-chip--net" data-inflight>nil</span>
+    </div>
+    <div>
+      <span class="viz-label">requests</span>
+      <span class="viz-chip viz-chip--net" data-requests>0</span>
+    </div>
+  </div>
+
+  <ol class="arw__code viz-panel" data-code aria-hidden="true"></ol>
+
+  <p class="arw__text" data-text aria-live="polite"></p>
+
+  <div class="viz-legend arw__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-net)"></i>task A, task B</span>
+    <span><i style="--c:var(--viz-meta)"></i>actor</span>
+    <span><i style="--c:var(--viz-sound)"></i>cached value</span>
+    <span><i style="--c:var(--viz-bad)"></i>duplicate work</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-arw-data
+    set:html={JSON.stringify(variants)}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = 2400;
+    const STATUS = { run: 'running', wait: 'suspended', done: 'returned' };
+
+    function initReentrancy(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-arw-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const codeEl = root.querySelector('[data-code]');
+      const textEl = root.querySelector('[data-text]');
+      const counterEl = root.querySelector('[data-counter]');
+      const actorEl = root.querySelector('[data-actor]');
+      const cachedEl = root.querySelector('[data-cached]');
+      const inflightWrap = root.querySelector('[data-inflight-wrap]');
+      const inflightEl = root.querySelector('[data-inflight]');
+      const requestsEl = root.querySelector('[data-requests]');
+      const segBtns = [...root.querySelectorAll('[data-variant]')];
+
+      let variant = 'naive';
+      let current = 0;
+      let playing = false;
+      let timer = 0;
+
+      const steps = () => data[variant].steps;
+      const last = () => steps().length - 1;
+
+      function marker(name, where) {
+        const m = document.createElement('span');
+        m.className = `arw__mark is-${where.status}`;
+        m.textContent = `${name} · ${STATUS[where.status]}`;
+        return m;
+      }
+
+      function render() {
+        const s = steps()[current];
+        const lines = data[variant].code.map((code, i) => {
+          const li = document.createElement('li');
+          li.className = 'arw__line';
+          const pre = document.createElement('code');
+          pre.textContent = code;
+          const marks = document.createElement('span');
+          marks.className = 'arw__marks';
+          if (s.a && s.a.line === i) marks.append(marker('A', s.a));
+          if (s.b && s.b.line === i) marks.append(marker('B', s.b));
+          if (marks.childElementCount) li.classList.add('is-hot');
+          if (s.bad && marks.childElementCount) li.classList.add('is-bad');
+          li.append(pre, marks);
+          return li;
+        });
+        codeEl.replaceChildren(...lines);
+        textEl.textContent = s.text;
+        textEl.classList.toggle('is-bad', Boolean(s.bad));
+        counterEl.textContent = `${current + 1} / ${steps().length}`;
+        actorEl.textContent = s.actor === 'free' ? 'free' : `task ${s.actor}`;
+        cachedEl.textContent = s.cached;
+        cachedEl.className = `viz-chip ${s.cached === 'response #2' ? 'viz-chip--bad' : 'viz-chip--sound'}`;
+        inflightWrap.hidden = s.inFlight === undefined;
+        inflightEl.textContent = s.inFlight ?? 'nil';
+        requestsEl.textContent = String(s.requests);
+        requestsEl.className = `viz-chip ${s.requests > 1 ? 'viz-chip--bad' : 'viz-chip--net'}`;
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(() => {
+          current += 1;
+          render();
+          if (current >= last()) {
+            playing = false;
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          schedule();
+        }, STEP_MS);
+      }
+
+      function play() {
+        if (playing) return;
+        if (current >= last()) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        playing = true;
+        schedule();
+      }
+
+      function reset() {
+        stop();
+        current = 0;
+        render();
+      }
+
+      root.querySelector('[data-next]').addEventListener('click', () => {
+        stop();
+        current = current >= last() ? 0 : current + 1;
+        render();
+        root.dispatchEvent(
+          new CustomEvent(current >= last() ? 'anim:ended' : 'anim:paused'),
+        );
+      });
+
+      segBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.variant === variant) return;
+          variant = btn.dataset.variant;
+          segBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          reset();
+          if (reduce) {
+            current = last();
+            render();
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          root.dispatchEvent(new CustomEvent('anim:started'));
+          play();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      // Reduced motion rests on the outcome until the reader steps through.
+      current = reduce ? last() : 0;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-arw]').forEach(initReentrancy);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .arw__tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .arw__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .arw__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+  .arw__counter {
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+
+  .arw__state {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+  }
+  .arw__state div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .arw__state .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+  }
+  @media (max-width: 560px) {
+    .arw__state {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  .arw__code {
+    display: grid;
+    margin-top: var(--sp-3);
+    padding: var(--sp-2) 0;
+  }
+  .arw__code :global(.arw__line) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px 8px;
+    min-height: 26px;
+    padding: 2px var(--sp-3);
+    border-left: 3px solid transparent;
+    transition: background 0.25s var(--ease);
+  }
+  .arw__code :global(.arw__line code) {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--fg-muted);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: none;
+    padding: 0;
+    border: 0;
+  }
+  .arw__code :global(.arw__line.is-hot) {
+    border-left-color: var(--viz-net);
+    background: color-mix(in srgb, var(--viz-net) 7%, transparent);
+  }
+  .arw__code :global(.arw__line.is-hot code) {
+    color: var(--fg);
+  }
+  .arw__code :global(.arw__line.is-bad) {
+    border-left-color: var(--viz-bad);
+    background: color-mix(in srgb, var(--viz-bad) 8%, transparent);
+  }
+  .arw__code :global(.arw__marks) {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: auto;
+  }
+  .arw__code :global(.arw__mark) {
+    --c: var(--viz-net);
+    padding: 1px 7px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--c);
+    border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+    border-radius: 999px;
+    background: var(--surface);
+    white-space: nowrap;
+  }
+  .arw__code :global(.arw__mark.is-wait) {
+    border-style: dashed;
+  }
+  .arw__code :global(.arw__mark.is-done) {
+    --c: var(--viz-sound-text);
+  }
+
+  .arw__text {
+    margin: var(--sp-3) 0 0;
+    min-height: 3em;
+    padding-left: var(--sp-3);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg);
+    border-left: 3px solid var(--viz-meta);
+  }
+  .arw__text.is-bad {
+    border-left-color: var(--viz-bad);
+  }
+  .arw__legend {
+    margin-top: var(--sp-2);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .arw__code :global(.arw__line) {
+      transition: none;
+    }
+  }
+</style>

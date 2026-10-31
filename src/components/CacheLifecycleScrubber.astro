@@ -1,0 +1,563 @@
+---
+/**
+ * Eleven moments in the life of the contacts cache: a cold load, a fresh hit,
+ * a stale read that revalidates with a 304, a mutation while an older refresh
+ * is still in flight, a push that invalidates, and a logout with a request in
+ * flight. With the generation check on, this is the repository in the
+ * article; with it off, the same repository writes whatever response lands
+ * last, which is how stale and other-user data get back into memory.
+ *
+ * Times and the five-minute maxAge are illustrative. The 304 handling matches
+ * a URLSession probe on macOS 26: the app sees the cached body as a 200.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Drag through the timeline. Freshness decides whether a read waits, answers at once, or answers at once and revalidates. Invalidation decides which responses are still allowed to land: without a generation check, a refresh that started before a change, or before a logout, writes its old answer over the new state.',
+} = Astro.props;
+
+type Tone = 'fresh' | 'stale' | 'loading' | 'empty' | 'bad';
+interface Moment {
+  memory: string;
+  tone: Tone;
+  read: string;
+  wire: string;
+  gen: number | string;
+  note: string;
+}
+interface Event {
+  time: string;
+  title: string;
+  on: Moment;
+  off?: Partial<Moment>;
+}
+
+const EVENTS: Event[] = [
+  {
+    time: '0:00',
+    title: 'Contacts tab opens on a cold launch',
+    on: {
+      memory: 'v1 · fresh until 5:00',
+      tone: 'fresh',
+      read: 'waited for the network',
+      wire: 'GET → 200 with body, ETag "v1"',
+      gen: 0,
+      note: 'Nothing in memory, so the first caller has to wait. Every caller that arrives meanwhile joins the same request (Fig 01).',
+    },
+  },
+  {
+    time: '1:30',
+    title: 'New chat opens',
+    on: {
+      memory: 'v1 · fresh until 5:00',
+      tone: 'fresh',
+      read: 'v1 from memory, at once',
+      wire: 'nothing',
+      gen: 0,
+      note: 'Younger than maxAge: answered from memory without asking anyone.',
+    },
+  },
+  {
+    time: '6:10',
+    title: 'Invite friends opens',
+    on: {
+      memory: 'v1 · stale, refreshing',
+      tone: 'stale',
+      read: 'v1 at once, refresh started',
+      wire: 'GET, If-None-Match: "v1"',
+      gen: 0,
+      note: 'Older than maxAge. The screen gets the old list immediately and a background refresh starts: stale-while-revalidate, done by the app.',
+    },
+  },
+  {
+    time: '6:10',
+    title: 'The refresh answers',
+    on: {
+      memory: 'v1 · fresh until 11:10',
+      tone: 'fresh',
+      read: 'nothing to read',
+      wire: '304 Not Modified, no body',
+      gen: 0,
+      note: 'Nothing changed on the server, so revalidation cost a round trip and no body. URLSession hands the app the cached body as a 200, so the repository just resets its clock.',
+    },
+  },
+  {
+    time: '8:00',
+    title: 'Pull to refresh starts R1',
+    on: {
+      memory: 'v1 · refreshing (R1)',
+      tone: 'loading',
+      read: 'v1 stays on screen',
+      wire: 'GET (R1) sent',
+      gen: 0,
+      note: 'R1 is tagged with generation 0, the generation it started in.',
+    },
+  },
+  {
+    time: '8:01',
+    title: 'You accept a contact request',
+    on: {
+      memory: 'v1 · invalidated, R2 sent',
+      tone: 'loading',
+      read: 'v1 stays on screen',
+      wire: 'PATCH → 200, then GET (R2)',
+      gen: 1,
+      note: 'The server changed, so invalidate() bumps the generation and forgets R1. R1 was asked before the change; its answer can no longer be trusted.',
+    },
+    off: {
+      memory: 'v1 · R1 and R2 in flight',
+      note: 'The change is made and a second refresh starts, but nothing marks R1 as out of date.',
+    },
+  },
+  {
+    time: '8:02',
+    title: 'R2 answers first',
+    on: {
+      memory: 'v2 · fresh until 13:02',
+      tone: 'fresh',
+      read: 'v2: the request has moved to contacts',
+      wire: '200 with body, ETag "v2"',
+      gen: 1,
+      note: 'R2 matches the current generation, so it is stored.',
+    },
+  },
+  {
+    time: '8:04',
+    title: 'R1 answers late',
+    on: {
+      memory: 'v2 · fresh until 13:02',
+      tone: 'fresh',
+      read: 'v2',
+      wire: '200 with body, ETag "v1"',
+      gen: 1,
+      note: 'R1 started in generation 0 and the repository is in 1: its answer is dropped, and its callers get v2.',
+    },
+    off: {
+      memory: 'v1 · written over v2',
+      tone: 'bad',
+      read: 'v1: the accepted request is back',
+      note: 'The last response to land wins. R1 was sent first and answered last, so the accepted request reappears in the list until the next refresh.',
+    },
+  },
+  {
+    time: '9:00',
+    title: 'Push: someone sent you a request',
+    on: {
+      memory: 'v2 · invalidated, R3 sent',
+      tone: 'loading',
+      read: 'v2 stays on screen',
+      wire: 'GET (R3) sent',
+      gen: 2,
+      note: 'A change made by someone else only reaches the cache if something tells it. Here the push handler sends the reload signal.',
+    },
+    off: {
+      memory: 'v1 · refreshing (R3)',
+      tone: 'bad',
+      read: 'v1 stays on screen',
+    },
+  },
+  {
+    time: '9:00',
+    title: 'You log out while R3 is in flight',
+    on: {
+      memory: 'empty',
+      tone: 'empty',
+      read: 'nothing: signed out',
+      wire: 'R3 cancelled, URLCache cleared',
+      gen: 3,
+      note: 'clear() cancels the in-flight Task, bumps the generation and empties memory. The HTTP cache is cleared too, since it is keyed by URL, not by user.',
+    },
+    off: {
+      wire: 'R3 still in flight',
+      note: 'Memory is emptied, but the request sent for the old session is still running.',
+    },
+  },
+  {
+    time: '9:01',
+    title: 'R3’s response arrives',
+    on: {
+      memory: 'empty',
+      tone: 'empty',
+      read: 'nothing: signed out',
+      wire: 'nothing',
+      gen: 3,
+      note: 'The Task was cancelled and its generation is old, so nothing is written. The next user starts from an empty cache.',
+    },
+    off: {
+      memory: 'previous user’s v3',
+      tone: 'bad',
+      read: 'the old account’s contacts',
+      wire: '200 with body for the old token',
+      note: 'The response for the signed-out user lands in an empty, signed-out cache. Whoever signs in next sees it until their own first load replaces it.',
+    },
+  },
+];
+
+const variants = {
+  on: EVENTS.map((e) => e.on),
+  off: EVENTS.reduce<Moment[]>((acc, e, i) => {
+    // A broken state carries forward until an event overrides it.
+    const prev = acc[i - 1];
+    const carried =
+      prev && prev.tone === 'bad' && !e.off
+        ? { memory: prev.memory, tone: prev.tone, read: prev.read }
+        : {};
+    // Without the check there is no generation to show.
+    acc.push({ ...e.on, ...carried, ...(e.off ?? {}), gen: 'not tracked' });
+    return acc;
+  }, []),
+};
+const START = 7; // rest on the late R1, where the two variants differ first
+---
+
+<VizFrame
+  fig="03"
+  title="The contacts cache over ten minutes"
+  caption={caption}
+  class="cls"
+  data-cls
+>
+  <div slot="tools">
+    <AnimControls label="Timeline" />
+  </div>
+
+  <div class="cls__bar">
+    <div class="viz-seg" role="group" aria-label="Generation check">
+      <button type="button" aria-pressed="true" data-variant="on"
+        >generation check</button
+      >
+      <button type="button" aria-pressed="false" data-variant="off"
+        >without it</button
+      >
+    </div>
+    <span class="viz-mono cls__cfg">maxAge 5 min</span>
+  </div>
+
+  <div class="cls__scrub">
+    <input
+      type="range"
+      min="0"
+      max={EVENTS.length - 1}
+      step="1"
+      value={START}
+      data-scrub
+      aria-label="Moment on the timeline"
+    />
+    <ol class="cls__strip" data-strip aria-hidden="true">
+      {EVENTS.map(() => <li />)}
+    </ol>
+  </div>
+
+  <p class="cls__event" aria-live="polite">
+    <span class="viz-mono cls__time" data-time></span>
+    <span data-title></span>
+  </p>
+
+  <dl class="cls__grid">
+    <div class="viz-panel">
+      <dt class="viz-label">in memory</dt>
+      <dd><span class="viz-chip" data-memory></span></dd>
+    </div>
+    <div class="viz-panel">
+      <dt class="viz-label">the screen gets</dt>
+      <dd data-read></dd>
+    </div>
+    <div class="viz-panel">
+      <dt class="viz-label">on the wire</dt>
+      <dd class="viz-mono" data-wire></dd>
+    </div>
+    <div class="viz-panel">
+      <dt class="viz-label">generation</dt>
+      <dd class="viz-mono" data-gen></dd>
+    </div>
+  </dl>
+
+  <p class="cls__note" data-note></p>
+
+  <div class="viz-legend cls__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-sound)"></i>fresh</span>
+    <span><i style="--c:var(--viz-level)"></i>stale, still served</span>
+    <span><i style="--c:var(--viz-net)"></i>request in flight</span>
+    <span><i style="--c:var(--fg-faint)"></i>empty</span>
+    <span><i style="--c:var(--viz-bad)"></i>wrong data in memory</span>
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-cls-data
+    set:html={JSON.stringify({
+      variants,
+      events: EVENTS.map((e) => ({ time: e.time, title: e.title })),
+      start: START,
+    })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const STEP_MS = 2600;
+    const CHIP = {
+      fresh: 'viz-chip--sound',
+      stale: 'viz-chip--level',
+      loading: 'viz-chip--net',
+      empty: '',
+      bad: 'viz-chip--bad',
+    };
+
+    function initLifecycle(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-cls-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const scrub = root.querySelector('[data-scrub]');
+      const cells = [...root.querySelectorAll('[data-strip] li')];
+      const segBtns = [...root.querySelectorAll('[data-variant]')];
+      const el = (name) => root.querySelector(`[data-${name}]`);
+      const timeEl = el('time');
+      const titleEl = el('title');
+      const memEl = el('memory');
+      const readEl = el('read');
+      const wireEl = el('wire');
+      const genEl = el('gen');
+      const noteEl = el('note');
+      const last = data.events.length - 1;
+
+      let variant = 'on';
+      let current = data.start;
+      let playing = false;
+      let timer = 0;
+
+      function render() {
+        const moments = data.variants[variant];
+        const m = moments[current];
+        const e = data.events[current];
+        scrub.value = String(current);
+        timeEl.textContent = `${current + 1}/${data.events.length} · ${e.time}`;
+        titleEl.textContent = e.title;
+        memEl.textContent = m.memory;
+        memEl.className = `viz-chip ${CHIP[m.tone]}`;
+        readEl.textContent = m.read;
+        wireEl.textContent = m.wire;
+        genEl.textContent = String(m.gen);
+        noteEl.textContent = m.note;
+        noteEl.classList.toggle('is-bad', m.tone === 'bad');
+        cells.forEach((cell, i) => {
+          cell.dataset.tone = moments[i].tone;
+          cell.classList.toggle('is-now', i === current);
+          cell.classList.toggle('is-future', i > current);
+        });
+      }
+
+      function stop() {
+        playing = false;
+        clearTimeout(timer);
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (!playing) return;
+        timer = setTimeout(() => {
+          current += 1;
+          render();
+          if (current >= last) {
+            playing = false;
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          schedule();
+        }, STEP_MS);
+      }
+
+      scrub.addEventListener('input', () => {
+        stop();
+        current = Number(scrub.value);
+        render();
+        root.dispatchEvent(
+          new CustomEvent(current >= last ? 'anim:ended' : 'anim:paused'),
+        );
+      });
+
+      segBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.variant === variant) return;
+          variant = btn.dataset.variant;
+          segBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          render();
+        }),
+      );
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play() {
+          if (playing) return;
+          if (current >= last) {
+            root.dispatchEvent(new CustomEvent('anim:ended'));
+            return;
+          }
+          playing = true;
+          schedule();
+        },
+        pause: stop,
+        reset() {
+          stop();
+          current = 0;
+          render();
+        },
+      });
+
+      // Until it plays, and always with reduced motion, rest on the late R1.
+      current = data.start;
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-cls]').forEach(initLifecycle);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .cls__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .cls__cfg {
+    font-size: 11px;
+    color: var(--viz-meta);
+  }
+
+  .cls__scrub {
+    display: grid;
+    gap: 6px;
+  }
+  .cls__strip {
+    display: grid;
+    grid-template-columns: repeat(11, minmax(0, 1fr));
+    gap: 3px;
+  }
+  .cls__strip :global(li) {
+    --c: var(--fg-faint);
+    height: 12px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--c) 70%, transparent);
+    transition:
+      background 0.2s var(--ease),
+      opacity 0.2s var(--ease);
+  }
+  .cls__strip :global(li[data-tone='fresh']) {
+    --c: var(--viz-sound);
+  }
+  .cls__strip :global(li[data-tone='stale']) {
+    --c: var(--viz-level);
+  }
+  .cls__strip :global(li[data-tone='loading']) {
+    --c: var(--viz-net);
+  }
+  .cls__strip :global(li[data-tone='empty']) {
+    --c: var(--border-strong);
+  }
+  .cls__strip :global(li[data-tone='bad']) {
+    --c: var(--viz-bad);
+  }
+  .cls__strip :global(li.is-future) {
+    opacity: 0.3;
+  }
+  .cls__strip :global(li.is-now) {
+    outline: 1.5px solid var(--fg-muted);
+    outline-offset: 1px;
+  }
+
+  .cls__event {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 10px;
+    margin: var(--sp-3) 0;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .cls__time {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--fg-faint);
+  }
+
+  .cls__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-2);
+    margin: 0;
+  }
+  @media (max-width: 340px) {
+    .cls__grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .cls__grid > div {
+    display: grid;
+    align-content: start;
+    gap: 5px;
+    padding: var(--sp-2) var(--sp-3);
+    min-width: 0;
+  }
+  .cls__grid dd {
+    margin: 0;
+    font-size: var(--fs-sm);
+    line-height: 1.4;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .cls__grid dd.viz-mono {
+    font-size: 11.5px;
+    color: var(--viz-net);
+  }
+  .cls__grid [data-gen] {
+    color: var(--viz-meta) !important;
+    font-weight: 600;
+  }
+  .cls__grid .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .cls__note {
+    margin: var(--sp-3) 0 0;
+    min-height: 4.4em;
+    padding-left: var(--sp-3);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--fg-muted);
+    border-left: 3px solid var(--viz-meta);
+  }
+  .cls__note.is-bad {
+    color: var(--fg);
+    border-left-color: var(--viz-bad);
+  }
+  .cls__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cls__strip :global(li) {
+      transition: none;
+    }
+  }
+</style>

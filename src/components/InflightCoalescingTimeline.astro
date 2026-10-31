@@ -1,0 +1,573 @@
+---
+/**
+ * Several screens ask for the contact list within the same few hundred
+ * milliseconds, before the first response is back. With a "have I loaded?"
+ * flag every one of them sees false and sends its own request; with the
+ * in-flight Task stored before the first await, the later callers wait on the
+ * first request instead. A caller that arrives after a response is a cache
+ * hit either way, which is why the flag looks fine when screens open one at a
+ * time.
+ *
+ * Arrival times and latencies are illustrative, picked so the responses come
+ * back in a different order than they were sent.
+ */
+import VizFrame from './viz/VizFrame.astro';
+import AnimControls from './viz/AnimControls.astro';
+
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Each row is a caller asking the repository for contacts. With a loaded flag, every caller that arrives before the first response sends its own GET, and the last response to arrive is the one that stays in memory. Storing the in-flight Task before the first await turns the same arrivals into one request whose response every caller shares. The late caller is a cache hit in both cases.',
+} = Astro.props;
+
+interface Caller {
+  name: string;
+  at: number;
+  latency: number;
+}
+
+/** Milliseconds on the time axis. */
+const AXIS = 900;
+const LATE: Caller = { name: 'Group info', at: 700, latency: 0 };
+const CALLERS: Caller[] = [
+  { name: 'Contacts tab', at: 0, latency: 430 },
+  { name: 'Invite friends', at: 40, latency: 510 },
+  { name: 'New chat', at: 90, latency: 380 },
+  { name: 'Share sheet', at: 140, latency: 460 },
+  { name: 'Reload signal', at: 190, latency: 400 },
+];
+const DEFAULT_COUNT = 4;
+const ticks = [0, 200, 400, 600, 800];
+---
+
+<VizFrame
+  fig="01"
+  title="Concurrent callers, one contact list"
+  caption={caption}
+  class="ict"
+  data-ict
+>
+  <div slot="tools">
+    <AnimControls label="Launch" />
+  </div>
+
+  <div class="ict__bar">
+    <div
+      class="viz-seg"
+      role="group"
+      aria-label="How concurrent callers are handled"
+    >
+      <button type="button" aria-pressed="true" data-mode="flag"
+        >loaded flag</button
+      >
+      <button type="button" aria-pressed="false" data-mode="share"
+        >shared in-flight Task</button
+      >
+    </div>
+    <label class="ict__count">
+      <span class="viz-label">callers at launch</span>
+      <input
+        type="range"
+        min="1"
+        max={CALLERS.length}
+        step="1"
+        value={DEFAULT_COUNT}
+        data-count
+        aria-label="Callers at launch"
+      />
+      <b class="viz-mono" data-count-out>{DEFAULT_COUNT}</b>
+    </label>
+  </div>
+
+  <div class="ict__stats viz-panel" aria-live="polite">
+    <div>
+      <span class="viz-label">GET /contacts sent</span>
+      <span class="viz-chip viz-chip--net" data-stat-requests>0</span>
+    </div>
+    <div>
+      <span class="viz-label">snapshot written</span>
+      <span class="viz-chip viz-chip--level" data-stat-writes>0×</span>
+    </div>
+    <div>
+      <span class="viz-label">in memory</span>
+      <span class="viz-chip viz-chip--sound" data-stat-memory>nothing</span>
+    </div>
+  </div>
+
+  <div class="ict__chart viz-panel">
+    <div class="ict__axis" aria-hidden="true">
+      <span class="ict__axis-pad"></span>
+      <span class="ict__axis-track">
+        {
+          ticks.map((t) => (
+            <i style={`left:${(t / AXIS) * 100}%`}>
+              {t}
+              {t === 0 ? ' ms' : ''}
+            </i>
+          ))
+        }
+      </span>
+    </div>
+    <ol class="ict__rows" data-rows></ol>
+  </div>
+
+  <div class="viz-legend ict__legend" aria-hidden="true">
+    <span><i style="--c:var(--viz-net)"></i>request on the wire</span>
+    <span><i style="--c:var(--viz-meta)"></i>awaiting the shared Task</span>
+    <span><i style="--c:var(--viz-sound)"></i>response used</span>
+    <span><i style="--c:var(--viz-level)"></i>cache hit</span>
+    <span
+      ><i style="--c:var(--viz-bad)"></i>overwritten by a later response</span
+    >
+  </div>
+
+  <script
+    is:inline
+    type="application/json"
+    data-ict-data
+    set:html={JSON.stringify({
+      axis: AXIS,
+      callers: CALLERS,
+      late: LATE,
+      count: DEFAULT_COUNT,
+    })}
+  />
+</VizFrame>
+
+<script is:inline>
+  (() => {
+    const DURATION_MS = 4200;
+
+    /** Works out every row for a mode and a caller count. */
+    function plan(data, mode, count) {
+      const callers = data.callers.slice(0, count);
+      const rows = [];
+      if (mode === 'flag') {
+        callers.forEach((c, i) =>
+          rows.push({
+            name: c.name,
+            at: c.at,
+            kind: 'request',
+            end: c.at + c.latency,
+            id: i + 1,
+          }),
+        );
+      } else {
+        const owner = callers[0];
+        const end = owner.at + owner.latency;
+        callers.forEach((c, i) =>
+          rows.push({
+            name: c.name,
+            at: c.at,
+            kind: i === 0 ? 'request' : 'join',
+            end,
+            id: 1,
+          }),
+        );
+      }
+      const firstEnd = Math.min(...rows.map((r) => r.end));
+      rows.push({
+        name: data.late.name,
+        at: Math.max(data.late.at, firstEnd + 20),
+        kind: 'hit',
+        end: Math.max(data.late.at, firstEnd + 20) + 8,
+        id: 0,
+      });
+      // Every response is written; a response is lost once a later one lands.
+      const ends = rows.filter((r) => r.kind === 'request').map((r) => r.end);
+      rows.forEach((r) => {
+        const later = ends.filter((e) => e > r.end);
+        r.lostAt =
+          r.kind === 'request' && later.length ? Math.min(...later) : Infinity;
+      });
+      return rows;
+    }
+
+    function initCoalescing(root) {
+      if (root.dataset.bound === '1') return;
+      root.dataset.bound = '1';
+
+      const data = JSON.parse(
+        root.querySelector('[data-ict-data]').textContent,
+      );
+      const reduce = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const rowsEl = root.querySelector('[data-rows]');
+      const countEl = root.querySelector('[data-count]');
+      const countOut = root.querySelector('[data-count-out]');
+      const modeBtns = [...root.querySelectorAll('[data-mode]')];
+      const reqEl = root.querySelector('[data-stat-requests]');
+      const writesEl = root.querySelector('[data-stat-writes]');
+      const memEl = root.querySelector('[data-stat-memory]');
+
+      let mode = 'flag';
+      let count = data.count;
+      let rows = [];
+      let now = 0;
+      let raf = 0;
+      let since = null;
+      const pct = (ms) => `${(Math.min(ms, data.axis) / data.axis) * 100}%`;
+
+      function build() {
+        rows = plan(data, mode, count);
+        rowsEl.replaceChildren(
+          ...rows.map((r) => {
+            const li = document.createElement('li');
+            li.className = 'ict__row';
+            li.dataset.kind = r.kind;
+            const name = document.createElement('span');
+            name.className = 'ict__name';
+            name.textContent = r.name;
+            const track = document.createElement('span');
+            track.className = 'ict__track';
+            const bar = document.createElement('i');
+            bar.className = 'ict__span';
+            bar.style.left = pct(r.at);
+            const label = document.createElement('b');
+            label.className = 'ict__tag';
+            const end = document.createElement('i');
+            end.className = 'ict__end';
+            end.style.left = pct(r.end);
+            track.append(bar, end, label);
+            li.append(name, track);
+            r.el = { li, bar, end, label };
+            return li;
+          }),
+        );
+        const head = document.createElement('li');
+        head.className = 'ict__head';
+        head.setAttribute('aria-hidden', 'true');
+        rowsEl.append(head);
+        render();
+      }
+
+      function render() {
+        let sent = 0;
+        let writes = 0;
+        let memory = null;
+        rows.forEach((r) => {
+          const started = now >= r.at;
+          const done = now >= r.end;
+          const { li, bar, end, label } = r.el;
+          li.classList.toggle('is-started', started);
+          li.classList.toggle('is-done', done);
+          li.classList.toggle('is-overwritten', now >= r.lostAt);
+          const shownEnd = Math.min(now, r.end);
+          bar.style.width = started
+            ? `calc(${pct(Math.max(shownEnd, r.at))} - ${pct(r.at)})`
+            : '0';
+          end.hidden = !done;
+          if (r.kind === 'request' && started) sent += 1;
+          if (r.kind === 'request' && done) {
+            writes += 1;
+            if (!memory || r.end >= memory.end) memory = r;
+          }
+          label.style.left = pct(r.at);
+          if (!started) label.textContent = '';
+          else if (r.kind === 'hit') label.textContent = 'hit, from memory';
+          else if (r.kind === 'join')
+            label.textContent = done ? 'got GET #1' : 'awaits GET #1';
+          else
+            label.textContent = done
+              ? `GET #${r.id} · ${r.end - r.at} ms`
+              : `GET #${r.id}`;
+        });
+        rowsEl.lastElementChild.style.setProperty(
+          '--x',
+          String(now / data.axis),
+        );
+        reqEl.textContent = String(sent);
+        reqEl.className = `viz-chip ${sent > 1 ? 'viz-chip--bad' : 'viz-chip--net'}`;
+        writesEl.textContent = `${writes}×`;
+        writesEl.className = `viz-chip ${writes > 1 ? 'viz-chip--bad' : 'viz-chip--level'}`;
+        memEl.textContent = memory
+          ? `response of GET #${memory.id}`
+          : 'nothing';
+      }
+
+      const total = () => data.axis;
+
+      function frame(ts) {
+        if (since === null) since = ts - (now / total()) * DURATION_MS;
+        now = Math.min(total(), ((ts - since) / DURATION_MS) * total());
+        render();
+        if (now < total()) {
+          raf = requestAnimationFrame(frame);
+          return;
+        }
+        raf = 0;
+        since = null;
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      }
+
+      function stop() {
+        cancelAnimationFrame(raf);
+        raf = 0;
+        since = null;
+      }
+
+      function play() {
+        if (raf) return;
+        if (now >= total()) {
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        raf = requestAnimationFrame(frame);
+      }
+
+      function reset() {
+        stop();
+        now = 0;
+        render();
+      }
+
+      function replay() {
+        build();
+        if (reduce) {
+          stop();
+          now = total();
+          render();
+          root.dispatchEvent(new CustomEvent('anim:ended'));
+          return;
+        }
+        reset();
+        root.dispatchEvent(new CustomEvent('anim:started'));
+        play();
+      }
+
+      modeBtns.forEach((btn) =>
+        btn.addEventListener('click', () => {
+          if (btn.dataset.mode === mode) return;
+          mode = btn.dataset.mode;
+          modeBtns.forEach((b) =>
+            b.setAttribute('aria-pressed', String(b === btn)),
+          );
+          replay();
+        }),
+      );
+      countEl.addEventListener('input', () => {
+        count = Number(countEl.value);
+        countOut.textContent = String(count);
+        stop();
+        build();
+        now = total();
+        render();
+        root.dispatchEvent(new CustomEvent('anim:ended'));
+      });
+
+      (window.animQueue = window.animQueue || []).push({
+        root,
+        play,
+        pause: stop,
+        reset,
+      });
+
+      build();
+      // Until it plays, and always with reduced motion, rest on the last frame.
+      now = total();
+      render();
+    }
+
+    const boot = () =>
+      document.querySelectorAll('[data-ict]').forEach(initCoalescing);
+    if (document.readyState !== 'loading') boot();
+    else document.addEventListener('DOMContentLoaded', boot);
+  })();
+</script>
+
+<style>
+  .ict__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-4);
+    margin-bottom: var(--sp-3);
+  }
+  .ict__bar .viz-seg {
+    flex-wrap: wrap;
+  }
+  .ict__count {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 12rem;
+    min-width: 0;
+  }
+  .ict__count input {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .ict__count b {
+    width: 1.2em;
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .ict__stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+  }
+  .ict__stats div {
+    display: grid;
+    justify-items: start;
+    gap: 4px;
+    min-width: 0;
+  }
+  .ict__stats .viz-chip {
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .ict__chart {
+    margin-top: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  }
+  .ict__axis,
+  .ict__chart :global(.ict__row) {
+    display: grid;
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .ict__axis-track {
+    position: relative;
+    height: 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .ict__axis-track i {
+    position: absolute;
+    top: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-style: normal;
+    color: var(--fg-faint);
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+  .ict__axis-track i:first-child {
+    transform: none;
+  }
+  .ict__rows {
+    --pad: calc(7.5rem + var(--sp-2));
+    position: relative;
+    display: grid;
+    gap: 4px;
+    padding-top: 6px;
+  }
+  .ict__chart :global(.ict__name) {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: color 0.2s var(--ease);
+  }
+  .ict__chart :global(.ict__row.is-started .ict__name) {
+    color: var(--fg);
+  }
+  .ict__chart :global(.ict__track) {
+    position: relative;
+    height: 30px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--fg) 3%, transparent);
+  }
+  .ict__chart :global(.ict__span) {
+    --c: var(--viz-net);
+    position: absolute;
+    top: 4px;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--c);
+  }
+  .ict__chart :global(.ict__row[data-kind='join'] .ict__span) {
+    --c: var(--viz-meta);
+    background: repeating-linear-gradient(
+      90deg,
+      var(--c) 0 6px,
+      transparent 6px 9px
+    );
+  }
+  .ict__chart :global(.ict__row[data-kind='hit'] .ict__span) {
+    --c: var(--viz-level);
+    min-width: 8px;
+  }
+  .ict__chart :global(.ict__end) {
+    position: absolute;
+    top: 2px;
+    width: 12px;
+    height: 12px;
+    margin-left: -6px;
+    border-radius: 50%;
+    background: var(--viz-sound);
+    border: 2px solid var(--surface);
+  }
+  .ict__chart :global(.ict__row[data-kind='hit'] .ict__end) {
+    background: var(--viz-level);
+  }
+  .ict__chart :global(.ict__row.is-overwritten .ict__end) {
+    background: var(--viz-bad);
+  }
+  .ict__chart :global(.ict__row.is-overwritten .ict__span) {
+    opacity: 0.55;
+  }
+  .ict__chart :global(.ict__tag) {
+    position: absolute;
+    top: 15px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+  .ict__chart :global(.ict__row[data-kind='hit'] .ict__tag) {
+    right: 0;
+    left: auto !important;
+    color: var(--viz-level);
+  }
+  .ict__chart :global(.ict__row.is-overwritten .ict__tag) {
+    color: var(--viz-bad);
+  }
+  .ict__chart :global(.ict__head) {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(var(--pad) + (100% - var(--pad)) * var(--x, 0));
+    width: 0;
+    border-left: 1px dashed var(--fg-faint);
+    pointer-events: none;
+  }
+  .ict__legend {
+    margin-top: var(--sp-3);
+  }
+
+  @media (max-width: 560px) {
+    .ict__axis,
+    .ict__chart :global(.ict__row) {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2px;
+    }
+    .ict__axis-pad {
+      display: none;
+    }
+    .ict__rows {
+      --pad: 0px;
+    }
+    .ict__stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .ict__stats div:last-child {
+      grid-column: 1 / -1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ict__chart :global(.ict__name) {
+      transition: none;
+    }
+  }
+</style>

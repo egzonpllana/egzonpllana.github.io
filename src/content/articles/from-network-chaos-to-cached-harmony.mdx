@@ -1,0 +1,577 @@
+---
+title: 'From Network Chaos to Cached Harmony'
+description: 'How I replaced scattered contact API calls in a SwiftUI app with one cached repository, and what a re-check in Swift 6 found: concurrent screens still sent one request each, an actor does not fix that, and the cache needed a freshness rule and an invalidation story, down to the HTTP layer.'
+date: 2025-08-11
+updated: 2026-10-30
+tags: ['Swift', 'iOS', 'Clean Architecture', 'Caching', 'Swift Concurrency', 'Combine']
+heroImage: '../../assets/covers/from-network-chaos-to-cached-harmony.png'
+---
+
+import InflightCoalescingTimeline from '../../components/InflightCoalescingTimeline.astro';
+import ActorReentrancyWalk from '../../components/ActorReentrancyWalk.astro';
+import CacheLifecycleScrubber from '../../components/CacheLifecycleScrubber.astro';
+import PhaseRail from '../../components/PhaseRail.astro';
+
+A cache is a promise to answer without asking. Every cache has to keep that promise under three pressures. Several callers ask at once, before there is anything to answer with. The answer gets old. And the answer changes, sometimes because of something you did and sometimes because of something someone else did. A cache that handles only the first of the three is fast and occasionally wrong.
+
+The app in this article is a social app. Inviting friends, starting a chat, creating a group and sharing content all start from the user's contact list, and every one of those screens used to fetch it on its own. I moved the list behind one repository that fetches once and publishes the result to every screen. That part worked, and it is still the core of the design.
+
+The first version of this article described that repository. Re-checking it in Swift 6 language mode as of October 2026, I found that it did less than the article claimed. It does not compile in Swift 6 mode. It sends one request per screen when screens open at the same time, which is exactly what happens at launch. It has no rule for when cached contacts are too old, so a request someone else sends you never appears until something else triggers a reload. And its "offline support" lasts only as long as the process does. This version keeps the architecture, fixes those four, and adds the layer the first version ignored: HTTP's own cache, which already knows how to revalidate.
+
+---
+
+## The problem: every screen asks
+
+This is what the screens looked like before. Three view models, three copies of the same call:
+
+```swift
+final class InviteFriendsViewModel: ObservableObject {
+    func loadContacts() {
+        apiClient.fetchContacts { contacts in self.contacts = contacts }
+    }
+}
+
+final class ChatCreationViewModel: ObservableObject {
+    func loadContacts() {
+        apiClient.fetchContacts { contacts in self.contacts = contacts } // the same request again
+    }
+}
+
+// ShareContentViewModel, GroupCreationViewModel, …: the same again
+```
+
+In a session that came to 5 to 10 requests for the same list, 2 to 3 seconds of spinner per screen, and screens that disagreed with each other. Accept a contact request on one screen, for example, and another still shows it as pending, because each holds its own copy.
+
+The fix in outline is to give the data one owner. A repository holds the list, every screen reads from it, and the repository alone decides when to go to the network.
+
+> **In plain words:** the screens were each running their own copy of the same query. Move the data to one owner and let the screens subscribe to it.
+
+---
+
+## The first version
+
+This is the repository from the original article, trimmed to its logic:
+
+```swift
+final class ContactsRepository: ContactsRepositoryProtocol {
+    @Published private(set) var contacts = ContactsResponseDomainModel(/* empty */)
+    @Published private(set) var isLoading = false
+    private var hasLoadedData = false
+
+    func fetchContacts() async -> ContactsResponseDomainModel {
+        if !hasLoadedData {
+            return await refreshContacts()
+        }
+        return contacts
+    }
+
+    @MainActor
+    func refreshContacts() async -> ContactsResponseDomainModel {
+        isLoading = true
+        do {
+            let dto: ContactsResponseDTO = try await apiClient.request(APIEndpoint.fetchContacts)
+            contacts = dto.toDomain()
+            hasLoadedData = true
+            isLoading = false
+            return contacts
+        } catch {
+            self.error = error.mapTo(ContactsError.serverError)
+            isLoading = false
+            return contacts // cached data on error
+        }
+    }
+}
+```
+
+What it gets right is the shape. One object owns the list, publishes it, and serves it from memory after the first load. Screens that open later get the list immediately.
+
+What is wrong with it, in order of how much it hurts:
+
+1. **It does not compile in Swift 6 mode.** `fetchContacts()` is a nonisolated method of a class that is not `Sendable`, and it calls a `@MainActor` method on `self`. The compiler rejects that: `sending 'self' risks causing data races`. It reads `hasLoadedData` outside the main actor too, while `refreshContacts()` writes it on the main actor. A plain `swiftc -typecheck` does not show the error; it comes from region-based isolation checking, which runs later, during a full build.
+2. **Concurrent callers each send a request.** `hasLoadedData` becomes true only after the first response. Every screen that asks before then sees false and starts its own fetch. At launch, when several screens and a reload signal can all ask within the same few hundred milliseconds, the "one initial call" was several.
+3. **It never expires.** After the first load, `fetchContacts()` returns memory forever. A contact request someone else sends you appears only when something on this device triggers a reload.
+4. **A failed first load looks like an empty list.** On error it returns `contacts`, which before the first success is the empty model. The screen cannot tell "you have no contacts" from "the server is down".
+
+The rest of this article takes these one at a time.
+
+---
+
+## Many callers, one request
+
+The window in item 2 is between the check and the write. `hasLoadedData` is read, the request goes out, and only when it comes back is the flag set. Any caller that reads the flag during that window gets the same answer as the first one.
+
+<InflightCoalescingTimeline />
+
+The timeline also shows a second cost: every response is written, so the list in memory is whichever response landed last, not the one sent last. Here the second request takes longest and wins. With identical data that is harmless. When the data changes between requests, it is the stale-overwrite bug in Fig 03.
+
+The fix is to keep the request itself, not just its result. The first caller creates the work as a `Task` and stores it. Later callers find the stored task and await its value instead of starting their own. This is called request coalescing, or single-flight. It only works if nothing can run between "is there a task?" and "store the task". There must be no `await` between them.
+
+### Actors do not close the window
+
+The obvious Swift 6 move is to put the cache in an actor. An actor runs one piece of its code at a time, so surely two callers cannot both miss:
+
+```swift
+actor NaiveContactsCache {
+    private let remote: any ContactsRemoteDataSource
+    private var cached: ContactsSnapshot?
+
+    init(remote: any ContactsRemoteDataSource) { self.remote = remote }
+
+    func contacts() async throws -> ContactsSnapshot {
+        if let cached { return cached }
+        let fresh = try await remote.fetchContacts() // the actor is free while this waits
+        cached = fresh
+        return fresh
+    }
+}
+```
+
+This compiles in Swift 6 mode with no warnings, and with three concurrent callers it sends three requests. I ran it against a fake data source that counts calls and takes 100 ms to answer: three fetches. Actor methods are reentrant ([SE-0306](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md)). An `await` inside one ends the current job on the actor, and the actor is free to start another caller's job before the first resumes. The actor prevents data races, two threads touching `cached` at once. It does not prevent this one, which is in the logic.
+
+<ActorReentrancyWalk />
+
+Storing the `Task` before the first `await` closes the window:
+
+```swift
+actor ContactsCache {
+    private let remote: any ContactsRemoteDataSource
+    private var cached: ContactsSnapshot?
+    private var inFlight: Task<ContactsSnapshot, any Error>?
+
+    init(remote: any ContactsRemoteDataSource) { self.remote = remote }
+
+    func contacts() async throws -> ContactsSnapshot {
+        if let cached { return cached }
+        if let inFlight { return try await inFlight.value }
+
+        let task = Task { try await remote.fetchContacts() }
+        inFlight = task
+        defer { inFlight = nil }
+
+        let fresh = try await task.value
+        cached = fresh
+        return fresh
+    }
+}
+```
+
+Same harness, same three callers: one fetch. If the request fails, every waiting caller gets the same error, and the `defer` clears `inFlight` so the next call tries again rather than awaiting a failed task forever.
+
+> **In plain words:** an actor runs one caller at a time, but every `await` lets the next caller in. If the second caller has to see "a request is already on its way", write that down before the first `await`.
+
+---
+
+## The repository, rebuilt
+
+The actor above is the mechanism in isolation. The real repository has more to do: it publishes state to SwiftUI, knows how old its data is, and accepts invalidation. Its state lives on the main actor anyway, because views read it, so the repository is `@MainActor` and needs no actor of its own. Main-actor code is reentrant across `await` in exactly the same way, so the same rule applies: store the task before suspending.
+
+First, the state. The original's three `@Published` values (`contacts`, `isLoading`, `error`) could contradict each other. Data, activity and failure are separate questions, so they get separate fields:
+
+```swift
+struct ContactsSnapshot: Sendable, Equatable {
+    var contacts: [Contact]
+    var requestsSent: [Contact]
+    var requestsReceived: [Contact]
+    var placeholders: [Contact]
+}
+
+enum ContactsError: Error, Equatable {
+    case offline
+    case server(status: Int)
+    case unreadable
+    case unknown
+
+    init(_ error: any Error) {
+        switch error {
+        case let error as ContactsError: self = error
+        case let error as URLError where error.code == .notConnectedToInternet: self = .offline
+        case is DecodingError: self = .unreadable
+        default: self = .unknown
+        }
+    }
+}
+
+struct ContactsState: Equatable {
+    enum Activity: Equatable {
+        case idle
+        case refreshing
+        case failed(ContactsError)
+    }
+
+    var snapshot: ContactsSnapshot? // nil: never loaded, which is not the same as empty
+    var activity: Activity = .idle
+}
+```
+
+`snapshot == nil` with `.failed` is "could not load". A snapshot with `.failed` is "showing what we had, the refresh failed". A snapshot with an empty `contacts` array is "you have no contacts". The original collapsed all three into an empty list.
+
+The protocol is what the use case and the tests see:
+
+```swift
+@MainActor
+protocol ContactsRepositoryProtocol: AnyObject {
+    var state: ContactsState { get }
+    var statePublisher: AnyPublisher<ContactsState, Never> { get }
+    func contacts() async throws -> ContactsSnapshot
+    @discardableResult func refresh() async throws -> ContactsSnapshot
+    func perform(_ action: ContactAction, userID: String) async throws
+    func invalidate()
+    func clear()
+}
+
+protocol ContactsRemoteDataSource: Sendable {
+    func fetchContacts() async throws -> ContactsSnapshot
+    func perform(_ action: ContactAction, userID: String) async throws
+}
+```
+
+And the repository:
+
+```swift
+@MainActor
+final class ContactsRepository: ContactsRepositoryProtocol {
+    @Published private(set) var state = ContactsState()
+    var statePublisher: AnyPublisher<ContactsState, Never> { $state.eraseToAnyPublisher() }
+
+    private let remote: any ContactsRemoteDataSource
+    private let maxAge: Duration
+    private var fetchedAt: ContinuousClock.Instant?
+    private var inFlight: Task<ContactsSnapshot, any Error>?
+    private var generation = 0
+
+    init(remote: any ContactsRemoteDataSource, maxAge: Duration = .seconds(300)) {
+        self.remote = remote
+        self.maxAge = maxAge
+    }
+
+    /// Fresh: memory. Stale: memory now, refresh in the background. Empty: wait for the network.
+    func contacts() async throws -> ContactsSnapshot {
+        guard let snapshot = state.snapshot else {
+            return try await refresh()
+        }
+        if !isFresh {
+            Task { _ = try? await refresh() }
+        }
+        return snapshot
+    }
+
+    @discardableResult
+    func refresh() async throws -> ContactsSnapshot {
+        if let inFlight { return try await inFlight.value }
+
+        let generation = self.generation
+        let task = Task { try await load(generation: generation) }
+        inFlight = task
+        return try await task.value
+    }
+
+    func perform(_ action: ContactAction, userID: String) async throws {
+        try await remote.perform(action, userID: userID)
+        invalidate()
+        _ = try? await refresh()
+    }
+
+    /// The server's data changed: what is in memory, and what is in flight, is out of date.
+    func invalidate() {
+        generation += 1
+        fetchedAt = nil
+        inFlight = nil
+    }
+
+    /// Logout: nothing from this session may land after this point.
+    func clear() {
+        inFlight?.cancel()
+        invalidate()
+        state = ContactsState()
+    }
+
+    private var isFresh: Bool {
+        guard let fetchedAt else { return false }
+        return fetchedAt.duration(to: .now) < maxAge
+    }
+
+    private func load(generation: Int) async throws -> ContactsSnapshot {
+        state.activity = .refreshing
+        do {
+            let snapshot = try await remote.fetchContacts()
+            guard generation == self.generation else {
+                // Started before an invalidation. Drop it and hand callers the newer data.
+                try Task.checkCancellation()
+                if isFresh, let current = state.snapshot { return current }
+                return try await refresh()
+            }
+            inFlight = nil
+            fetchedAt = .now
+            state = ContactsState(snapshot: snapshot, activity: .idle)
+            return snapshot
+        } catch {
+            if generation == self.generation {
+                inFlight = nil
+                state.activity = .failed(ContactsError(error))
+            }
+            throw error
+        }
+    }
+}
+```
+
+Three ideas carry it.
+
+**Coalescing.** `refresh()` checks `inFlight` and stores the new task with no `await` in between. The task is created on the main actor and inherits its isolation, so `load` can write `state` directly. The network call suspends rather than blocks, so the main actor keeps running while it waits. If decoding a large list is heavy, the data source should do it off the main actor, marked `@concurrent` under the Swift 6.2 defaults ([SE-0461](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0461-async-function-isolation.md)).
+
+**Freshness.** `fetchedAt` uses `ContinuousClock`, which keeps counting while the device sleeps, so a phone left on the desk overnight does not wake up with "fresh" data. Within `maxAge` a read never leaves memory. After it, the read still answers at once with what it has and starts a refresh. That is stale-while-revalidate, the pattern [RFC 5861](https://www.rfc-editor.org/rfc/rfc5861) defines for HTTP, done here by the app. Only an empty cache makes a caller wait.
+
+**Generations.** Every invalidation increments `generation`, and every load remembers the generation it started in. A response from an older generation describes the server before the change, so it is never stored. Its callers get the newer data instead, either the snapshot that has already landed or the request that is still on its way.
+
+I checked each behaviour against a fake data source in Swift 6 mode. Five concurrent `contacts()` calls on a cold cache made one fetch. A refresh in flight when a mutation landed made two fetches, and the early caller received the post-mutation data. When the early request was made slower than the later one, so it answered last, it was dropped and the stored list stayed current. A logout in the middle of a refresh made the waiting caller throw `CancellationError` and left the state empty.
+
+> **In plain words:** keep the request, not just the result, so callers can share it. Stamp the data with the time it arrived and the generation it belongs to. Anything older than the latest change does not get written.
+
+---
+
+## When the answer changes
+
+Invalidation is the hard half of caching, and the first version handled one case of it. Accepting a contact request called the API and then sent the signal service's `signalContactsListNeedsReload()`, the repository listened for that signal and refetched, and every screen updated through the published list. The original article said every screen updates "without any additional API calls". That was wrong: the reload is an API call. What the signal saves is that it is one call for all screens, not one per screen.
+
+There are three ways the contact list can change, and each needs its own path into the cache:
+
+- **This device changed it.** Accept, decline, remove. `perform(_:userID:)` invalidates right after the server confirms, then refreshes. Not before: if the mutation fails, the cached list is still right.
+- **Someone else changed it.** A request sent to you, a contact who removed you. Nothing on the device knows until something tells it. The freshness rule bounds how long that can take, at most `maxAge` plus however long until the next read. A push notification or a foreground event can do better by sending the same reload signal.
+- **The user changed.** Logout has to empty the cache and make sure nothing already in flight for the old session can land afterwards.
+
+The signal service stays, now as the path for events the repository cannot see itself:
+
+```swift
+@MainActor
+protocol ContactsInvalidationSignaling: AnyObject {
+    var contactsChanged: AnyPublisher<Void, Never> { get }
+}
+
+@MainActor
+final class ContactsInvalidationObserver {
+    private var cancellable: AnyCancellable?
+
+    init(signals: any ContactsInvalidationSignaling, repository: any ContactsRepositoryProtocol) {
+        cancellable = signals.contactsChanged.sink { [weak repository] in
+            guard let repository else { return }
+            repository.invalidate()
+            Task { _ = try? await repository.refresh() }
+        }
+    }
+}
+```
+
+What goes wrong without generations is ordering. Two requests for the same list do not have to answer in the order they were sent. One may hit a slower server, wait on a retry, or carry a bigger body. Whichever lands last is what the user sees.
+
+<CacheLifecycleScrubber />
+
+Logout is the same bug with higher stakes. The original cache management service's `clearAllCaches()` emptied every repository, but a refresh already on the wire kept running, and its response wrote the previous user's contacts into a cache that had just been cleared. `clear()` cancels the task and bumps the generation. The generation check alone keeps the old response out. The cancellation stops the work early when the data source honours it, and makes the waiting callers throw instead of receiving data for a session that has ended. Logout is also where the HTTP cache needs clearing, for reasons in the next section.
+
+> **In plain words:** a cache needs an answer for every way the data can change: your change, someone else's change, and a different user. The last two have no event of their own unless you create one.
+
+---
+
+## The layer underneath: HTTP already caches
+
+The repository caches a decoded snapshot. Below it, `URLSession` has its own cache, `URLCache`, which stores raw responses and follows HTTP's caching rules ([RFC 9111](https://www.rfc-editor.org/rfc/rfc9111)). The first version used neither the rules nor the cache. The two layers do different jobs, and the HTTP one makes the repository's refreshes cheap.
+
+The mechanism, in three headers:
+
+- **`Cache-Control: max-age=60`** says the response is fresh for 60 seconds. Within that, a cache answers without contacting the server.
+- **`ETag: "v1"`** names this version of the response. When the cache revalidates, it sends `If-None-Match: "v1"`. If nothing changed, the server answers `304 Not Modified` with headers and no body, and the cache reuses what it has.
+- **`Cache-Control: no-cache`** does not mean "do not cache". It means the response may be stored but must be revalidated before every use (RFC 9111 §5.2.2.4). The directive that forbids storing is `no-store` (§5.2.2.5).
+
+For a contact list that can change at any moment, `no-cache` with an `ETag` fits well: every refresh asks the server, and an unchanged list costs a round trip and a few hundred bytes of headers, not a full body to download and decode.
+
+Apple documents when `URLSession` stores a response but not everything it does afterwards, so I ran a local server with different headers against a `URLSession` with its own `URLCache`, on macOS 26 with the Xcode 27.1 toolchain:
+
+| Server sends | Second request |
+| --- | --- |
+| `ETag` and `no-cache` | Sent with `If-None-Match`; server answers 304; the app sees a 200 with the cached body |
+| `max-age=60` | Served from the cache, no request at all |
+| `ETag` only | Revalidated every time |
+| `Last-Modified` only, two years old | Served from the cache without asking: heuristic freshness |
+| `no-store` | Full request and body every time |
+| `max-age=3, stale-while-revalidate=60`, after 4 s | Waited for the revalidation, which the server held for 1.5 s, instead of serving the stale copy |
+| `max-age=60` to user A, then a request with user B's token | Served A's response to B from the cache |
+
+Four of those rows change how the app should be built.
+
+**A 304 is invisible to your code.** When `URLCache` holds the response and revalidates it, `URLSession` turns the 304 into the stored 200. The repository needs no ETag handling of its own. If you manage ETags yourself, as a sync API that wants to see the 304 might, send the request with `.reloadIgnoringLocalCacheData`. With that policy, a manual `If-None-Match` came back as a bare 304.
+
+**Last-Modified alone invites heuristic freshness.** RFC 9111 §4.2.2 lets a cache treat a response with no explicit lifetime as fresh for a fraction of its age since `Last-Modified`, and suggests 10%. A list last modified a year ago can be considered fresh for weeks. If the server sends `Last-Modified`, it should send `Cache-Control` too.
+
+**`stale-while-revalidate` was not honoured.** Past `max-age`, the request waited for the server even though the header allowed the stale response to be served in the meantime. I would not count on it on any Apple platform, which is why the repository does it itself.
+
+**The cache key is the URL, not the user.** RFC 9111 keys a stored response by method and URL (§2). Its rule against reusing responses to requests that carry `Authorization` (§3.5) applies to shared caches, and `URLCache` is a private one. The probe shows the consequence: a request with user B's token was answered with user A's response, from the cache. A `Vary: Authorization` header made the two requests separate, but the safe default for per-user data is to clear the cache on logout with `removeAllCachedResponses()`, on `URLCache.shared` or on your session's own cache, and to send `no-store` from the server for anything that must never be written to disk. `private` keeps shared caches such as a CDN from storing a response; it does nothing to `URLCache`, which is private already.
+
+Two practical limits apply. A response is stored only if it is no larger than about 5% of the disk cache, [per Apple](https://developer.apple.com/documentation/foundation/urlsessiondatadelegate/urlsession(_:datatask:willcacheresponse:completionhandler:)). And `URLCache.shared` is small: 512 KB of memory and 20 MB of disk in my macOS run. A large contact list can silently fail the 5% test. A session for API calls can get its own cache:
+
+```swift
+func makeAPISession() -> URLSession {
+    let configuration = URLSessionConfiguration.default
+    configuration.urlCache = URLCache(memoryCapacity: 4 * 1024 * 1024, diskCapacity: 50 * 1024 * 1024)
+    configuration.requestCachePolicy = .useProtocolCachePolicy
+    return URLSession(configuration: configuration)
+}
+```
+
+Put together, a read goes down through the layers until one of them can answer:
+
+<PhaseRail
+  phases={[
+    {
+      title: 'Repository memory',
+      body: 'A decoded snapshot younger than maxAge. No I/O, no decoding. Stale snapshots are still returned at once while a refresh runs.',
+      params: [
+        { name: 'cost', value: 'none' },
+        { name: 'lives', value: 'until the process ends' },
+      ],
+    },
+    {
+      title: 'Coalesced refresh',
+      body: 'If a refresh is already in flight, the caller awaits it instead of starting another.',
+      params: [{ name: 'requests added', value: '0' }],
+    },
+    {
+      title: 'URLCache, fresh',
+      body: 'A stored response still inside its max-age is returned without contacting the server. The body is decoded again.',
+      params: [
+        { name: 'cost', value: 'disk read + decode' },
+        { name: 'header', value: 'max-age' },
+      ],
+    },
+    {
+      title: 'Revalidation',
+      body: 'A stored response with an ETag is checked with If-None-Match. An unchanged list comes back as a 304 with no body, and the stored body is reused.',
+      params: [
+        { name: 'cost', value: 'one round trip' },
+        { name: 'header', value: 'ETag / no-cache' },
+      ],
+    },
+    {
+      title: 'Full response',
+      body: 'Nothing stored, or the list changed: a 200 with the whole body, stored again for the next revalidation.',
+      params: [{ name: 'cost', value: 'round trip + body + decode' }],
+    },
+  ]}
+/>
+
+> **In plain words:** the server says how long a response stays fresh and how to check it cheaply; `URLSession` follows that and hides the 304 from you. It will not serve stale data while it revalidates, and it does not know about users, so the app does the first and clears the cache for the second.
+
+---
+
+## Memory, disk, and what "offline" means
+
+The original listed "Offline Support: Full cached data availability". The repository keeps its snapshot in memory, so that held only while the app was running. After the process is killed, a cold launch without a connection has nothing to show.
+
+Two things can fix that. The cheap one is already on disk: when the refresh fails with `URLError.notConnectedToInternet`, the same request with `.returnCacheDataDontLoad` returns whatever `URLCache` stored, however old. In my probe the normal request failed with the server down and the `.returnCacheDataDontLoad` one returned the stored body. That depends on the response having been cacheable and under the 5% limit, and logout clears it. The more reliable one is to write the decoded snapshot to a file in Application Support after each successful load, with its `fetchedAt`, and load it as a stale snapshot at launch. Then the first screen draws from disk and revalidates, exactly as for any other stale read.
+
+The snapshot does not belong in `NSCache`. `NSCache` is for objects that are expensive to make and safe to lose. Apple describes it as holding "transient data" that "can be discarded if memory is tight", and says its `countLimit` "is not a strict limit". An image cache fits that. The contact list is state every screen is observing; if it disappeared under memory pressure, every screen would drop back to a spinner. An image cache, like the app's remote image service, is where `NSCache` belongs.
+
+---
+
+## The view model
+
+With the repository deciding freshness, the view model no longer needs its own `hasLoadedData`. It maps state to what the screen shows and asks for data when it appears:
+
+```swift
+@MainActor
+final class ContactsListViewModel: ObservableObject {
+    enum ViewState: Equatable {
+        case loading
+        case failed(ContactsError)
+        case empty
+        case loaded([Contact], refreshFailed: ContactsError?)
+    }
+
+    @Published private(set) var viewState: ViewState = .loading
+    private let useCase: any ContactsUseCaseProtocol
+    private var cancellable: AnyCancellable?
+
+    init(useCase: any ContactsUseCaseProtocol) {
+        self.useCase = useCase
+        cancellable = useCase.statePublisher
+            .map(Self.viewState(for:))
+            .removeDuplicates()
+            .sink { [weak self] in self?.viewState = $0 }
+    }
+
+    func onAppear() async {
+        _ = try? await useCase.contacts()
+    }
+
+    private static func viewState(for state: ContactsState) -> ViewState {
+        switch (state.snapshot, state.activity) {
+        case (nil, .failed(let error)): .failed(error)
+        case (nil, _): .loading
+        case (let snapshot?, .failed(let error)): .loaded(snapshot.contacts, refreshFailed: error)
+        case (let snapshot?, _) where snapshot.contacts.isEmpty: .empty
+        case (let snapshot?, _): .loaded(snapshot.contacts, refreshFailed: nil)
+        }
+    }
+}
+```
+
+In SwiftUI, `.task { await viewModel.onAppear() }` calls it. Five screens appearing at launch make five `contacts()` calls and one request.
+
+The use case between them is `ContactsUseCaseProtocol`, with the same `statePublisher` and `contacts()` plus the contact actions. In this feature it mostly forwards. It earns its place where a rule spans repositories, such as refreshing the chat list after a contact is removed, and I kept it for that.
+
+---
+
+## The results
+
+The numbers from the first version still stand for screens opened one after another:
+
+- **Requests:** 5 to 10 per session for the same list before; one initial load plus a refresh per change after, about 80% less traffic for this data.
+- **Load time:** 2 to 3 seconds of spinner per screen before; screens after the first draw from memory.
+- **Consistency:** one published list, so every screen agrees.
+
+Two of the original claims needed the fixes above to be true. "One initial call" holds at launch only with coalescing. "Full offline support" needs the snapshot on disk.
+
+---
+
+## Honest downsides
+
+- **Freshness is a guess.** Five minutes is a trade between staleness and traffic. Contacts rarely change; a chat list would need much less, or a push channel.
+- **Refetching the whole list after every action.** Accepting one request downloads every contact. `ETag` revalidation does not help here: the list did change, and it is one resource, so the whole body comes back.
+- **Two caches to reason about.** Memory and `URLCache` have separate lifetimes and separate clear calls. Forgetting the second at logout is the leak in the table above.
+- **Generations add state.** A counter, a stored task and a rule about which responses may land. It is a small amount of code, but each piece needs a test, and a refactor that adds an `await` in the wrong place reopens the window without a compiler error.
+
+---
+
+## What I would change next
+
+- **Apply mutations locally.** If the accept endpoint returns the updated contact, move it from `requestsReceived` to `contacts` in memory and skip the refetch. The generation bump still protects against older responses.
+- **Persist the snapshot.** Write it to Application Support after each load and start from it as stale on launch, so offline cold starts have something to show.
+- **Ask the server for `no-cache` plus `ETag`** on the contacts endpoint, and `private` on every per-user endpoint, then clear `URLCache` in the same logout path as `clear()`.
+- **Move to Observation.** Replace `ObservableObject` and the Combine publishers with an `@Observable` repository once the deployment target allows it (iOS 17), so views re-render on the fields they read.
+- **Test the races on purpose.** A fake data source with controllable latency makes "three callers, one request" and "late response is dropped" ordinary unit tests.
+
+---
+
+## Takeaways
+
+> **Keep the request, not just the result.** Callers that arrive while a load is in flight should await it, not repeat it.
+
+> **Actors stop data races, not logic races.** Every `await` lets another caller in. Write the state the next caller needs before you suspend.
+
+> **Nil is not empty.** "Never loaded", "loaded, nothing there" and "loaded, refresh failed" are three different screens.
+
+> **Every way the data can change needs a path into the cache.** Your change, someone else's change, and a different user. Only the first one comes with an event.
+
+> **Responses arrive out of order.** Stamp each load with the generation it started in and drop the ones that are older than the latest change.
+
+> **`no-cache` means "check first", `no-store` means "never keep".** With an `ETag`, `URLSession` turns an unchanged response into a body-less 304 and never shows you the 304.
+
+> **The HTTP cache does not know who is signed in.** Clear it at logout.
+
+---
+
+## References
+
+**HTTP** — [RFC 9111: HTTP Caching](https://www.rfc-editor.org/rfc/rfc9111) (§2 cache key, §3.5 Authorization, §4.2.2 heuristic freshness, §4.3 validation, §5.2.2.4 no-cache, §5.2.2.5 no-store) · [RFC 9110: conditional requests](https://www.rfc-editor.org/rfc/rfc9110#name-conditional-requests) · [RFC 5861: stale-while-revalidate](https://www.rfc-editor.org/rfc/rfc5861)
+
+**Apple** — [`URLCache`](https://developer.apple.com/documentation/foundation/urlcache) · [`URLRequest.CachePolicy`](https://developer.apple.com/documentation/foundation/nsurlrequest/cachepolicy-swift.enum) · [`willCacheResponse`](https://developer.apple.com/documentation/foundation/urlsessiondatadelegate/urlsession(_:datatask:willcacheresponse:completionhandler:)) (when responses are stored) · [`NSCache`](https://developer.apple.com/documentation/foundation/nscache) · [`ContinuousClock`](https://developer.apple.com/documentation/swift/continuousclock)
+
+**Swift** — [SE-0306: Actors](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md) (reentrancy) · [SE-0414: Region based isolation](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0414-region-based-isolation.md) (the Swift 6 error in the first version)
