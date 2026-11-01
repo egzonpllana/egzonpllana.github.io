@@ -48,6 +48,9 @@ const CONTROLS_GAP = 8;
 /** Controls fade after this long without pointer activity. */
 const IDLE_MS = 2500;
 
+/** Remembers whether the viewer hid the transcript while presenting. */
+const NOTES_STORAGE_KEY = 'ai-talk:notes';
+
 const PRESENTING_CLASS = 'is-presenting';
 const IDLE_CLASS = 'is-idle';
 const PAGE_LOCK_CLASS = 'ai-presenting';
@@ -60,9 +63,27 @@ const LABEL: Record<PresentMode, string> = {
 const NEXT_KEYS = new Set(['ArrowRight', 'ArrowDown', 'PageDown', ' ']);
 const PREV_KEYS = new Set(['ArrowLeft', 'ArrowUp', 'PageUp']);
 
+// Storage can be missing or throw (private mode, blocked site data); the
+// transcript then simply starts shown.
+function readNotesPreference(): boolean {
+  try {
+    return window.localStorage.getItem(NOTES_STORAGE_KEY) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
+function writeNotesPreference(shown: boolean): void {
+  try {
+    window.localStorage.setItem(NOTES_STORAGE_KEY, shown ? 'on' : 'off');
+  } catch {
+    /* preference is a convenience only */
+  }
+}
+
 export class Presenter {
   private mode = PresentMode.Inline;
-  private notesShown = false;
+  private notesShown = readNotesPreference();
   private idleTimer = 0;
   private readonly frame: HTMLElement;
   private readonly presentButton: HTMLButtonElement | null;
@@ -155,6 +176,7 @@ export class Presenter {
 
   private toggleNotes(): void {
     this.notesShown = !this.notesShown;
+    writeNotesPreference(this.notesShown);
     this.render();
   }
 

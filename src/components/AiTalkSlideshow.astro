@@ -515,29 +515,32 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     min-height: 100%;
   }
 
-  /* Transcript: hidden while presenting unless toggled on. */
+  /* Transcript: shown while presenting unless toggled off (T). */
   .is-presenting .ai-transcript {
     display: none;
   }
   .is-presenting[data-notes='on'] .ai-transcript {
     display: block;
     flex: 0 0 auto;
-    max-height: 32vh;
+    max-height: 34vh;
     overflow-y: auto;
     margin: 0;
     padding: var(--sp-5) max(var(--sp-6), env(safe-area-inset-right))
-      calc(var(--sp-5) + 4.5rem) max(var(--sp-6), env(safe-area-inset-left));
+      var(--sp-3) max(var(--sp-6), env(safe-area-inset-left));
     border: 0;
     border-top: 1px solid var(--border);
     border-radius: 0;
   }
   .is-presenting[data-notes='on'] .ai-transcript__text {
-    max-width: 90ch;
+    max-width: 64rem;
     margin-inline: auto;
+    font-size: var(--fs-lg);
+    line-height: 1.6;
+    color: var(--fg);
   }
   .is-presenting[data-notes='on'] .ai-transcript__eyebrow {
     display: flex;
-    max-width: 90ch;
+    max-width: 64rem;
     margin-inline: auto;
     margin-bottom: var(--sp-3);
   }
@@ -577,7 +580,34 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     backdrop-filter: blur(12px);
     transition: opacity 0.36s var(--ease);
   }
-  .is-presenting.is-idle .ai-controls__bar:not(:focus-within, :hover) {
+  /* With the transcript open the controls sit under it, never on its text. */
+  .is-presenting[data-notes='on'] .ai-controls {
+    flex: 0 0 auto;
+    padding: var(--sp-2) 0 max(var(--sp-3), env(safe-area-inset-bottom));
+    background: var(--surface);
+  }
+  .is-presenting[data-notes='on'] .ai-controls__bar {
+    position: static;
+  }
+  @media (max-height: 520px) {
+    .is-presenting[data-notes='on'] .ai-transcript {
+      padding-top: var(--sp-3);
+    }
+    .is-presenting[data-notes='on'] .ai-transcript__eyebrow {
+      display: none;
+    }
+    .is-presenting[data-notes='on'] .ai-transcript__text {
+      font-size: var(--fs-base);
+    }
+    .is-presenting[data-notes='on'] .ai-controls {
+      padding-block: 0 max(var(--sp-2), env(safe-area-inset-bottom));
+    }
+    .is-presenting[data-notes='on'] .ai-controls__bar {
+      padding: 2px;
+    }
+  }
+  .is-presenting[data-notes='off'].is-idle
+    .ai-controls__bar:not(:focus-within, :hover) {
     opacity: 0;
     pointer-events: none;
   }
