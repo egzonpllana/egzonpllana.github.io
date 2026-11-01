@@ -37,6 +37,10 @@ const slides = deckFor(articleSlug(talk.id));
   tagsLinked={false}
   slideCount={slides?.length}
 >
-  {slides && <TalkDeck slot="deck" slides={slides} />}
+  {
+    slides && (
+      <TalkDeck slot="deck" slides={slides} cover={talk.data.heroImage} />
+    )
+  }
   <Content />
 </ArticleLayout>

@@ -4,14 +4,20 @@
  * said under it, and a Present mode that takes the deck fullscreen. Render
  * once per page. Logic lives in src/lib/slideshow.
  */
+import type { ImageMetadata } from 'astro';
+import { Image } from 'astro:assets';
 import DeckBlock from './DeckBlock.astro';
 import { BlockKind, SlideLayout, type Slide } from '../data/deck';
 
 interface Props {
   slides: Slide[];
+  /** Cover art shown by SlideLayout.Cover slides. */
+  cover?: ImageMetadata;
 }
 
-const { slides } = Astro.props;
+const { slides, cover } = Astro.props;
+const isCover = (slide: Slide) =>
+  slide.layout === SlideLayout.Cover && cover !== undefined;
 const total = slides.length;
 const pad = (n: number) => (n < 10 ? '0' + n : String(n));
 ---
@@ -28,56 +34,76 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     aria-label="Talk slides - use the arrow keys to change slides, F to present"
   >
     <div class="deck-frame" data-deck-frame>
-    {
-      slides.map((slide) => (
-        <article
-          class:list={[
-            'deck-slide',
-            {
-              'is-active': slide.n === 1,
-              'deck-slide--center': slide.layout === SlideLayout.Center,
-            },
-          ]}
-          data-index={slide.n}
-          role="group"
-          aria-roledescription="slide"
-          aria-label={`Slide ${slide.n} of ${total}`}
-          aria-hidden={slide.n === 1 ? 'false' : 'true'}
-          data-transcript={slide.transcript}
-        >
-          <span class="deck-slide__num">
-            {pad(slide.n)} / {pad(total)}
-          </span>
-          <span class="deck-slide__kicker">
-            <span class="deck-slide__dot" />
-            {slide.kicker}
-          </span>
-          <h2 class="deck-slide__title" set:html={slide.titleHtml} />
-          <div class="deck-slide__body">
-            {slide.blocks.map((block) =>
-              block.kind === BlockKind.Columns ? (
-                <div
-                  class:list={[
-                    'deck-cols',
-                    { 'deck-cols--wide': block.variant === 'wide' },
-                  ]}
-                >
-                  {block.cols.map((col) => (
-                    <div class="deck-col">
-                      {col.map((leaf) => (
-                        <DeckBlock block={leaf} />
+      {
+        slides.map((slide) => (
+          <article
+            class:list={[
+              'deck-slide',
+              {
+                'is-active': slide.n === 1,
+                'deck-slide--center':
+                  slide.layout === SlideLayout.Center ||
+                  (slide.layout === SlideLayout.Cover && !cover),
+                'deck-slide--cover': isCover(slide),
+              },
+            ]}
+            data-index={slide.n}
+            role="group"
+            aria-roledescription="slide"
+            aria-label={`Slide ${slide.n} of ${total}`}
+            aria-hidden={slide.n === 1 ? 'false' : 'true'}
+            data-transcript={slide.transcript}
+          >
+            {isCover(slide) && cover && (
+              <Image
+                class="deck-slide__cover"
+                src={cover}
+                alt=""
+                widths={[960, 1440, 1920]}
+                sizes="(max-width: 1100px) 100vw, 1100px"
+                format="webp"
+                quality={85}
+                loading="eager"
+              />
+            )}
+            <span class="deck-slide__ghost" aria-hidden="true">
+              {pad(slide.n)}
+            </span>
+            <span class="deck-slide__num">
+              {pad(slide.n)} / {pad(total)}
+            </span>
+            <div class="deck-slide__content">
+              <span class="deck-slide__kicker">
+                <span class="deck-slide__dot" />
+                {slide.kicker}
+              </span>
+              <h2 class="deck-slide__title" set:html={slide.titleHtml} />
+              <div class="deck-slide__body">
+                {slide.blocks.map((block) =>
+                  block.kind === BlockKind.Columns ? (
+                    <div
+                      class:list={[
+                        'deck-cols',
+                        { 'deck-cols--wide': block.variant === 'wide' },
+                      ]}
+                    >
+                      {block.cols.map((col) => (
+                        <div class="deck-col">
+                          {col.map((leaf) => (
+                            <DeckBlock block={leaf} />
+                          ))}
+                        </div>
                       ))}
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <DeckBlock block={block} />
-              ),
-            )}
-          </div>
-        </article>
-      ))
-    }
+                  ) : (
+                    <DeckBlock block={block} />
+                  ),
+                )}
+              </div>
+            </div>
+          </article>
+        ))
+      }
     </div>
   </div>
 
@@ -112,7 +138,12 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
       <div class="deck-counter" data-deck-counter>
         <b>{pad(1)}</b> / {pad(total)}
       </div>
-      <button class="deck-btn" data-deck-next type="button" aria-label="Next slide">
+      <button
+        class="deck-btn"
+        data-deck-next
+        type="button"
+        aria-label="Next slide"
+      >
         <svg viewBox="0 0 24 24" aria-hidden="true"
           ><path d="M9 6l6 6-6 6"></path></svg
         >
@@ -146,10 +177,7 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
           aria-hidden="true"
           ><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"></path></svg
         >
-        <svg
-          class="deck-btn__icon--exit"
-          viewBox="0 0 24 24"
-          aria-hidden="true"
+        <svg class="deck-btn__icon--exit" viewBox="0 0 24 24" aria-hidden="true"
           ><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"></path></svg
         >
         <span class="deck-btn__label">Present</span>
@@ -216,11 +244,196 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     justify-content: center;
     text-align: center;
   }
+  .deck-slide__content {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-width: 0;
+  }
+  .deck-slide--center .deck-slide__content,
   .deck-slide--center .deck-slide__body {
     align-items: center;
   }
   .deck-slide--center :global(.deck-lead) {
     margin-inline: auto;
+  }
+
+  /* ===== BACKDROP: accent glow and the slide number, large and faint ===== */
+  .deck-slide {
+    isolation: isolate;
+  }
+  .deck-slide::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(55% 60% at 100% 0%, var(--accent-soft), transparent 70%),
+      radial-gradient(45% 50% at 0% 100%, var(--accent-soft), transparent 70%);
+  }
+  .deck-slide__ghost {
+    position: absolute;
+    right: 0.25rem;
+    bottom: -0.2em;
+    z-index: -1;
+    font-size: clamp(7rem, 4rem + 10vw, 15rem);
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: -0.06em;
+    font-variant-numeric: tabular-nums;
+    color: color-mix(in srgb, var(--fg) 4.5%, transparent);
+    pointer-events: none;
+    user-select: none;
+  }
+
+  /* ===== COVER: the talk's art fills the slide ===== */
+  .deck-slide--cover {
+    padding: 0;
+    aspect-ratio: 16 / 9;
+    min-height: 0;
+    overflow: hidden;
+    background: #0b0e14;
+  }
+  .deck-slide__cover {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .deck-slide--cover::before,
+  .deck-slide--cover .deck-slide__ghost,
+  .deck-slide--cover .deck-slide__num {
+    display: none;
+  }
+  .deck-slide--cover .deck-slide__kicker,
+  .deck-slide--cover .deck-slide__title,
+  .deck-slide--cover .deck-slide__body {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* ===== MOTION: each slide builds in as it becomes active ===== */
+  .deck-slide__body > :global(:nth-child(1)) {
+    --b: 0;
+  }
+  .deck-slide__body > :global(:nth-child(2)) {
+    --b: 1;
+  }
+  .deck-slide__body > :global(:nth-child(3)) {
+    --b: 2;
+  }
+  .deck-slide__body > :global(:nth-child(n + 4)) {
+    --b: 3;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .deck-slide.is-active .deck-slide__kicker {
+      animation: deck-rise 0.5s var(--ease) both;
+    }
+    .deck-slide.is-active .deck-slide__dot {
+      animation: deck-grow 0.7s var(--ease) 0.1s both;
+    }
+    .deck-slide.is-active .deck-slide__title {
+      animation: deck-rise 0.65s var(--ease) 0.08s both;
+    }
+    .deck-slide.is-active .deck-slide__body > :global(*) {
+      animation: deck-rise 0.6s var(--ease) both;
+      animation-delay: calc(0.2s + var(--b, 0) * 0.14s);
+    }
+    .deck-slide.is-active :global(.deck-pill),
+    .deck-slide.is-active :global(.deck-card),
+    .deck-slide.is-active :global(.deck-check),
+    .deck-slide.is-active :global(.deck-stat) {
+      animation: deck-pop 0.55s var(--ease) both;
+      animation-delay: calc(0.3s + var(--b, 0) * 0.14s + var(--i, 0) * 0.08s);
+    }
+    .deck-slide.is-active :global(.deck-code__row) {
+      animation: deck-type 0.4s var(--ease) both;
+      animation-delay: calc(0.35s + var(--b, 0) * 0.14s + var(--i, 0) * 0.05s);
+    }
+    .deck-slide.is-active :global(.deck-check__mark) {
+      animation: deck-tick 0.45s var(--ease) both;
+      animation-delay: calc(0.45s + var(--b, 0) * 0.14s + var(--i, 0) * 0.08s);
+    }
+    .deck-slide.is-active .deck-slide__ghost {
+      animation: deck-ghost 0.9s var(--ease) 0.1s both;
+    }
+    .deck-slide.is-active .deck-slide__cover {
+      animation: deck-cover 1.4s var(--ease) both;
+    }
+    @keyframes deck-rise {
+      from {
+        opacity: 0;
+        transform: translateY(14px);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+    @keyframes deck-pop {
+      from {
+        opacity: 0;
+        transform: translateY(12px) scale(0.97);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+    @keyframes deck-type {
+      from {
+        opacity: 0;
+        transform: translateX(-8px);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+    @keyframes deck-tick {
+      from {
+        opacity: 0;
+        transform: scale(0.4) rotate(-12deg);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+    @keyframes deck-grow {
+      from {
+        width: 0;
+      }
+      to {
+        width: 28px;
+      }
+    }
+    @keyframes deck-ghost {
+      from {
+        opacity: 0;
+        transform: translateX(40px);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+    @keyframes deck-cover {
+      from {
+        opacity: 0.4;
+        transform: scale(1.05);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
   }
 
   .deck-slide__num {
@@ -469,12 +682,19 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
   .is-presenting.is-idle {
     cursor: none;
   }
+  /* The glow spans the screen, not the letterboxed frame. */
   .is-presenting .deck-stage {
     flex: 1 1 auto;
     min-height: 0;
     border: 0;
     border-radius: 0;
-    background: var(--bg);
+    background:
+      radial-gradient(50% 60% at 100% 0%, var(--accent-soft), transparent 70%),
+      radial-gradient(40% 50% at 0% 100%, var(--accent-soft), transparent 70%),
+      var(--bg);
+  }
+  .is-presenting .deck-slide::before {
+    display: none;
   }
   .is-presenting .deck-stage:focus-visible {
     outline: none;
@@ -494,13 +714,31 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     position: absolute;
     inset: 0 auto auto 0;
     width: 100%;
-    min-height: 100%;
+    height: 100%;
+    min-height: 0;
     padding: 3.25rem 4rem;
-    transform-origin: top center;
-    transform: translateY(6px) scale(var(--slide-fit, 1));
+    overflow: hidden;
+    transform: translateY(6px);
   }
   .is-presenting[data-orient='landscape'] .deck-slide.is-active {
-    transform: scale(var(--slide-fit, 1));
+    transform: none;
+  }
+  /* A body taller than the frame is zoomed down; the title and the backdrop
+     keep their size. */
+  .is-presenting[data-orient='landscape'] .deck-slide__content {
+    flex: 0 0 auto;
+  }
+  .is-presenting[data-orient='landscape'] .deck-slide__body {
+    zoom: var(--slide-fit, 1);
+  }
+  .is-presenting[data-orient='landscape'] .deck-slide:not(.deck-slide--cover) {
+    justify-content: center;
+  }
+  .is-presenting[data-orient='landscape'] .deck-slide--cover {
+    padding: 0;
+  }
+  .is-presenting[data-orient='landscape'] .deck-slide__ghost {
+    font-size: 15rem;
   }
   .is-presenting[data-orient='landscape'] .deck-slide__num {
     display: block;
@@ -661,7 +899,8 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     }
   }
   @media (max-width: 640px) {
-    .deck-slide__num {
+    .deck-slide__num,
+    .deck-slide__ghost {
       display: none;
     }
   }

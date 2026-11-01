@@ -13,11 +13,11 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
     kicker: 'Code that runs in a process it does not own',
     titleHtml:
       'Engineering an SDK at scale:<br /><span class="hl">the four contracts.</span>',
-    layout: SlideLayout.Center,
+    layout: SlideLayout.Cover,
     blocks: [
       {
         kind: BlockKind.Lead,
-        html: 'Thread safety is part of the API. The host\'s threads are not yours to block. The server holds the truth. Defects ship as patch releases. <b>What each one means, the measurement behind it, and the test that proves it.</b>',
+        html: "Thread safety is part of the API. The host's threads are not yours to block. The server holds the truth. Defects ship as patch releases. <b>What each one means, the measurement behind it, and the test that proves it.</b>",
       },
     ],
     transcript:
@@ -28,24 +28,13 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
   {
     n: 2,
     kicker: 'The asymmetry',
-    titleHtml: 'One defect.<br /><span class="hl">Many owners, many clocks.</span>',
+    titleHtml:
+      'One defect.<br /><span class="hl">Many owners, many clocks.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
-        kind: BlockKind.Cards,
-        cols: 2,
-        items: [
-          {
-            icon: 'build',
-            title: 'An app has a bug',
-            body: 'The team that shipped the app fixes it and ships a new build <b>on its own schedule.</b>',
-          },
-          {
-            icon: 'bug',
-            title: 'An SDK has a bug',
-            body: "It is inside every app that embeds it - in each app's crash reports, on <b>each app's release schedule.</b>",
-          },
-        ],
+        kind: BlockKind.Figure,
+        figure: 'SdkBoundary',
       },
       {
         kind: BlockKind.Lead,
@@ -65,39 +54,8 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
     layout: SlideLayout.Default,
     blocks: [
       {
-        kind: BlockKind.Checklist,
-        columns: 2,
-        items: [
-          {
-            title: '<b>Never crash the host</b>',
-            note: "its crash-free rate includes the SDK's crashes",
-          },
-          {
-            title: "<b>Never block the host's threads</b>",
-            note: 'you do not know which thread will call you',
-          },
-          {
-            title: "<b>Never assume the host's lifecycle</b>",
-            note: 'launch order, backgrounding, screen lifetimes',
-          },
-          {
-            title: '<b>Never require a restructure to adopt</b>',
-            note: 'if adoption forces a rewrite, the boundary is wrong',
-          },
-          {
-            title: '<b>Every public symbol is permanent</b>',
-            note: 'behind the API is free; in front of it is not',
-          },
-        ],
-      },
-      {
-        kind: BlockKind.Pills,
-        items: [
-          { label: 'Thread safety is API', icon: 'lock' },
-          { label: 'Never block the host', icon: 'bolt' },
-          { label: 'Server holds the truth', icon: 'shield' },
-          { label: 'Defects ship as patches', icon: 'branch', strong: true },
-        ],
+        kind: BlockKind.Figure,
+        figure: 'ContractMap',
       },
     ],
     transcript:
@@ -116,7 +74,8 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
         items: [
           {
             big: '> 50%',
-            label: 'of increments lost in the recorded run - no crash, no diagnostic',
+            label:
+              'of increments lost in the recorded run - no crash, no diagnostic',
           },
           {
             big: '30 - 45%',
@@ -124,21 +83,14 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
           },
           {
             big: '0',
-            label: 'lost in an optimised build - a run that loses nothing proves nothing',
+            label:
+              'lost in an optimised build - a run that loses nothing proves nothing',
           },
         ],
       },
       {
-        kind: BlockKind.Code,
-        label: 'The guarantee goes on the public boundary',
-        labelIcon: 'file',
-        tone: 'good',
-        lines: [
-          '<span class="mut">/// Thread-safe. All members may be called from any thread.</span>',
-          '<span class="kw">public final class</span> <span class="str">Analytics</span> { ... }',
-        ],
-        caption:
-          'Then it is enforced: <b>every</b> public entry point, driven from many threads at once, under Thread Sanitizer in CI.',
+        kind: BlockKind.Figure,
+        figure: 'RaceLoss',
       },
     ],
     transcript:
@@ -149,7 +101,8 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
   {
     n: 5,
     kicker: 'Contract one - the decision the API shape forces',
-    titleHtml: 'The API shape chooses<br /><span class="hl">lock or actor.</span>',
+    titleHtml:
+      'The API shape chooses<br /><span class="hl">lock or actor.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
@@ -201,7 +154,7 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
       },
     ],
     transcript:
-      "A concrete case. A shipped cache with a synchronous getter has a data race. The instinct is an actor, and in an app that is often right. In an SDK it is wrong, because every method on an actor is async to callers outside it. Every call site becomes an await, and that spreads until it hits something that cannot be async - a table view data source, an Objective-C caller. Ten consumers, ten migrations. So we use a lock: Mutex on iOS 18 and later, OSAllocatedUnfairLock on 16 and 17. Not for speed. The state lives inside the lock, so the compiler rules out the path that forgets to synchronise, and the type is Sendable without unchecked.",
+      'A concrete case. A shipped cache with a synchronous getter has a data race. The instinct is an actor, and in an app that is often right. In an SDK it is wrong, because every method on an actor is async to callers outside it. Every call site becomes an await, and that spreads until it hits something that cannot be async - a table view data source, an Objective-C caller. Ten consumers, ten migrations. So we use a lock: Mutex on iOS 18 and later, OSAllocatedUnfairLock on 16 and 17. Not for speed. The state lives inside the lock, so the compiler rules out the path that forgets to synchronise, and the type is Sendable without unchecked.',
   },
 
   /* 6 - CONTRACT ONE: MEASURE */
@@ -212,26 +165,8 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
     layout: SlideLayout.Default,
     blocks: [
       {
-        kind: BlockKind.Stats,
-        items: [
-          {
-            big: '60,000',
-            label: 'receives from 30 concurrent tasks, four mechanisms behind one contract',
-          },
-          {
-            big: '1.5 - 2x',
-            label: 'the wall time of the lock against a serial queue',
-          },
-          {
-            big: '= serial',
-            label: 'a concurrent queue with barrier writes, on a write-only workload',
-          },
-        ],
-      },
-      {
-        kind: BlockKind.Lead,
-        small: true,
-        html: 'The queues win by <b>deferring</b> the write with <b>queue.async</b>; the Mutex does the write before it returns, so producers contend. On a synchronous getter that option does not exist. Both results are real - they measure different workloads.',
+        kind: BlockKind.Figure,
+        figure: 'MechanismBench',
       },
       {
         kind: BlockKind.Quote,
@@ -251,24 +186,11 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
     blocks: [
       {
         kind: BlockKind.Lead,
-        html: "An SDK cannot control how much the host already puts on the main thread. It controls how often it adds work, and how much each time. Hangs become noticeable at about <b>50 - 100 ms</b>; one missed refresh, <b>8 - 16 ms</b>, is a hitch.",
+        html: 'An SDK cannot control how much the host already puts on the main thread. It controls how often it adds work, and how much each time. Hangs become noticeable at about <b>50 - 100 ms</b>; one missed refresh, <b>8 - 16 ms</b>, is a hitch.',
       },
       {
-        kind: BlockKind.Stats,
-        items: [
-          {
-            big: '10 / frame',
-            label: '30 pairs x 20 updates a second = 600 crossings a second at 60 Hz',
-          },
-          {
-            big: '91 - 117x',
-            label: '10,000 items: one hop each (76 - 99 ms) vs one batch (under 1 ms)',
-          },
-          {
-            big: '< 1%',
-            label: 'of the main thread for ten hops a frame - the hop is not what hurts',
-          },
-        ],
+        kind: BlockKind.Figure,
+        figure: 'CrossingsChart',
       },
     ],
     transcript:
@@ -279,7 +201,8 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
   {
     n: 8,
     kicker: 'Contract two - one hop per frame',
-    titleHtml: 'Coalesce the feed.<br /><span class="hl">Mutate before you await.</span>',
+    titleHtml:
+      'Coalesce the feed.<br /><span class="hl">Mutate before you await.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
@@ -329,7 +252,7 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
       },
     ],
     transcript:
-      "The remedy is a per-key buffer flushed once per frame. It collapses ten jobs into one, and when a feed does outrun the display, its latest-wins rule drops values no frame could have shown. The comment inside flush is the important part. Move removeAll below the await and the code still compiles cleanly under Swift 6 strict concurrency - and it is wrong. Any tick received while the actor is suspended is erased when it resumes. That is a race condition, not a data race. And because delivery to the main thread sits behind a protocol, a test can count it: the stutter becomes deliveryCount equals six hundred for one second of ticks, and the fix becomes sixty.",
+      'The remedy is a per-key buffer flushed once per frame. It collapses ten jobs into one, and when a feed does outrun the display, its latest-wins rule drops values no frame could have shown. The comment inside flush is the important part. Move removeAll below the await and the code still compiles cleanly under Swift 6 strict concurrency - and it is wrong. Any tick received while the actor is suspended is erased when it resumes. That is a race condition, not a data race. And because delivery to the main thread sits behind a protocol, a test can count it: the stutter becomes deliveryCount equals six hundred for one second of ticks, and the fix becomes sixty.',
   },
 
   /* 9 - CONTRACT TWO: WHERE ASYNC RUNS */
@@ -394,53 +317,13 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
   {
     n: 10,
     kicker: 'Contract two - owning cancellation',
-    titleHtml: 'Every task has an<br /><span class="hl">owner that cancels it.</span>',
+    titleHtml:
+      'Every task has an<br /><span class="hl">owner that cancels it.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
-        kind: BlockKind.Columns,
-        variant: 'wide',
-        cols: [
-          [
-            {
-              kind: BlockKind.Code,
-              label: 'Normalise once, at the networking boundary',
-              labelIcon: 'wiring',
-              tone: 'good',
-              lines: [
-                '<span class="kw">func</span> data(for request: URLRequest) <span class="kw">async throws</span> -&gt; Data {',
-                '  <span class="kw">do</span> {',
-                '    <span class="kw">let</span> (data, _) = <span class="kw">try await</span> session.data(for: request)',
-                '    <span class="kw">return</span> data',
-                '  } <span class="kw">catch let</span> error <span class="kw">as</span> <span class="str">URLError</span>',
-                '      <span class="kw">where</span> error.code == .cancelled {',
-                '    <span class="kw">throw</span> <span class="str">CancellationError</span>()',
-                '  }',
-                '}',
-              ],
-              caption: 'A cancelled request throws <b>URLError -999</b>, not CancellationError.',
-            },
-          ],
-          [
-            {
-              kind: BlockKind.Checklist,
-              items: [
-                {
-                  title: 'The host awaits the SDK',
-                  note: 'its cancellation flows in for free - unless you wrap the work in a fresh Task {}',
-                },
-                {
-                  title: 'The SDK starts long-lived work',
-                  note: 'hand back a Subscription that cancels in deinit',
-                },
-                {
-                  title: '<b>try? await Task.sleep</b> swallows cancellation',
-                  note: 'a hang the time limit can no longer interrupt',
-                },
-              ],
-            },
-          ],
-        ],
+        kind: BlockKind.Figure,
+        figure: 'CallCrossing',
       },
     ],
     transcript:
@@ -451,7 +334,8 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
   {
     n: 11,
     kicker: 'Contract three - the server holds the truth',
-    titleHtml: 'Sendable-clean.<br />And the balance <span class="hl">moves backwards.</span>',
+    titleHtml:
+      'Sendable-clean.<br />And the balance <span class="hl">moves backwards.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
@@ -497,65 +381,25 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
   {
     n: 12,
     kicker: 'Contract three - forcing the interleaving',
-    titleHtml: 'Write the bad interleaving<br /><span class="hl">by hand.</span>',
+    titleHtml:
+      'Write the bad interleaving<br /><span class="hl">by hand.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
-        kind: BlockKind.Columns,
-        variant: 'wide',
-        cols: [
-          [
-            {
-              kind: BlockKind.Code,
-              label: 'AccountStateReducerTests.swift',
-              labelIcon: 'tests',
-              tone: 'good',
-              lines: [
-                '<span class="kw">@Test func</span> lateBalanceUpdateCannotMoveTheBalanceBackwards()',
-                '    <span class="kw">async</span> {',
-                '  <span class="kw">let</span> reducer = <span class="str">AccountStateReducer</span>()',
-                '',
-                '  <span class="kw">await</span> reducer.apply(.balance(sequence: <span class="str">2</span>, value: <span class="str">250</span>))',
-                '  <span class="kw">await</span> reducer.apply(.balance(sequence: <span class="str">1</span>, value: <span class="str">100</span>))',
-                '',
-                '  <span class="kw">#expect</span>(<span class="kw">await</span> reducer.state.balance == <span class="str">250</span>)',
-                '  <span class="kw">#expect</span>(<span class="kw">await</span> reducer.rejectedAsStale == <span class="str">1</span>)',
-                '}',
-              ],
-              caption: 'The late arrival is rejected - <b>and counted.</b>',
-            },
-          ],
-          [
-            {
-              kind: BlockKind.Checklist,
-              items: [
-                {
-                  title: 'Idempotency key generated <b>once</b>',
-                  note: 'per attempt, a retry after a lost response can charge twice',
-                },
-                {
-                  title: 'A timeout leads to <b>unknown</b>, not failed',
-                  note: 'reconcile with the server, do not guess',
-                },
-                {
-                  title: 'Log transitions, not values',
-                  note: 'a balance in a crash report is personal financial data',
-                },
-              ],
-            },
-          ],
-        ],
+        kind: BlockKind.Figure,
+        figure: 'StalenessLadder',
       },
     ],
     transcript:
-      "What makes an ordering bug hard to catch in production makes it easy in a test: you write the bad interleaving out by hand instead of waiting for it. Apply sequence two, then sequence one, and assert the balance stays at 250. The second assertion is deliberate - one stale rejection is normal, but a high rate means heavy reordering on the network, and that should be visible. When the SDK moves money, the same discipline covers the whole operation. The idempotency key is generated once per transfer and reused on every retry. A timeout leads to unknown, not failed, because it says nothing about whether the transfer happened. And we log transitions, never values.",
+      'What makes an ordering bug hard to catch in production makes it easy in a test: you write the bad interleaving out by hand instead of waiting for it. Apply sequence two, then sequence one, and assert the balance stays at 250. The second assertion is deliberate - one stale rejection is normal, but a high rate means heavy reordering on the network, and that should be visible. When the SDK moves money, the same discipline covers the whole operation. The idempotency key is generated once per transfer and reused on every retry. A timeout leads to unknown, not failed, because it says nothing about whether the transfer happened. And we log transitions, never values.',
   },
 
   /* 13 - CONTRACT FOUR: PATCH RULE */
   {
     n: 13,
     kicker: 'Contract four - defects ship as patch releases',
-    titleHtml: 'Fixing a bug must never<br />require a <span class="hl">migration.</span>',
+    titleHtml:
+      'Fixing a bug must never<br />require a <span class="hl">migration.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
@@ -586,14 +430,15 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
       },
     ],
     transcript:
-      "The fourth contract turns every decision so far into a versioning decision. Under strict semantic versioning, a major costs every consumer a migration, a minor adds without breaking, and a patch fixes without changing the public API. Our own defects must ship as patches - that is the cost the actor would have pushed onto consumers. What counts as breaking depends on distribution, so we decide that first. A binary built with library evolution keeps public enums open: a Swift 6 client switching without unknown default fails to compile, which is what lets a new case ship in a minor. In a source package every enum is exhaustive. And in a binary, adding a defaulted parameter removes the old symbol - we confirmed it with nm.",
+      'The fourth contract turns every decision so far into a versioning decision. Under strict semantic versioning, a major costs every consumer a migration, a minor adds without breaking, and a patch fixes without changing the public API. Our own defects must ship as patches - that is the cost the actor would have pushed onto consumers. What counts as breaking depends on distribution, so we decide that first. A binary built with library evolution keeps public enums open: a Swift 6 client switching without unknown default fails to compile, which is what lets a new case ship in a minor. In a source package every enum is exhaustive. And in a binary, adding a defaulted parameter removes the old symbol - we confirmed it with nm.',
   },
 
   /* 14 - CONTRACT FOUR: API RULES */
   {
     n: 14,
     kicker: 'Contract four - taking the patch rule seriously',
-    titleHtml: 'Design so that<br />every fix is <span class="hl">a patch.</span>',
+    titleHtml:
+      'Design so that<br />every fix is <span class="hl">a patch.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
@@ -635,7 +480,8 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
   {
     n: 15,
     kicker: 'Contract four - rollout as part of the design',
-    titleHtml: 'Cheap is not fast.<br /><span class="hl">Ship the kill switch first.</span>',
+    titleHtml:
+      'Cheap is not fast.<br /><span class="hl">Ship the kill switch first.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {
@@ -672,7 +518,8 @@ export const SDK_CONTRACTS_SLIDES: Slide[] = [
   {
     n: 16,
     kicker: 'Takeaways',
-    titleHtml: 'Documented as safe,<br />or <span class="hl">shown to be.</span>',
+    titleHtml:
+      'Documented as safe,<br />or <span class="hl">shown to be.</span>',
     layout: SlideLayout.Default,
     blocks: [
       {

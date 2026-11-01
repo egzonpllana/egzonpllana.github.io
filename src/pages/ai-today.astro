@@ -54,7 +54,7 @@ const og = AI_TODAY_CARD.image
         <ViewCount path={Astro.url.pathname} />
       </p>
       <p class="ai-intro" data-reveal>{AI_TALK_INTRO.body}</p>
-      <TalkDeck slides={SLIDES} />
+      <TalkDeck slides={SLIDES} cover={AI_TODAY_CARD.image} />
     </div>
   </section>
 </BaseLayout>

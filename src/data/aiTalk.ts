@@ -26,7 +26,7 @@ export const SLIDES: Slide[] = [
     kicker: 'Whether you avoid AI or live in it',
     titleHtml:
       'Stop Prompting.<br /><span class="hl">Start Configuring.</span>',
-    layout: SlideLayout.Center,
+    layout: SlideLayout.Cover,
     blocks: [
       {
         kind: BlockKind.Lead,

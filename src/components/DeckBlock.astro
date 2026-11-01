@@ -1,11 +1,52 @@
 ---
-import { BlockKind, type LeafBlock, type IconKey } from '../data/deck';
+import {
+  BlockKind,
+  type FigureKey,
+  type LeafBlock,
+  type IconKey,
+} from '../data/deck';
+import CallCrossing from './CallCrossing.astro';
+import CancellationLeakTimeline from './CancellationLeakTimeline.astro';
+import ChangeClassifier from './ChangeClassifier.astro';
+import ContractMap from './ContractMap.astro';
+import CrossingsChart from './CrossingsChart.astro';
+import DefectPropagation from './DefectPropagation.astro';
+import DesignStepCoverage from './DesignStepCoverage.astro';
+import InterviewLoopRail from './InterviewLoopRail.astro';
+import IsolationDrillPicker from './IsolationDrillPicker.astro';
+import MechanismBench from './MechanismBench.astro';
+import PrepRoutePicker from './PrepRoutePicker.astro';
+import RaceLoss from './RaceLoss.astro';
+import ScreenMinuteBudget from './ScreenMinuteBudget.astro';
+import SdkBoundary from './SdkBoundary.astro';
+import StalenessLadder from './StalenessLadder.astro';
+import TransferStates from './TransferStates.astro';
 
 interface Props {
   block: LeafBlock;
 }
 
 const { block } = Astro.props;
+
+const FIGURES: Record<FigureKey, (props: Record<string, never>) => unknown> = {
+  SdkBoundary,
+  ContractMap,
+  RaceLoss,
+  MechanismBench,
+  CrossingsChart,
+  CallCrossing,
+  StalenessLadder,
+  TransferStates,
+  ChangeClassifier,
+  DefectPropagation,
+  InterviewLoopRail,
+  ScreenMinuteBudget,
+  IsolationDrillPicker,
+  CancellationLeakTimeline,
+  DesignStepCoverage,
+  PrepRoutePicker,
+};
+const Figure = block.kind === BlockKind.Figure ? FIGURES[block.figure] : null;
 
 // Inline SVG inner markup (stroke, currentColor), keyed. viewBox 0 0 24 24.
 const ICONS: Record<IconKey, string> = {
@@ -54,7 +95,7 @@ const ICONS: Record<IconKey, string> = {
 {
   block.kind === BlockKind.Pills && (
     <div class="deck-pills">
-      {block.items.map((p) => (
+      {block.items.map((p, i) => (
         <>
           {p.arrowBefore && (
             <svg
@@ -64,7 +105,10 @@ const ICONS: Record<IconKey, string> = {
               set:html={ICONS.arrow}
             />
           )}
-          <span class:list={['deck-pill', { 'deck-pill--strong': p.strong }]}>
+          <span
+            class:list={['deck-pill', { 'deck-pill--strong': p.strong }]}
+            style={`--i:${i}`}
+          >
             {p.icon && (
               <svg
                 class="deck-pill-ic"
@@ -85,7 +129,7 @@ const ICONS: Record<IconKey, string> = {
   block.kind === BlockKind.Cards && (
     <div class:list={['deck-cards', `deck-cards--${block.cols}`]}>
       {block.items.map((c, i) => (
-        <div class="deck-card" data-reveal style={`--d:${(i % 3) * 70}ms`}>
+        <div class="deck-card" style={`--i:${i}`}>
           {c.step && <div class="deck-card__step">{c.step}</div>}
           {c.icon && (
             <div class="deck-card__ic" aria-hidden="true">
@@ -116,20 +160,24 @@ const ICONS: Record<IconKey, string> = {
         </div>
       )}
       <div class:list={['deck-code', block.tone && `deck-code--${block.tone}`]}>
-        {block.lines.map((line) => (
-          <div class="deck-code__row" set:html={line} />
+        {block.lines.map((line, i) => (
+          <div class="deck-code__row" style={`--i:${i}`} set:html={line} />
         ))}
       </div>
-      {block.caption && <p class="deck-code__caption" set:html={block.caption} />}
+      {block.caption && (
+        <p class="deck-code__caption" set:html={block.caption} />
+      )}
     </div>
   )
 }
 
 {
   block.kind === BlockKind.Checklist && (
-    <ul class:list={['deck-checks', { 'deck-checks--2col': block.columns === 2 }]}>
-      {block.items.map((it) => (
-        <li class="deck-check">
+    <ul
+      class:list={['deck-checks', { 'deck-checks--2col': block.columns === 2 }]}
+    >
+      {block.items.map((it, i) => (
+        <li class="deck-check" style={`--i:${i}`}>
           <svg
             class="deck-check__mark"
             viewBox="0 0 24 24"
@@ -149,8 +197,8 @@ const ICONS: Record<IconKey, string> = {
 {
   block.kind === BlockKind.Stats && (
     <div class="deck-stats">
-      {block.items.map((s) => (
-        <div class="deck-stat">
+      {block.items.map((s, i) => (
+        <div class="deck-stat" style={`--i:${i}`}>
           <div class="deck-stat__big">{s.big}</div>
           <div class="deck-stat__lbl">{s.label}</div>
         </div>
@@ -159,7 +207,19 @@ const ICONS: Record<IconKey, string> = {
   )
 }
 
-{block.kind === BlockKind.Quote && <p class="deck-quote" set:html={block.html} />}
+{
+  block.kind === BlockKind.Quote && (
+    <p class="deck-quote" set:html={block.html} />
+  )
+}
+
+{
+  Figure && (
+    <div class="deck-figure">
+      <Figure />
+    </div>
+  )
+}
 
 <style>
   /* --- shared inline-emphasis token classes (injected via set:html) --- */
@@ -419,6 +479,14 @@ const ICONS: Record<IconKey, string> = {
     font-size: var(--fs-sm);
     color: var(--fg-muted);
     max-width: 34ch;
+  }
+
+  /* --- figure: the transcript says what the write-up caption says --- */
+  .deck-figure :global(.viz) {
+    margin: 0;
+  }
+  .deck-figure :global(.viz__cap) {
+    display: none;
   }
 
   /* --- quote --- */

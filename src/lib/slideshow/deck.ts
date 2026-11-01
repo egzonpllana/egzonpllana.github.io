@@ -13,6 +13,11 @@
  */
 
 const SWIPE_PX = 50;
+/** Big numbers count up from zero when their slide comes in. */
+const COUNT_MS = 900;
+const COUNT_DELAY_MS = 300;
+/** "60,000" (grouped thousands), "1.5" or "30". */
+const NUMBER = /\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?/g;
 const TAP_PX = 10;
 
 export interface DeckOptions {
@@ -49,7 +54,9 @@ export class Deck {
     private readonly options: DeckOptions,
   ) {
     this.stage = stage;
-    this.slides = Array.from(stage.querySelectorAll<HTMLElement>('.deck-slide'));
+    this.slides = Array.from(
+      stage.querySelectorAll<HTMLElement>('.deck-slide'),
+    );
     this.prevButton = root.querySelector('[data-deck-prev]');
     this.nextButton = root.querySelector('[data-deck-next]');
     this.counter = root.querySelector('[data-deck-counter]');
@@ -105,6 +112,37 @@ export class Deck {
     if (this.prevButton) this.prevButton.disabled = target === 0;
     if (this.nextButton) this.nextButton.disabled = target === this.count - 1;
     this.renderTranscript();
+    this.countUp(this.slides[target]);
+  }
+
+  // Counts every number inside a stat up from zero, keeping the text around
+  // it ("~160k", "91 - 117x") and each number's decimals.
+  private countUp(slide: HTMLElement | undefined): void {
+    if (!slide || this.reduceMotion) return;
+    slide.querySelectorAll<HTMLElement>('.deck-stat__big').forEach((el) => {
+      const text = el.dataset.final ?? el.textContent ?? '';
+      el.dataset.final = text;
+      const targets = text.match(NUMBER);
+      if (!targets) return;
+      const start = performance.now() + COUNT_DELAY_MS;
+      const frame = (now: number) => {
+        const t = Math.min(1, Math.max(0, (now - start) / COUNT_MS));
+        const eased = 1 - Math.pow(1 - t, 3);
+        let k = 0;
+        el.textContent = text.replace(NUMBER, (raw) => {
+          const target = targets[k++] ?? raw;
+          if (t === 1) return target;
+          if (raw.includes(',')) {
+            const value = Math.round(Number(raw.replace(/,/g, '')) * eased);
+            return value.toLocaleString('en-US');
+          }
+          const decimals = raw.split('.')[1]?.length ?? 0;
+          return (Number(raw) * eased).toFixed(decimals);
+        });
+        if (t < 1) requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    });
   }
 
   private renderTranscript(): void {

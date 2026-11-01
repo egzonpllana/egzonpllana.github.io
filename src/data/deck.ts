@@ -14,12 +14,34 @@ export enum BlockKind {
   Stats = 'stats',
   Quote = 'quote',
   Columns = 'columns',
+  Figure = 'figure',
 }
 
 export enum SlideLayout {
   Default = 'default',
   Center = 'center',
+  /** The talk's cover art fills the slide; the text stays for screen readers. */
+  Cover = 'cover',
 }
+
+/** Interactive figures from the write-ups that a slide can show. */
+export type FigureKey =
+  | 'SdkBoundary'
+  | 'ContractMap'
+  | 'RaceLoss'
+  | 'MechanismBench'
+  | 'CrossingsChart'
+  | 'CallCrossing'
+  | 'StalenessLadder'
+  | 'TransferStates'
+  | 'ChangeClassifier'
+  | 'DefectPropagation'
+  | 'InterviewLoopRail'
+  | 'ScreenMinuteBudget'
+  | 'IsolationDrillPicker'
+  | 'CancellationLeakTimeline'
+  | 'DesignStepCoverage'
+  | 'PrepRoutePicker';
 
 export type IconKey =
   | 'shield'
@@ -109,6 +131,11 @@ export interface QuoteBlock {
   html: string;
 }
 
+export interface FigureBlock {
+  kind: BlockKind.Figure;
+  figure: FigureKey;
+}
+
 export type LeafBlock =
   | LeadBlock
   | PillsBlock
@@ -116,7 +143,8 @@ export type LeafBlock =
   | CodeBlock
   | ChecklistBlock
   | StatsBlock
-  | QuoteBlock;
+  | QuoteBlock
+  | FigureBlock;
 
 export interface ColumnsBlock {
   kind: BlockKind.Columns;

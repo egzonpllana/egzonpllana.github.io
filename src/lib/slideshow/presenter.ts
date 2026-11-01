@@ -34,7 +34,7 @@ enum Orientation {
 }
 
 /** Frame width when the screen is at least this wide; it scales up from here. */
-const FRAME_MAX_WIDTH = 1280;
+const FRAME_MAX_WIDTH = 1152;
 /** Smallest frame width; narrower landscape screens scale this down. */
 const FRAME_MIN_WIDTH = 960;
 const FRAME_RATIO = 9 / 16;
@@ -79,6 +79,25 @@ function writeNotesPreference(shown: boolean): void {
   } catch {
     /* preference is a convenience only */
   }
+}
+
+/**
+ * Zoom that fits a slide's body into the frame height. The slide's padding,
+ * its title and the backdrop drawn on the slide keep their size.
+ */
+function contentFit(slide: HTMLElement, frameHeight: number): number {
+  const content = slide.querySelector<HTMLElement>('.deck-slide__content');
+  const body = slide.querySelector<HTMLElement>('.deck-slide__body');
+  if (!content || !body) return 1;
+  const style = getComputedStyle(slide);
+  const padding =
+    parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+  const bodyHeight = body.offsetHeight;
+  const header = content.offsetHeight - bodyHeight;
+  const available = frameHeight - padding - header;
+  return bodyHeight > available && bodyHeight > 0 && available > 0
+    ? available / bodyHeight
+    : 1;
 }
 
 export class Presenter {
@@ -187,7 +206,10 @@ export class Presenter {
     root.dataset.notes = this.notesShown ? 'on' : 'off';
     if (this.presentButton) {
       this.presentButton.dataset.mode = this.mode;
-      this.presentButton.setAttribute('aria-pressed', String(this.isPresenting));
+      this.presentButton.setAttribute(
+        'aria-pressed',
+        String(this.isPresenting),
+      );
       this.presentButton.setAttribute('aria-label', LABEL[this.mode]);
       this.presentButton.title = `${LABEL[this.mode]} (F)`;
     }
@@ -234,11 +256,11 @@ export class Presenter {
     this.frame.style.setProperty('--fit', String(fit));
 
     slides.forEach((slide) => slide.style.removeProperty('--slide-fit'));
-    const heights = slides.map((slide) => slide.offsetHeight);
+    const fits = slides.map((slide) => contentFit(slide, frameHeight));
     slides.forEach((slide, i) => {
-      const natural = heights[i] ?? frameHeight;
-      if (natural > frameHeight)
-        slide.style.setProperty('--slide-fit', String(frameHeight / natural));
+      const slideFit = fits[i] ?? 1;
+      if (slideFit < 1)
+        slide.style.setProperty('--slide-fit', String(slideFit));
     });
   }
 
