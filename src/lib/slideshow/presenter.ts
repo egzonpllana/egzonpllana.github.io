@@ -83,21 +83,24 @@ function writeNotesPreference(shown: boolean): void {
 
 /**
  * Zoom that fits a slide's body into the frame height. The slide's padding,
- * its title and the backdrop drawn on the slide keep their size.
+ * its title and the backdrop drawn on the slide keep their size. Measured in
+ * screen pixels, so the frame's own zoom cancels out of the ratio.
  */
-function contentFit(slide: HTMLElement, frameHeight: number): number {
+function contentFit(slide: HTMLElement): number {
   const content = slide.querySelector<HTMLElement>('.deck-slide__content');
   const body = slide.querySelector<HTMLElement>('.deck-slide__body');
   if (!content || !body) return 1;
+  const slideRect = slide.getBoundingClientRect();
+  const contentRect = content.getBoundingClientRect();
+  const bodyHeight = body.getBoundingClientRect().height;
+  if (slideRect.height === 0 || bodyHeight === 0) return 1;
   const style = getComputedStyle(slide);
+  const scale = slideRect.height / slide.offsetHeight || 1;
   const padding =
-    parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-  const bodyHeight = body.offsetHeight;
-  const header = content.offsetHeight - bodyHeight;
-  const available = frameHeight - padding - header;
-  return bodyHeight > available && bodyHeight > 0 && available > 0
-    ? available / bodyHeight
-    : 1;
+    (parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)) * scale;
+  const header = contentRect.height - bodyHeight;
+  const available = slideRect.height - padding - header;
+  return bodyHeight > available && available > 0 ? available / bodyHeight : 1;
 }
 
 export class Presenter {
@@ -250,13 +253,15 @@ export class Presenter {
     const reserved = height < SHORT_STAGE_HEIGHT ? this.controlsReserve() : 0;
     const usableHeight = height - reserved;
     const fit = Math.min(width / frameWidth, usableHeight / frameHeight);
-    this.frame.style.setProperty('--frame-top', usableHeight / 2 + 'px');
+    // Zoom also scales lengths set on the frame itself, so the space kept
+    // for the controls is given in the frame's own pixels.
+    this.frame.style.setProperty('--frame-reserve', reserved / fit + 'px');
     this.frame.style.setProperty('--frame-w', frameWidth + 'px');
     this.frame.style.setProperty('--frame-h', frameHeight + 'px');
     this.frame.style.setProperty('--fit', String(fit));
 
     slides.forEach((slide) => slide.style.removeProperty('--slide-fit'));
-    const fits = slides.map((slide) => contentFit(slide, frameHeight));
+    const fits = slides.map((slide) => contentFit(slide));
     slides.forEach((slide, i) => {
       const slideFit = fits[i] ?? 1;
       if (slideFit < 1)
