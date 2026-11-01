@@ -13,12 +13,6 @@ export const AI_TALK_META = {
     'How I turned AI from autocomplete into a teammate that ships my standard of code across production iOS SDKs - the full talk, slide by slide, with the transcript of what I actually said.',
 } as const;
 
-export const AI_TALK_INTRO = {
-  title: 'How I actually work with AI',
-  lead: "I don't treat AI as an oracle - I treat it as a brilliant junior engineer with zero taste, then configure it until it ships my standard of code across the production iOS SDKs I build.",
-  body: 'This is the talk I gave on exactly how: encode your taste in a file, give it memory, make it prove its work. Step through the slides below - the transcript under each one is what I said out loud. Wherever you sit with these tools, skeptic or power user, every tactic here is copyable today.',
-} as const;
-
 export const SLIDES: Slide[] = [
   /* 1 - TITLE */
   {

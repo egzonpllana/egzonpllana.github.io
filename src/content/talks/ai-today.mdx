@@ -1,0 +1,306 @@
+---
+title: 'AI Today: stop prompting, start configuring'
+description: 'How I turned AI from autocomplete into a teammate that ships my standard of code across production iOS SDKs - the full talk, slide by slide, with the transcript of what I actually said.'
+date: 2026-07-07
+tags: ['AI', 'Engineering', 'Developer Tools', 'Swift', 'iOS']
+heroImage: '../../assets/covers/ai-today.png'
+---
+
+import StatTiles from '../../components/StatTiles.astro';
+
+Everyone reading this has the same AI I do. Same model, same price, same little box to type into. And yet it hands most people confident guesswork, while a few of us use it to ship production code. That gap is what this write-up is about.
+
+I build iOS SDKs - the libraries other teams ship their apps on. I didn't close that gap by prompting harder. I closed it by configuring: writing my standards down where the model reads them, giving it a memory, binding my workflows to triggers, and making it prove its work before I accept any of it.
+
+**Wherever you sit with these tools, this is built for you.** There is a spectrum, and you are somewhere on it. On one end are people who haven't started - skeptical, maybe burned once. In the middle are people who ask and paste. On the other end are people who live in these tools all day. What surprised me is that almost everyone, at every point on that line, hits the same ceiling: AI as a faster search box. Ask, paste, hope it compiles.
+
+The reason is the same for everyone. The thing doing the typing has no idea who you are, what your codebase values, or what "good" means to you. The leverage was never the model everyone shares. It's the system you build around it. The rest of this article is that system - the exact setup I run, with real examples you can copy today.
+
+## It's not an oracle, it's a brilliant junior
+
+If you take one mental model from this, take this one. AI is not an oracle. It's a brilliant junior engineer with zero taste: infinite energy, encyclopedic recall, it has read every book - and it has no opinion on what good looks like in **your** codebase.
+
+Treat a junior like an oracle and you ship confident guesswork. Mentor that same junior - set the bar, review the work - and they compound, fast. Rubber-stamp whatever it hands you and you'll spend Monday unpicking confident, wrong code. I've paid that bill once. That was enough.
+
+So my job changed. I'm no longer the author of every line. I'm the director and the reviewer: I set the bar, and it does the typing.
+
+That shift has a consequence worth stating plainly. **The model is a commodity. Taste is the moat.** What you ask of it - and, just as important, what you refuse to accept from it - is not something anyone else can download. It's the one thing the model can't download either.
+
+## Where this actually runs
+
+Before the how, I want to be clear about where this runs, because it changes how seriously you should take the rest. This isn't a weekend to-do app. It's production iOS SDK work.
+
+<StatTiles
+  tiles={[
+    {
+      label: 'versioned Swift packages',
+      value: 11,
+      sub: 'shipped as SDKs, reused across apps',
+    },
+    {
+      label: 'lines of Swift',
+      value: 160,
+      suffix: 'k',
+      sub: 'roughly, behind those public APIs',
+    },
+  ]}
+/>
+
+Every package follows the same shape: a clean public surface, everything else hidden behind protocols, dependencies pointing inward.
+
+```text
+SDK/
+├─ Public/          Protocols · entry points
+├─ Domain/          Models · UseCases · Rules
+├─ Data/            DTOs · Repositories
+├─ Infrastructure/  Network (internal)
+└─ Shared/          DI container · utils
+```
+
+What raises the stakes is that other developers depend on this code. A confident-but-wrong suggestion doesn't just break my build - it breaks every app that pulls my package. **Code like that can't be plausible. It has to be right.**
+
+So when I say these tactics work, I mean they survive that environment. If they hold up under code other people depend on, they'll hold up in your repo.
+
+## Tactic 1: encode your taste in a file
+
+This is the big one. If you do nothing else from this article, do this.
+
+I stopped re-explaining myself. Every time you open a fresh chat and type "use protocols, follow clean architecture, don't force-unwrap", you pay the same tax again. So I wrote it down once, in a global config file the AI reads on every task. Every prompt now inherits it.
+
+Here is the core of mine, from `~/.claude/CLAUDE.md`:
+
+```markdown
+- Protocol-Oriented Programming is mandatory - every
+  service, repository & use case has a protocol.
+- Clean Architecture - Domain · Data · Presentation, inward.
+- Conventional Commits only - feat / fix / refactor, imperative.
+- Never force-unwrap. Build before you call it "done".
+```
+
+These are my standards, and now they're its standards. The result still surprises me: it writes Swift that looks like I wrote it - protocol-driven, first try, in every repo.
+
+If you're wondering what to put in yours, the answer is already in your chat history. The rules you're tired of repeating are your config file, talking to you.
+
+### Vague in, vague out
+
+A fair pushback at this point: "stop prompting"? You still have to ask for the thing. True. The split is this - **config carries the constants**, your taste and your architecture. **The prompt is the variable**: the task itself. And the detail you put into the task is the quality you get back.
+
+Here is the lazy ask:
+
+```text
+> Add caching to the network layer.
+```
+
+That's the whole prompt, so the model has to fill in everything else. It guesses the scope, invents an approach, and edits files you never meant to touch.
+
+Here is the real ask:
+
+```text
+> Add an in-memory LRU image cache on fetch:
+  cap 50 MB · evict LRU · key by URL
+  actor-isolated · clear on memory warning
+  behind a CachePolicy protocol to swap
+  Don't touch the existing retry logic.
+```
+
+An in-memory LRU cache on the fetch path, capped at 50 MB, evicting least-recently-used entries, keyed by URL, actor-isolated for thread safety, cleared on a memory warning, behind a protocol consumers can swap - and the retry logic left alone. That one comes back exactly as I meant it, in my architecture, first try.
+
+Same model. Same config. The only thing that changed was how much I told it. Detail isn't extra work. Detail is the work.
+
+## Tactic 2: a Claude file per project
+
+The global file carries my **taste**. Each project gets its own file that carries the **guardrails**: which tools the AI may run unattended in that particular repo.
+
+```jsonc
+// <your-app>/.claude/settings.local.json
+"permissions": { "allow": [
+  "Bash(xcodebuild:*)",     // build & test
+  "Bash(periphery scan:*)",  // dead-code linter
+  "Bash(git commit:*)", "Bash(git push:*)",
+  "WebFetch(domain:forums.developer.apple.com)"
+] }
+```
+
+Per repo, I tell it exactly which commands it may run on its own - build, run the linter, install dependencies, commit, push. The rule is to allowlist the safe, repeatable commands and nothing else.
+
+The effect is bigger than it looks. It isn't asking permission forty times an hour. It builds, lints and commits while I think about the actual problem - but it stays inside a fence I drew.
+
+The global file is who I am. The project file is what's safe here. Two files, and you stop babysitting and start delegating.
+
+## Tactics 3 and 4: make it remember, then make it compound
+
+### Give it memory
+
+Almost nobody does this one, and it's the one that flipped the tool into a teammate for me.
+
+Most people start every session from zero. I gave mine a file-based memory - real files on disk, one fact per file, typed, with an index it loads every time. Each memory looks like this:
+
+```markdown
+---
+name: prefers-protocol-first
+description: used to decide recall
+metadata: { type: feedback }
+---
+The fact. Link related: [[other-memory]]
+```
+
+There are four types:
+
+- **user** - who I am and how I work.
+- **feedback** - my corrections, with the *why* behind them.
+- **project** - goals and constraints.
+- **reference** - the links, dashboards and tickets I keep reaching for.
+
+`MEMORY.md` is the index: one line per fact, loaded every session. So it walks in already knowing. Teach it once, and it never forgets.
+
+That is the difference between a contractor who relearns your codebase every morning and one who has been on the team for a year.
+
+### Catch the insight, promote it to a rule
+
+Memory is storage. This next part is the flywheel.
+
+The most valuable moments in a session aren't when the AI is right. They're when it's wrong and I correct it - or when it catches me in a sloppy habit. That correction is gold, and most people let it evaporate when the session ends.
+
+So I capture it, in three steps:
+
+1. **Trigger.** Two words: "capture this". It's for a reframe, a wrong assumption, or a gotcha worth keeping.
+2. **Classify.** Name what it is - a synthesis, a pattern, or a correction. It lands in a scratchpad, or in a dedicated note for the deep ones.
+3. **Promote.** If a correction keeps coming back, it graduates. It stops being a note and becomes a permanent rule in the standards file.
+
+Today's correction is tomorrow's default. That's how every session leaves the next one smarter, and it's also how the config file from tactic one keeps growing without me sitting down to write it.
+
+## Tactic 5: one word, a whole workflow
+
+I don't re-type procedures any more. I bind them - to a keyword or a slash command - so a long flow fires from a short trigger.
+
+### Trigger words
+
+My most used one is "fast". When a prompt contains "fast" together with a git action like commit or push, the whole inspection ceremony is skipped:
+
+```text
+// prompt has "fast" + commit/push →
+skip git diff & log inspection
+one-line message from the file paths
+stage → commit → push → tag, one flow
+```
+
+One word reshapes the entire workflow.
+
+### Slash commands and a team plugin
+
+Longer flows become commands. Onboarding a repo, or the whole branch-commit-pull-request dance, is one command instead of a paragraph:
+
+```text
+/setup-dependencies  onboard a repo
+/create-pr-flow      branch → commit → PR
+// shared with the whole team -
+// my setup becomes the baseline.
+```
+
+Then comes the multiplier: I share them with the team as a plugin. My setup isn't just my edge - it becomes everyone's baseline. The hour I spend teaching it, I spend once, and the rest of the team spends zero.
+
+### A skill for Swift iOS teams
+
+"Skills" sounds abstract until you see one, and for SDK work this is where it gets real. A skill is a named procedure with its own written instructions: define the steps once, then trigger the whole thing by name.
+
+Here is one I'd hand every SDK engineer. It adds a module in our house style - clean public surface, internals hidden:
+
+```markdown
+# /scaffold-module - add an SDK module, house style
+Given a <Service> name, generate and wire:
+1. Public/<Service>Protocol - the only type consumers see
+2. Internal/<Service> - final impl, hidden behind it
+3. <Service>Error enum + Result returns (no force-unwrap)
+4. register in the SDK's public factory / DI
+5. unit-test stub + a usage snippet for the README
+```
+
+It lives at `.claude/skills/scaffold-module/SKILL.md`. You give it a service name and it generates the module: a public protocol, the one type a consumer sees; a `final` implementation hidden behind it; a typed error enum and `Result` returns, so nothing force-unwraps in a library others depend on; registration in the public factory; and a test stub plus a README snippet.
+
+A developer types `/scaffold-module Analytics` and gets exactly how I'd ship it, the same shape every time. The real win isn't speed. It's consistency - zero drift, so every SDK we publish looks like one hand wrote it.
+
+## My daily driver: bugs and tests
+
+People always ask what I actually use it for. Two jobs, every day, before anything else - and it's better at both than I expected. This isn't a demo trick. It's my Tuesday.
+
+### A second pair of eyes that never blinks
+
+I point it at a diff, or at a function that's gotten away from me, and tell it to break it. It's relentless. It surfaces the force-unwrap I'd stopped seeing, the off-by-one, the race condition, the error path nobody handled - the edge cases you stop seeing after the tenth read.
+
+Here's why I trust it for this. I once shipped a force-unwrap on a fetch path. It looked innocent, passed review, and passed my own eyes more than once. Because it was an SDK, it didn't crash my app - it crashed in every app that had integrated us. That's the worst call you can get.
+
+Now, before anything merges, I point the AI at the diff and say "find the crash". It finds the force-unwrap I can't see any more.
+
+### The test suite you keep meaning to write
+
+Tests are the thing we all say we value and quietly skip when the sprint gets tight. The AI scaffolds the suite - happy path, boundaries, failure paths - in minutes.
+
+For an SDK this isn't optional polish. Those tests are the contract every consumer leans on.
+
+The work I used to put off is now the first thing I delegate. And then I review it, like everything else.
+
+## Tactic 6: plan before, audit after
+
+This is the part where it goes wrong if you're careless. I never let it run blind on production.
+
+First, it plans. I see the approach before a line is written. Then, when it says it's done, I don't believe it - I run a non-negotiable checklist:
+
+1. **Build.** Compile it. Zero errors, zero warnings. No exceptions.
+2. **Wiring.** Is every new type actually injected, registered and called - or is it just sitting there, dead?
+3. **Logic.** Re-read it end to end. Are the edge cases handled? Is it correct, not just green?
+
+The trap that catches everyone is that code that compiles feels finished. **"It compiles" and "it's correct" are two completely different sentences.**
+
+### The auditor can't be the author
+
+The day this paid for itself, I had AI build me a complete chat SDK - messages, image upload, a live connection. It came back beautiful: compiled first try, zero warnings, and every single thing worked in the demo.
+
+That is the moment you should trust it the least. A green build is not a clean codebase.
+
+So I didn't ship it. I had it audited by reviewers that never wrote a line of it - two of them, independent and adversarial. One hunted correctness, concurrency and memory. The other hunted architecture, wiring and dead code. On top of that I ran my own automated sweeps. The rule for the reviewers: find what's wrong, cite the file and line, and do not praise me.
+
+They came back with **17 findings**, from a build that compiled clean and demoed perfectly. Three were critical, and every one of the three was invisible until a real backend was on the other end:
+
+- **Every message, twice** (network). The server echoes each send back, and the SDK appended that echo as a new message. A mock never echoes, so the demo looked perfect.
+- **Sent images vanished** (data loss). After upload it kept the local temp file and dropped the real URL. The photo rendered for the sender and broke for everyone else.
+- **Race and endless reconnect** (concurrency). A data race in the socket layer, plus a reconnect with no backoff - one dropped connection could spin forever.
+
+Six more were lies in the contract: config flags and ports that looked wired and did nothing. Eight were leaks, duplicate calls and cleanup.
+
+I fixed all seventeen. The audit took minutes. Shipping those three critical ones would have cost production incidents in apps I'd never see.
+
+The reason it worked fits in one line: **the auditor can't be the author.** The thing that wrote the code is the worst judge of whether it's right - it's already convinced.
+
+## Tactic 7: make it prove it, don't let it guess
+
+This one is non-negotiable.
+
+When there's a live bug, AI will happily hand you a confident, plausible, beautifully worded theory. Confidence is not correctness. On a published SDK, a good-sounding guess is the most expensive thing in the room.
+
+I once accepted a fix that read perfectly - clean explanation, plausible cause, tidy patch. My cursor was on the merge button. Then I made it show me the exact lines, and the cause it described couldn't happen: the path it blamed never ran. The real bug was three layers down. The nice explanation was the trap.
+
+So my bug-report protocol forces the process. There is no fix until the cause is shown in the code:
+
+1. **Trace the root cause end to end.** Follow the data from trigger to symptom.
+2. **Prove it in the code.** Show me the actual lines. No shown lines means no cause - only a story.
+3. **One targeted fix.** Not five "try this and see" patches.
+4. **Uncertain? Stop and say so.** Guessing on production isn't a fix. It's the bug.
+
+## The whole talk, in six lines
+
+If you want the short version, here it is:
+
+1. Encode your taste in a config file.
+2. Give it memory - teach once.
+3. Capture insights and promote them to rules.
+4. Bind workflows to triggers and skills.
+5. Plan, then audit - make it prove it.
+6. Own the output. Your name ships, not the model's.
+
+None of this is exotic. It's a junior engineer, a standards doc and a review process. We've done this with people for decades. I just did it with a machine that never gets tired.
+
+Here is what I actually believe. **AI doesn't replace the engineer who knows what good looks like. It multiplies them.** If you don't know what good looks like, AI makes you wrong faster. If you do - if you have taste, standards, and the discipline to make it prove its work - it turns you into a team.
+
+So pick one thing. Not all seven - one. Today, open a file and write the first ten rules you're tired of repeating. That's the moment casual turns into craft.
+
+Stop prompting. Start configuring.

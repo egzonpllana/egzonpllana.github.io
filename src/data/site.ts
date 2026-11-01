@@ -34,7 +34,7 @@ export const COUNTER_BASE = `https://${ANALYTICS.code}.goatcounter.com`;
 export const NAV: NavItem[] = [
   { label: 'Portfolio', href: '/' },
   { label: 'Articles', href: '/articles/' },
-  { label: 'Talks', href: '/talks/', alsoActiveFor: ['/ai-today/'] },
+  { label: 'Talks', href: '/talks/' },
   { label: 'Contact', href: '/contact/' },
 ];
 

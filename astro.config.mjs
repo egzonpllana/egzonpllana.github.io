@@ -35,6 +35,10 @@ export default defineConfig({
   site: SITE.url,
   output: 'static',
   trailingSlash: 'always',
+  // AI Today used to have its own page; it is a talk like the others now.
+  redirects: {
+    '/ai-today/': '/talks/ai-today/',
+  },
   prefetch: {
     prefetchAll: true,
     defaultStrategy: 'viewport',
