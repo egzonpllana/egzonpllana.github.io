@@ -13,15 +13,7 @@
  *   [data-fs-track="sel"]   on the button: element the reader is reading
  */
 
-type WebkitDocument = Document & {
-  webkitFullscreenEnabled?: boolean;
-  webkitFullscreenElement?: Element | null;
-  webkitExitFullscreen?: () => Promise<void>;
-};
-
-type WebkitElement = HTMLElement & {
-  webkitRequestFullscreen?: () => Promise<void>;
-};
+import * as native from './native';
 
 export enum ScreenMode {
   Page = 'page',
@@ -50,37 +42,10 @@ const LABEL: Record<ScreenMode, string> = {
   [ScreenMode.Fullscreen]: 'Exit fullscreen',
 };
 
-const doc = document as WebkitDocument;
-const root = document.documentElement as WebkitElement;
-
-function nativeSupported(): boolean {
-  return Boolean(doc.fullscreenEnabled || doc.webkitFullscreenEnabled);
-}
+const root = document.documentElement;
 
 function nativeActive(): boolean {
-  return (
-    (doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null) === root
-  );
-}
-
-async function requestNative(): Promise<void> {
-  if (root.requestFullscreen)
-    await root.requestFullscreen({ navigationUI: 'hide' });
-  else if (root.webkitRequestFullscreen) await root.webkitRequestFullscreen();
-  else throw new Error('Fullscreen API unavailable');
-}
-
-async function exitNative(): Promise<void> {
-  if (doc.exitFullscreen) await doc.exitFullscreen();
-  else await doc.webkitExitFullscreen?.();
-}
-
-function isTypingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  return (
-    target.isContentEditable ||
-    ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
-  );
+  return native.currentElement() === root;
 }
 
 class FullscreenReader {
@@ -94,10 +59,7 @@ class FullscreenReader {
     private readonly strategy: Strategy,
   ) {
     button.addEventListener('click', () => void this.switchMode());
-    document.addEventListener('fullscreenchange', () => this.onNativeChange());
-    document.addEventListener('webkitfullscreenchange', () =>
-      this.onNativeChange(),
-    );
+    native.onChange(() => this.onNativeChange());
     document.addEventListener('keydown', (event) => this.onKey(event));
     window.addEventListener('scroll', () => this.scheduleUpdate(), {
       passive: true,
@@ -124,7 +86,7 @@ class FullscreenReader {
   private async enter(): Promise<void> {
     if (this.strategy === Strategy.Native) {
       try {
-        await requestNative();
+        await native.request(root);
         return; // onNativeChange applies the mode
       } catch {
         /* refused (policy, no gesture): fall back to immersive */
@@ -136,7 +98,7 @@ class FullscreenReader {
   private async exit(): Promise<void> {
     if (nativeActive()) {
       try {
-        await exitNative();
+        await native.exit();
       } catch {
         /* already leaving */
       }
@@ -151,7 +113,7 @@ class FullscreenReader {
 
   private onKey(event: KeyboardEvent): void {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (isTypingTarget(event.target)) return;
+    if (native.isTypingTarget(event.target)) return;
     if (event.key === 'f' || event.key === 'F') {
       event.preventDefault();
       void this.switchMode();
@@ -223,6 +185,8 @@ export function startFullscreenReader(): void {
   const track =
     (selector && document.querySelector<HTMLElement>(selector)) ||
     document.body;
-  const strategy = nativeSupported() ? Strategy.Native : Strategy.Immersive;
+  const strategy = native.isSupported()
+    ? Strategy.Native
+    : Strategy.Immersive;
   new FullscreenReader(button, track, strategy);
 }
