@@ -3,9 +3,9 @@ import { Presenter } from './presenter';
 
 /** Wires the talk deck and its present mode, if the page has one. */
 export function startTalkDeck(): void {
-  const root = document.querySelector<HTMLElement>('[data-ai-talk]');
-  const stage = root?.querySelector<HTMLElement>('[data-ai-stage]');
-  const frame = root?.querySelector<HTMLElement>('[data-ai-frame]');
+  const root = document.querySelector<HTMLElement>('[data-deck]');
+  const stage = root?.querySelector<HTMLElement>('[data-deck-stage]');
+  const frame = root?.querySelector<HTMLElement>('[data-deck-frame]');
   if (!root || !stage || !frame) return;
 
   let presenter: Presenter | null = null;

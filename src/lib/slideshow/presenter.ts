@@ -8,9 +8,9 @@
  * slides keep their responsive layout at full width and scroll when long.
  *
  * Markup contract (rendered by AiTalkSlideshow.astro), on top of Deck's:
- *   [data-ai-frame]           frame inside the stage that holds the slides
- *   [data-ai-present]         enter / exit toggle
- *   [data-ai-notes]           transcript toggle, shown while presenting
+ *   [data-deck-frame]           frame inside the stage that holds the slides
+ *   [data-deck-present]         enter / exit toggle
+ *   [data-deck-notes]           transcript toggle, shown while presenting
  */
 
 import * as native from '../fullscreen/native';
@@ -49,11 +49,11 @@ const CONTROLS_GAP = 8;
 const IDLE_MS = 2500;
 
 /** Remembers whether the viewer hid the transcript while presenting. */
-const NOTES_STORAGE_KEY = 'ai-talk:notes';
+const NOTES_STORAGE_KEY = 'deck:notes';
 
 const PRESENTING_CLASS = 'is-presenting';
 const IDLE_CLASS = 'is-idle';
-const PAGE_LOCK_CLASS = 'ai-presenting';
+const PAGE_LOCK_CLASS = 'deck-presenting';
 
 const LABEL: Record<PresentMode, string> = {
   [PresentMode.Inline]: 'Present fullscreen',
@@ -99,14 +99,16 @@ export class Presenter {
   ) {
     const root = deck.root;
     this.frame = frame;
-    this.presentButton = root.querySelector('[data-ai-present]');
-    this.notesButton = root.querySelector('[data-ai-notes]');
-    this.controlsBar = root.querySelector('.ai-controls__bar');
+    this.presentButton = root.querySelector('[data-deck-present]');
+    this.notesButton = root.querySelector('[data-deck-notes]');
+    this.controlsBar = root.querySelector('.deck-controls__bar');
 
     this.presentButton?.addEventListener('click', () => void this.toggle());
     this.notesButton?.addEventListener('click', () => this.toggleNotes());
     native.onChange(() => this.onNativeChange());
-    document.addEventListener('keydown', (event) => this.onKey(event));
+    // Capture phase: runs before the deck's own arrow keys and before any
+    // other page shortcut, which skip events already handled here.
+    document.addEventListener('keydown', (event) => this.onKey(event), true);
     root.addEventListener('pointermove', () => this.wake(), { passive: true });
     root.addEventListener('pointerdown', () => this.wake(), { passive: true });
     new ResizeObserver(() => this.layout()).observe(deck.stage);
@@ -255,7 +257,7 @@ export class Presenter {
     if (native.isTypingTarget(event.target)) return;
     const key = event.key;
 
-    if (key === 'f' || key === 'F') {
+    if ((key === 'f' || key === 'F') && this.ownsFullscreenKey(event)) {
       event.preventDefault();
       void this.toggle();
       return;
@@ -276,6 +278,16 @@ export class Presenter {
     else if (key === 'Escape') void this.exit();
     else return;
     event.preventDefault();
+  }
+
+  // A page with a fullscreen reader shares F: the deck takes it only while
+  // presenting or while focus is inside the deck.
+  private ownsFullscreenKey(event: KeyboardEvent): boolean {
+    if (this.isPresenting) return true;
+    if (!document.querySelector('[data-fs-button]')) return true;
+    return (
+      event.target instanceof Node && this.deck.root.contains(event.target)
+    );
   }
 
   private wake(): void {

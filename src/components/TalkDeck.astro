@@ -1,31 +1,41 @@
 ---
-import AiBlock from './AiBlock.astro';
-import { SLIDES, BlockKind, SlideLayout } from '../data/aiTalk';
+/**
+ * A talk as a slide deck: one slide at a time with the transcript of what was
+ * said under it, and a Present mode that takes the deck fullscreen. Render
+ * once per page. Logic lives in src/lib/slideshow.
+ */
+import DeckBlock from './DeckBlock.astro';
+import { BlockKind, SlideLayout, type Slide } from '../data/deck';
 
-const total = SLIDES.length;
+interface Props {
+  slides: Slide[];
+}
+
+const { slides } = Astro.props;
+const total = slides.length;
 const pad = (n: number) => (n < 10 ? '0' + n : String(n));
 ---
 
-<div class="ai-talk" data-ai-talk>
+<div class="deck" data-deck>
   <!-- ===== STAGE ===== -->
   <div
-    class="ai-stage"
-    id="ai-stage"
-    data-ai-stage
+    class="deck-stage"
+    id="deck-stage"
+    data-deck-stage
     tabindex="0"
     role="region"
     aria-roledescription="carousel"
     aria-label="Talk slides - use the arrow keys to change slides, F to present"
   >
-    <div class="ai-frame" data-ai-frame>
+    <div class="deck-frame" data-deck-frame>
     {
-      SLIDES.map((slide) => (
+      slides.map((slide) => (
         <article
           class:list={[
-            'ai-slide',
+            'deck-slide',
             {
               'is-active': slide.n === 1,
-              'ai-slide--center': slide.layout === SlideLayout.Center,
+              'deck-slide--center': slide.layout === SlideLayout.Center,
             },
           ]}
           data-index={slide.n}
@@ -35,33 +45,33 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
           aria-hidden={slide.n === 1 ? 'false' : 'true'}
           data-transcript={slide.transcript}
         >
-          <span class="ai-slide__num">
+          <span class="deck-slide__num">
             {pad(slide.n)} / {pad(total)}
           </span>
-          <span class="ai-slide__kicker">
-            <span class="ai-slide__dot" />
+          <span class="deck-slide__kicker">
+            <span class="deck-slide__dot" />
             {slide.kicker}
           </span>
-          <h2 class="ai-slide__title" set:html={slide.titleHtml} />
-          <div class="ai-slide__body">
+          <h2 class="deck-slide__title" set:html={slide.titleHtml} />
+          <div class="deck-slide__body">
             {slide.blocks.map((block) =>
               block.kind === BlockKind.Columns ? (
                 <div
                   class:list={[
-                    'ai-cols',
-                    { 'ai-cols--wide': block.variant === 'wide' },
+                    'deck-cols',
+                    { 'deck-cols--wide': block.variant === 'wide' },
                   ]}
                 >
                   {block.cols.map((col) => (
-                    <div class="ai-col">
+                    <div class="deck-col">
                       {col.map((leaf) => (
-                        <AiBlock block={leaf} />
+                        <DeckBlock block={leaf} />
                       ))}
                     </div>
                   ))}
                 </div>
               ) : (
-                <AiBlock block={block} />
+                <DeckBlock block={block} />
               ),
             )}
           </div>
@@ -72,26 +82,26 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
   </div>
 
   <!-- ===== TRANSCRIPT ===== -->
-  <div class="ai-transcript">
-    <span class="ai-transcript__eyebrow">
+  <div class="deck-transcript">
+    <span class="deck-transcript__eyebrow">
       <svg viewBox="0 0 24 24" aria-hidden="true"
         ><path d="M12 3a4 4 0 0 0-4 4v3a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4z"
         ></path><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg
       >
       Transcript
     </span>
-    <p class="ai-transcript__text" data-ai-transcript aria-live="polite">
-      {SLIDES[0].transcript}
+    <p class="deck-transcript__text" data-deck-transcript aria-live="polite">
+      {slides[0]?.transcript}
     </p>
   </div>
 
   <!-- ===== CONTROLS (under the transcript) ===== -->
-  <div class="ai-controls" role="group" aria-label="Slideshow controls">
-    <div class="ai-progress"><i data-ai-fill></i></div>
-    <div class="ai-controls__bar">
+  <div class="deck-controls" role="group" aria-label="Slideshow controls">
+    <div class="deck-progress"><i data-deck-fill></i></div>
+    <div class="deck-controls__bar">
       <button
-        class="ai-btn"
-        data-ai-prev
+        class="deck-btn"
+        data-deck-prev
         type="button"
         aria-label="Previous slide"
       >
@@ -99,17 +109,17 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
           ><path d="M15 18l-6-6 6-6"></path></svg
         >
       </button>
-      <div class="ai-counter" data-ai-counter>
+      <div class="deck-counter" data-deck-counter>
         <b>{pad(1)}</b> / {pad(total)}
       </div>
-      <button class="ai-btn" data-ai-next type="button" aria-label="Next slide">
+      <button class="deck-btn" data-deck-next type="button" aria-label="Next slide">
         <svg viewBox="0 0 24 24" aria-hidden="true"
           ><path d="M9 6l6 6-6 6"></path></svg
         >
       </button>
       <button
-        class="ai-btn ai-btn--notes"
-        data-ai-notes
+        class="deck-btn deck-btn--notes"
+        data-deck-notes
         type="button"
         aria-pressed="false"
         aria-label="Transcript"
@@ -121,8 +131,8 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
         >
       </button>
       <button
-        class="ai-btn ai-btn--present"
-        data-ai-present
+        class="deck-btn deck-btn--present"
+        data-deck-present
         data-mode="inline"
         type="button"
         aria-pressed="false"
@@ -131,18 +141,18 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
         title="Present fullscreen (F)"
       >
         <svg
-          class="ai-btn__icon--enter"
+          class="deck-btn__icon--enter"
           viewBox="0 0 24 24"
           aria-hidden="true"
           ><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"></path></svg
         >
         <svg
-          class="ai-btn__icon--exit"
+          class="deck-btn__icon--exit"
           viewBox="0 0 24 24"
           aria-hidden="true"
           ><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"></path></svg
         >
-        <span class="ai-btn__label">Present</span>
+        <span class="deck-btn__label">Present</span>
       </button>
     </div>
   </div>
@@ -155,29 +165,29 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
 </script>
 
 <style>
-  .ai-talk {
+  .deck {
     margin-top: var(--sp-6);
   }
 
   /* ===== STAGE - active slide sizes the stage; others overlay for cross-fade ===== */
-  .ai-stage {
+  .deck-stage {
     position: relative;
     border: 1px solid var(--border);
     border-radius: var(--radius-xl);
     background: var(--surface);
     overflow: hidden;
   }
-  .ai-stage:focus:not(:focus-visible) {
+  .deck-stage:focus:not(:focus-visible) {
     outline: none;
   }
-  .ai-stage:focus-visible {
+  .deck-stage:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 3px;
   }
-  .ai-frame {
+  .deck-frame {
     position: relative;
   }
-  .ai-slide {
+  .deck-slide {
     position: absolute;
     inset: 0;
     min-width: 0;
@@ -193,7 +203,7 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     flex-direction: column;
     min-height: 340px;
   }
-  .ai-slide.is-active {
+  .deck-slide.is-active {
     position: relative;
     inset: auto;
     opacity: 1;
@@ -201,19 +211,19 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     pointer-events: auto;
     transform: none;
   }
-  .ai-slide--center {
+  .deck-slide--center {
     align-items: center;
     justify-content: center;
     text-align: center;
   }
-  .ai-slide--center .ai-slide__body {
+  .deck-slide--center .deck-slide__body {
     align-items: center;
   }
-  .ai-slide--center :global(.ai-lead) {
+  .deck-slide--center :global(.deck-lead) {
     margin-inline: auto;
   }
 
-  .ai-slide__num {
+  .deck-slide__num {
     position: absolute;
     top: clamp(1.1rem, 1rem + 1vw, 1.6rem);
     right: clamp(1.2rem, 1rem + 1vw, 1.8rem);
@@ -222,7 +232,7 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     color: var(--fg-faint);
     letter-spacing: 0.08em;
   }
-  .ai-slide__kicker {
+  .deck-slide__kicker {
     display: inline-flex;
     align-items: center;
     gap: 0.75rem;
@@ -234,44 +244,61 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     color: var(--accent-text);
     margin-bottom: var(--sp-4);
   }
-  .ai-slide__dot {
+  .deck-slide__dot {
     width: 28px;
     height: 1px;
     background: currentColor;
     flex: 0 0 auto;
   }
-  .ai-slide__title {
+  .deck-slide__title {
     font-size: clamp(1.5rem, 1.05rem + 2.2vw, 2.4rem);
     line-height: 1.08;
     letter-spacing: -0.03em;
     margin-bottom: var(--sp-4);
     overflow-wrap: anywhere;
   }
-  .ai-slide__title :global(.hl) {
+  .deck-slide__title :global(.hl) {
     color: var(--accent);
   }
-  .ai-slide__body {
+  .deck-slide__body {
     display: flex;
     flex-direction: column;
     gap: var(--sp-5);
     min-width: 0;
   }
-  .ai-slide__body > :global(*) {
+  .deck-slide__body > :global(*) {
     min-width: 0;
     max-width: 100%;
   }
 
+  /* Numbers on their own span the slide in a row; inside a column they stack. */
+  .deck-slide__body > :global(.deck-stats) {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--sp-5) var(--sp-7);
+  }
+  .deck-slide__body > :global(.deck-stats > .deck-stat) {
+    flex: 1 1 12rem;
+  }
+  .deck-slide--center .deck-slide__body > :global(.deck-stats) {
+    align-self: stretch;
+    justify-content: center;
+  }
+  .deck-slide--center .deck-slide__body > :global(.deck-stats > .deck-stat) {
+    flex: 0 1 12rem;
+  }
+
   /* Columns inside a slide */
-  .ai-cols {
+  .deck-cols {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--sp-5);
     align-items: start;
   }
-  .ai-cols--wide {
+  .deck-cols--wide {
     grid-template-columns: 1.08fr 0.92fr;
   }
-  .ai-col {
+  .deck-col {
     display: flex;
     flex-direction: column;
     gap: var(--sp-4);
@@ -279,16 +306,16 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
   }
 
   /* ===== CONTROLS ===== */
-  .ai-controls {
+  .deck-controls {
     margin-top: var(--sp-4);
   }
-  .ai-progress {
+  .deck-progress {
     height: 2px;
     border-radius: 1px;
     background: var(--border);
     overflow: hidden;
   }
-  .ai-progress > i {
+  .deck-progress > i {
     display: block;
     height: 100%;
     width: 5.88%;
@@ -296,14 +323,14 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     border-radius: 999px;
     transition: width 0.4s var(--ease);
   }
-  .ai-controls__bar {
+  .deck-controls__bar {
     display: flex;
     align-items: center;
     gap: var(--sp-3);
     margin-top: var(--sp-3);
     flex-wrap: wrap;
   }
-  .ai-btn {
+  .deck-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -319,18 +346,18 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
       transform 0.16s var(--ease),
       opacity 0.16s var(--ease);
   }
-  .ai-btn:hover:not(:disabled) {
+  .deck-btn:hover:not(:disabled) {
     color: var(--fg);
     border-color: var(--fg-faint);
   }
-  .ai-btn:active:not(:disabled) {
+  .deck-btn:active:not(:disabled) {
     transform: scale(0.92);
   }
-  .ai-btn:disabled {
+  .deck-btn:disabled {
     opacity: 0.35;
     cursor: default;
   }
-  .ai-btn svg {
+  .deck-btn svg {
     width: 20px;
     height: 20px;
     stroke: currentColor;
@@ -339,7 +366,7 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .ai-btn--present {
+  .deck-btn--present {
     width: auto;
     gap: 0.5rem;
     margin-left: auto;
@@ -350,19 +377,19 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
-  .ai-btn--present svg {
+  .deck-btn--present svg {
     width: 18px;
     height: 18px;
   }
-  .ai-btn--present[data-mode='inline'] .ai-btn__icon--exit,
-  .ai-btn--present[data-mode='presenting'] .ai-btn__icon--enter,
-  .ai-btn--present[data-mode='presenting'] .ai-btn__label {
+  .deck-btn--present[data-mode='inline'] .deck-btn__icon--exit,
+  .deck-btn--present[data-mode='presenting'] .deck-btn__icon--enter,
+  .deck-btn--present[data-mode='presenting'] .deck-btn__label {
     display: none;
   }
-  .ai-btn--notes {
+  .deck-btn--notes {
     display: none;
   }
-  .ai-counter {
+  .deck-counter {
     font-family: var(--font-mono);
     font-size: var(--fs-sm);
     color: var(--fg-muted);
@@ -370,20 +397,20 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     min-width: 66px;
     text-align: center;
   }
-  .ai-counter :global(b) {
+  .deck-counter :global(b) {
     color: var(--fg);
     font-weight: 500;
   }
 
   /* ===== TRANSCRIPT ===== */
-  .ai-transcript {
+  .deck-transcript {
     margin-top: var(--sp-5);
     padding: var(--sp-5);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     background: var(--surface);
   }
-  .ai-transcript__eyebrow {
+  .deck-transcript__eyebrow {
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;
@@ -395,7 +422,7 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     color: var(--fg-faint);
     margin-bottom: var(--sp-3);
   }
-  .ai-transcript__eyebrow svg {
+  .deck-transcript__eyebrow svg {
     width: 15px;
     height: 15px;
     stroke: var(--accent);
@@ -404,17 +431,17 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .ai-transcript__text {
+  .deck-transcript__text {
     color: var(--fg-muted);
     line-height: 1.7;
     font-size: var(--fs-md);
   }
 
   @media (prefers-reduced-motion: no-preference) {
-    .ai-transcript__text.swap-in {
-      animation: ai-swap 0.4s var(--ease);
+    .deck-transcript__text.swap-in {
+      animation: deck-swap 0.4s var(--ease);
     }
-    @keyframes ai-swap {
+    @keyframes deck-swap {
       from {
         opacity: 0;
         transform: translateY(8px);
@@ -427,10 +454,10 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
   }
 
   /* ===== PRESENT MODE ===== */
-  :global(html.ai-presenting) {
+  :global(html.deck-presenting) {
     overflow: hidden;
   }
-  .ai-talk.is-presenting {
+  .deck.is-presenting {
     position: fixed;
     inset: 0;
     z-index: 100;
@@ -442,19 +469,19 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
   .is-presenting.is-idle {
     cursor: none;
   }
-  .is-presenting .ai-stage {
+  .is-presenting .deck-stage {
     flex: 1 1 auto;
     min-height: 0;
     border: 0;
     border-radius: 0;
     background: var(--bg);
   }
-  .is-presenting .ai-stage:focus-visible {
+  .is-presenting .deck-stage:focus-visible {
     outline: none;
   }
 
   /* Landscape: fixed 16:9 frame, scaled into the stage. */
-  .is-presenting[data-orient='landscape'] .ai-frame {
+  .is-presenting[data-orient='landscape'] .deck-frame {
     position: absolute;
     left: 50%;
     top: var(--frame-top, 50%);
@@ -462,8 +489,8 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     height: var(--frame-h, 720px);
     transform: translate(-50%, -50%) scale(var(--fit, 1));
   }
-  .is-presenting[data-orient='landscape'] .ai-slide,
-  .is-presenting[data-orient='landscape'] .ai-slide.is-active {
+  .is-presenting[data-orient='landscape'] .deck-slide,
+  .is-presenting[data-orient='landscape'] .deck-slide.is-active {
     position: absolute;
     inset: 0 auto auto 0;
     width: 100%;
@@ -472,54 +499,54 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     transform-origin: top center;
     transform: translateY(6px) scale(var(--slide-fit, 1));
   }
-  .is-presenting[data-orient='landscape'] .ai-slide.is-active {
+  .is-presenting[data-orient='landscape'] .deck-slide.is-active {
     transform: scale(var(--slide-fit, 1));
   }
-  .is-presenting[data-orient='landscape'] .ai-slide__num {
+  .is-presenting[data-orient='landscape'] .deck-slide__num {
     display: block;
     top: 1.75rem;
     right: 2rem;
   }
-  .is-presenting[data-orient='landscape'] .ai-slide__title {
+  .is-presenting[data-orient='landscape'] .deck-slide__title {
     font-size: 2.6rem;
   }
-  .is-presenting[data-orient='landscape'] .ai-cols {
+  .is-presenting[data-orient='landscape'] .deck-cols {
     grid-template-columns: 1fr 1fr;
   }
-  .is-presenting[data-orient='landscape'] .ai-cols--wide {
+  .is-presenting[data-orient='landscape'] .deck-cols--wide {
     grid-template-columns: 1.08fr 0.92fr;
   }
-  .is-presenting[data-orient='landscape'] :global(.ai-cards--2),
-  .is-presenting[data-orient='landscape'] :global(.ai-checks--2col) {
+  .is-presenting[data-orient='landscape'] :global(.deck-cards--2),
+  .is-presenting[data-orient='landscape'] :global(.deck-checks--2col) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .is-presenting[data-orient='landscape'] :global(.ai-cards--3) {
+  .is-presenting[data-orient='landscape'] :global(.deck-cards--3) {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  .is-presenting[data-orient='landscape'] :global(.ai-quote) {
+  .is-presenting[data-orient='landscape'] :global(.deck-quote) {
     font-size: var(--fs-xl);
   }
 
   /* Portrait: responsive slide at full width, scrolling when long. */
-  .is-presenting[data-orient='portrait'] .ai-frame {
+  .is-presenting[data-orient='portrait'] .deck-frame {
     position: absolute;
     inset: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
   }
-  .is-presenting[data-orient='portrait'] .ai-slide {
+  .is-presenting[data-orient='portrait'] .deck-slide {
     padding-top: max(1.5rem, env(safe-area-inset-top));
     padding-bottom: 6rem;
   }
-  .is-presenting[data-orient='portrait'] .ai-slide.is-active {
+  .is-presenting[data-orient='portrait'] .deck-slide.is-active {
     min-height: 100%;
   }
 
   /* Transcript: shown while presenting unless toggled off (T). */
-  .is-presenting .ai-transcript {
+  .is-presenting .deck-transcript {
     display: none;
   }
-  .is-presenting[data-notes='on'] .ai-transcript {
+  .is-presenting[data-notes='on'] .deck-transcript {
     display: block;
     flex: 0 0 auto;
     max-height: 34vh;
@@ -531,14 +558,14 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     border-top: 1px solid var(--border);
     border-radius: 0;
   }
-  .is-presenting[data-notes='on'] .ai-transcript__text {
+  .is-presenting[data-notes='on'] .deck-transcript__text {
     max-width: 64rem;
     margin-inline: auto;
     font-size: var(--fs-lg);
     line-height: 1.6;
     color: var(--fg);
   }
-  .is-presenting[data-notes='on'] .ai-transcript__eyebrow {
+  .is-presenting[data-notes='on'] .deck-transcript__eyebrow {
     display: flex;
     max-width: 64rem;
     margin-inline: auto;
@@ -546,10 +573,10 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
   }
 
   /* Controls float over the bottom edge and fade when the pointer rests. */
-  .is-presenting .ai-controls {
+  .is-presenting .deck-controls {
     margin: 0;
   }
-  .is-presenting .ai-progress {
+  .is-presenting .deck-progress {
     position: absolute;
     left: 0;
     right: 0;
@@ -559,10 +586,10 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     border-radius: 0;
     background: transparent;
   }
-  .is-presenting .ai-progress > i {
+  .is-presenting .deck-progress > i {
     border-radius: 0;
   }
-  .is-presenting .ai-controls__bar {
+  .is-presenting .deck-controls__bar {
     position: absolute;
     left: 0;
     right: 0;
@@ -581,60 +608,60 @@ const pad = (n: number) => (n < 10 ? '0' + n : String(n));
     transition: opacity 0.36s var(--ease);
   }
   /* With the transcript open the controls sit under it, never on its text. */
-  .is-presenting[data-notes='on'] .ai-controls {
+  .is-presenting[data-notes='on'] .deck-controls {
     flex: 0 0 auto;
     padding: var(--sp-2) 0 max(var(--sp-3), env(safe-area-inset-bottom));
     background: var(--surface);
   }
-  .is-presenting[data-notes='on'] .ai-controls__bar {
+  .is-presenting[data-notes='on'] .deck-controls__bar {
     position: static;
   }
   @media (max-height: 520px) {
-    .is-presenting[data-notes='on'] .ai-transcript {
+    .is-presenting[data-notes='on'] .deck-transcript {
       padding-top: var(--sp-3);
     }
-    .is-presenting[data-notes='on'] .ai-transcript__eyebrow {
+    .is-presenting[data-notes='on'] .deck-transcript__eyebrow {
       display: none;
     }
-    .is-presenting[data-notes='on'] .ai-transcript__text {
+    .is-presenting[data-notes='on'] .deck-transcript__text {
       font-size: var(--fs-base);
     }
-    .is-presenting[data-notes='on'] .ai-controls {
+    .is-presenting[data-notes='on'] .deck-controls {
       padding-block: 0 max(var(--sp-2), env(safe-area-inset-bottom));
     }
-    .is-presenting[data-notes='on'] .ai-controls__bar {
+    .is-presenting[data-notes='on'] .deck-controls__bar {
       padding: 2px;
     }
   }
   .is-presenting[data-notes='off'].is-idle
-    .ai-controls__bar:not(:focus-within, :hover) {
+    .deck-controls__bar:not(:focus-within, :hover) {
     opacity: 0;
     pointer-events: none;
   }
-  .is-presenting .ai-btn {
+  .is-presenting .deck-btn {
     border-color: transparent;
   }
-  .is-presenting .ai-btn--notes {
+  .is-presenting .deck-btn--notes {
     display: inline-flex;
   }
-  .is-presenting .ai-btn--notes[aria-pressed='true'] {
+  .is-presenting .deck-btn--notes[aria-pressed='true'] {
     color: var(--accent-text);
     border-color: var(--accent-line);
   }
-  .is-presenting .ai-btn--present {
+  .is-presenting .deck-btn--present {
     width: 44px;
     margin-left: 0;
     padding: 0;
   }
 
   @media (max-width: 720px) {
-    .ai-cols,
-    .ai-cols--wide {
+    .deck-cols,
+    .deck-cols--wide {
       grid-template-columns: 1fr;
     }
   }
   @media (max-width: 640px) {
-    .ai-slide__num {
+    .deck-slide__num {
       display: none;
     }
   }

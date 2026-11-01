@@ -1,5 +1,5 @@
 ---
-import { BlockKind, type LeafBlock, type IconKey } from '../data/aiTalk';
+import { BlockKind, type LeafBlock, type IconKey } from '../data/deck';
 
 interface Props {
   block: LeafBlock;
@@ -45,7 +45,7 @@ const ICONS: Record<IconKey, string> = {
 {
   block.kind === BlockKind.Lead && (
     <p
-      class:list={['ai-lead', { 'ai-lead--sm': block.small }]}
+      class:list={['deck-lead', { 'deck-lead--sm': block.small }]}
       set:html={block.html}
     />
   )
@@ -53,21 +53,21 @@ const ICONS: Record<IconKey, string> = {
 
 {
   block.kind === BlockKind.Pills && (
-    <div class="ai-pills">
+    <div class="deck-pills">
       {block.items.map((p) => (
         <>
           {p.arrowBefore && (
             <svg
-              class="ai-pill-arrow"
+              class="deck-pill-arrow"
               viewBox="0 0 24 24"
               aria-hidden="true"
               set:html={ICONS.arrow}
             />
           )}
-          <span class:list={['ai-pill', { 'ai-pill--strong': p.strong }]}>
+          <span class:list={['deck-pill', { 'deck-pill--strong': p.strong }]}>
             {p.icon && (
               <svg
-                class="ai-pill-ic"
+                class="deck-pill-ic"
                 viewBox="0 0 24 24"
                 aria-hidden="true"
                 set:html={ICONS[p.icon]}
@@ -83,17 +83,17 @@ const ICONS: Record<IconKey, string> = {
 
 {
   block.kind === BlockKind.Cards && (
-    <div class:list={['ai-cards', `ai-cards--${block.cols}`]}>
+    <div class:list={['deck-cards', `deck-cards--${block.cols}`]}>
       {block.items.map((c, i) => (
-        <div class="ai-card" data-reveal style={`--d:${(i % 3) * 70}ms`}>
-          {c.step && <div class="ai-card__step">{c.step}</div>}
+        <div class="deck-card" data-reveal style={`--d:${(i % 3) * 70}ms`}>
+          {c.step && <div class="deck-card__step">{c.step}</div>}
           {c.icon && (
-            <div class="ai-card__ic" aria-hidden="true">
+            <div class="deck-card__ic" aria-hidden="true">
               <svg viewBox="0 0 24 24" set:html={ICONS[c.icon]} />
             </div>
           )}
-          <h3 class="ai-card__title" set:html={c.title} />
-          <p class="ai-card__body" set:html={c.body} />
+          <h3 class="deck-card__title" set:html={c.title} />
+          <p class="deck-card__body" set:html={c.body} />
         </div>
       ))}
     </div>
@@ -102,9 +102,9 @@ const ICONS: Record<IconKey, string> = {
 
 {
   block.kind === BlockKind.Code && (
-    <div class="ai-code-wrap">
+    <div class="deck-code-wrap">
       {block.label && (
-        <div class="ai-filetab">
+        <div class="deck-filetab">
           {block.labelIcon && (
             <svg
               viewBox="0 0 24 24"
@@ -115,30 +115,30 @@ const ICONS: Record<IconKey, string> = {
           <span set:html={block.label} />
         </div>
       )}
-      <div class:list={['ai-code', block.tone && `ai-code--${block.tone}`]}>
+      <div class:list={['deck-code', block.tone && `deck-code--${block.tone}`]}>
         {block.lines.map((line) => (
-          <div class="ai-code__row" set:html={line} />
+          <div class="deck-code__row" set:html={line} />
         ))}
       </div>
-      {block.caption && <p class="ai-code__caption" set:html={block.caption} />}
+      {block.caption && <p class="deck-code__caption" set:html={block.caption} />}
     </div>
   )
 }
 
 {
   block.kind === BlockKind.Checklist && (
-    <ul class:list={['ai-checks', { 'ai-checks--2col': block.columns === 2 }]}>
+    <ul class:list={['deck-checks', { 'deck-checks--2col': block.columns === 2 }]}>
       {block.items.map((it) => (
-        <li class="ai-check">
+        <li class="deck-check">
           <svg
-            class="ai-check__mark"
+            class="deck-check__mark"
             viewBox="0 0 24 24"
             aria-hidden="true"
             set:html={ICONS.check}
           />
-          <span class="ai-check__text">
+          <span class="deck-check__text">
             <span set:html={it.title} />
-            {it.note && <span class="ai-check__note" set:html={it.note} />}
+            {it.note && <span class="deck-check__note" set:html={it.note} />}
           </span>
         </li>
       ))}
@@ -148,66 +148,66 @@ const ICONS: Record<IconKey, string> = {
 
 {
   block.kind === BlockKind.Stats && (
-    <div class="ai-stats">
+    <div class="deck-stats">
       {block.items.map((s) => (
-        <div class="ai-stat">
-          <div class="ai-stat__big">{s.big}</div>
-          <div class="ai-stat__lbl">{s.label}</div>
+        <div class="deck-stat">
+          <div class="deck-stat__big">{s.big}</div>
+          <div class="deck-stat__lbl">{s.label}</div>
         </div>
       ))}
     </div>
   )
 }
 
-{block.kind === BlockKind.Quote && <p class="ai-quote" set:html={block.html} />}
+{block.kind === BlockKind.Quote && <p class="deck-quote" set:html={block.html} />}
 
 <style>
   /* --- shared inline-emphasis token classes (injected via set:html) --- */
-  .ai-lead :global(b),
-  .ai-card__body :global(b),
-  .ai-check__text :global(b),
-  .ai-code__caption :global(b) {
+  .deck-lead :global(b),
+  .deck-card__body :global(b),
+  .deck-check__text :global(b),
+  .deck-code__caption :global(b) {
     color: var(--fg);
     font-weight: 620;
   }
-  .ai-lead :global(.hl),
-  .ai-quote :global(.hl),
-  .ai-lead :global(i),
-  .ai-check__text :global(.hl) {
+  .deck-lead :global(.hl),
+  .deck-quote :global(.hl),
+  .deck-lead :global(i),
+  .deck-check__text :global(.hl) {
     color: var(--accent-text);
     font-weight: 560;
     font-style: normal;
   }
-  .ai-lead :global(i),
-  .ai-card__body :global(i),
-  .ai-check__text :global(i) {
+  .deck-lead :global(i),
+  .deck-card__body :global(i),
+  .deck-check__text :global(i) {
     color: var(--fg-muted);
     font-style: italic;
     font-weight: 500;
   }
-  .ai-quote :global(.mut) {
+  .deck-quote :global(.mut) {
     color: var(--fg-faint);
   }
 
   /* --- lead paragraph --- */
-  .ai-lead {
+  .deck-lead {
     color: var(--fg-muted);
     max-width: 62ch;
     font-size: var(--fs-md);
     line-height: 1.55;
   }
-  .ai-lead--sm {
+  .deck-lead--sm {
     font-size: var(--fs-base);
   }
 
   /* --- pills --- */
-  .ai-pills {
+  .deck-pills {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--sp-2);
   }
-  .ai-pill {
+  .deck-pill {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
@@ -218,12 +218,12 @@ const ICONS: Record<IconKey, string> = {
     background: var(--surface);
     border: 1px solid var(--border);
   }
-  .ai-pill--strong {
+  .deck-pill--strong {
     border-color: var(--accent);
     color: var(--fg);
     background: var(--accent-soft);
   }
-  .ai-pill-ic {
+  .deck-pill-ic {
     width: 16px;
     height: 16px;
     stroke: var(--accent);
@@ -232,7 +232,7 @@ const ICONS: Record<IconKey, string> = {
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .ai-pill-arrow {
+  .deck-pill-arrow {
     width: 20px;
     height: 20px;
     stroke: var(--fg-faint);
@@ -243,23 +243,23 @@ const ICONS: Record<IconKey, string> = {
   }
 
   /* --- cards --- */
-  .ai-cards {
+  .deck-cards {
     display: grid;
     gap: var(--sp-4);
   }
-  .ai-cards--2 {
+  .deck-cards--2 {
     grid-template-columns: repeat(2, 1fr);
   }
-  .ai-cards--3 {
+  .deck-cards--3 {
     grid-template-columns: repeat(3, 1fr);
   }
-  .ai-card {
+  .deck-card {
     background: var(--bg-subtle);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: var(--sp-5);
   }
-  .ai-card__step {
+  .deck-card__step {
     font-family: var(--font-mono);
     font-size: var(--fs-2xs);
     letter-spacing: 0.1em;
@@ -267,7 +267,7 @@ const ICONS: Record<IconKey, string> = {
     color: var(--fg-faint);
     margin-bottom: var(--sp-3);
   }
-  .ai-card__ic {
+  .deck-card__ic {
     display: grid;
     place-items: center;
     width: 42px;
@@ -277,7 +277,7 @@ const ICONS: Record<IconKey, string> = {
     color: var(--accent);
     margin-bottom: var(--sp-3);
   }
-  .ai-card__ic svg {
+  .deck-card__ic svg {
     width: 22px;
     height: 22px;
     stroke: currentColor;
@@ -286,18 +286,18 @@ const ICONS: Record<IconKey, string> = {
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .ai-card__title {
+  .deck-card__title {
     font-size: var(--fs-md);
     margin-bottom: var(--sp-2);
   }
-  .ai-card__body {
+  .deck-card__body {
     font-size: var(--fs-sm);
     line-height: 1.5;
     color: var(--fg-muted);
   }
 
   /* --- code --- */
-  .ai-filetab {
+  .deck-filetab {
     display: flex;
     align-items: center;
     gap: 0.45rem;
@@ -306,7 +306,7 @@ const ICONS: Record<IconKey, string> = {
     color: var(--fg-faint);
     margin-bottom: var(--sp-2);
   }
-  .ai-filetab svg {
+  .deck-filetab svg {
     width: 15px;
     height: 15px;
     stroke: var(--accent);
@@ -316,7 +316,7 @@ const ICONS: Record<IconKey, string> = {
     stroke-linejoin: round;
     flex: 0 0 auto;
   }
-  .ai-code {
+  .deck-code {
     background: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -326,30 +326,30 @@ const ICONS: Record<IconKey, string> = {
     line-height: 1.72;
     overflow-x: auto;
   }
-  .ai-code--good {
+  .deck-code--good {
     border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   }
-  .ai-code--bad {
+  .deck-code--bad {
     border-style: dashed;
   }
-  .ai-code__row {
+  .deck-code__row {
     white-space: pre;
   }
-  .ai-code :global(.kw) {
+  .deck-code :global(.kw) {
     color: var(--accent-text);
     font-weight: 600;
   }
-  .ai-code :global(.str) {
+  .deck-code :global(.str) {
     color: var(--fg);
     font-weight: 500;
   }
-  .ai-code :global(.mut) {
+  .deck-code :global(.mut) {
     color: var(--fg-faint);
   }
-  .ai-code :global(.var) {
+  .deck-code :global(.var) {
     color: var(--fg-muted);
   }
-  .ai-code__caption {
+  .deck-code__caption {
     margin-top: var(--sp-3);
     font-size: var(--fs-sm);
     line-height: 1.5;
@@ -357,26 +357,26 @@ const ICONS: Record<IconKey, string> = {
   }
 
   /* --- checklist --- */
-  .ai-checks {
+  .deck-checks {
     list-style: none;
     padding: 0;
     display: flex;
     flex-direction: column;
     gap: var(--sp-3);
   }
-  .ai-checks--2col {
+  .deck-checks--2col {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--sp-4) var(--sp-6);
   }
-  .ai-check {
+  .deck-check {
     display: flex;
     align-items: flex-start;
     gap: var(--sp-3);
     font-size: var(--fs-md);
     line-height: 1.45;
   }
-  .ai-check__mark {
+  .deck-check__mark {
     flex: 0 0 auto;
     width: 22px;
     height: 22px;
@@ -387,34 +387,34 @@ const ICONS: Record<IconKey, string> = {
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .ai-check__text {
+  .deck-check__text {
     display: flex;
     flex-direction: column;
     gap: 0.1rem;
   }
-  .ai-check__text :global(b) {
+  .deck-check__text :global(b) {
     color: var(--accent-text);
     font-weight: 620;
   }
-  .ai-check__note {
+  .deck-check__note {
     font-size: var(--fs-sm);
     color: var(--fg-muted);
   }
 
   /* --- stats --- */
-  .ai-stats {
+  .deck-stats {
     display: flex;
     flex-direction: column;
     gap: var(--sp-5);
   }
-  .ai-stat__big {
+  .deck-stat__big {
     font-size: var(--fs-2xl);
     font-weight: 720;
     letter-spacing: -0.02em;
     line-height: 1;
     color: var(--accent);
   }
-  .ai-stat__lbl {
+  .deck-stat__lbl {
     margin-top: var(--sp-2);
     font-size: var(--fs-sm);
     color: var(--fg-muted);
@@ -422,7 +422,7 @@ const ICONS: Record<IconKey, string> = {
   }
 
   /* --- quote --- */
-  .ai-quote {
+  .deck-quote {
     font-size: var(--fs-xl);
     font-weight: 680;
     letter-spacing: -0.02em;
@@ -431,12 +431,12 @@ const ICONS: Record<IconKey, string> = {
   }
 
   @media (max-width: 640px) {
-    .ai-cards--2,
-    .ai-cards--3,
-    .ai-checks--2col {
+    .deck-cards--2,
+    .deck-cards--3,
+    .deck-checks--2col {
       grid-template-columns: 1fr;
     }
-    .ai-quote {
+    .deck-quote {
       font-size: var(--fs-lg);
     }
   }

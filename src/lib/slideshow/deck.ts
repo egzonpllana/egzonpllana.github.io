@@ -3,13 +3,13 @@
  * bar and the transcript of the active slide.
  *
  * Markup contract (rendered by AiTalkSlideshow.astro):
- *   [data-ai-talk]            root
- *   [data-ai-stage]           focusable stage holding the slides
- *   .ai-slide                 one per slide, carries data-transcript
- *   [data-ai-prev|next]       buttons
- *   [data-ai-counter]         "01 / 17"
- *   [data-ai-fill]            progress bar fill
- *   [data-ai-transcript]      transcript text of the active slide
+ *   [data-deck]            root
+ *   [data-deck-stage]           focusable stage holding the slides
+ *   .deck-slide                 one per slide, carries data-transcript
+ *   [data-deck-prev|next]       buttons
+ *   [data-deck-counter]         "01 / 17"
+ *   [data-deck-fill]            progress bar fill
+ *   [data-deck-transcript]      transcript text of the active slide
  */
 
 const SWIPE_PX = 50;
@@ -26,7 +26,7 @@ const pad = (n: number): string => (n < 10 ? '0' + n : String(n));
 function isInteractive(target: EventTarget | null): boolean {
   return (
     target instanceof Element &&
-    target.closest('.ai-code, .ai-code-wrap, pre, a, button') !== null
+    target.closest('.deck-code, .deck-code-wrap, pre, a, button') !== null
   );
 }
 
@@ -49,12 +49,12 @@ export class Deck {
     private readonly options: DeckOptions,
   ) {
     this.stage = stage;
-    this.slides = Array.from(stage.querySelectorAll<HTMLElement>('.ai-slide'));
-    this.prevButton = root.querySelector('[data-ai-prev]');
-    this.nextButton = root.querySelector('[data-ai-next]');
-    this.counter = root.querySelector('[data-ai-counter]');
-    this.fill = root.querySelector('[data-ai-fill]');
-    this.transcript = root.querySelector('[data-ai-transcript]');
+    this.slides = Array.from(stage.querySelectorAll<HTMLElement>('.deck-slide'));
+    this.prevButton = root.querySelector('[data-deck-prev]');
+    this.nextButton = root.querySelector('[data-deck-next]');
+    this.counter = root.querySelector('[data-deck-counter]');
+    this.fill = root.querySelector('[data-deck-fill]');
+    this.transcript = root.querySelector('[data-deck-transcript]');
 
     this.prevButton?.addEventListener('click', () => this.prev());
     this.nextButton?.addEventListener('click', () => this.next());
@@ -120,6 +120,7 @@ export class Deck {
   // Only while focus is inside the deck, so page-level arrow-key scrolling
   // and other widgets are never hijacked.
   private onKey(event: KeyboardEvent): void {
+    if (event.defaultPrevented) return;
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
       return;

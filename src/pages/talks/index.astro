@@ -6,21 +6,29 @@ import TalkCard from '../../components/TalkCard.astro';
 import { readingTime } from '../../lib/reading-time';
 import { articleSlug } from '../../lib/slug';
 import { AI_TODAY_CARD, TALKS_INTRO } from '../../data/talks';
+import { deckFor } from '../../data/talkDecks';
 import type { TalkCardEntry } from '../../data/talks';
 
 const written = (await getCollection('talks')).filter((t) => !t.data.draft);
 
 const cards: TalkCardEntry[] = [
   AI_TODAY_CARD,
-  ...written.map((t) => ({
-    title: t.data.title,
-    description: t.data.description,
-    href: `/talks/${articleSlug(t.id)}/`,
-    date: t.data.date,
-    meta: `${readingTime(t.body ?? '')} min read`,
-    cta: 'Read the guide',
-    image: t.data.heroImage,
-  })),
+  ...written.map((t) => {
+    const slug = articleSlug(t.id);
+    const slides = deckFor(slug);
+    const minutes = readingTime(t.body ?? '');
+    return {
+      title: t.data.title,
+      description: t.data.description,
+      href: `/talks/${slug}/`,
+      date: t.data.date,
+      meta: slides
+        ? `${slides.length} slides · ${minutes} min write-up`
+        : `${minutes} min read`,
+      cta: slides ? 'Watch the talk' : 'Read the guide',
+      image: t.data.heroImage,
+    };
+  }),
 ];
 
 cards.sort((a, b) => b.date.valueOf() - a.date.valueOf());

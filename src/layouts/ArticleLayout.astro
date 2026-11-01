@@ -40,6 +40,8 @@ interface Props {
   backLabel?: string;
   /** Tag pills link to /tags/ only for collections that generate tag pages. */
   tagsLinked?: boolean;
+  /** Slides in the deck slot; the reading time then counts the write-up. */
+  slideCount?: number;
 }
 
 const {
@@ -57,7 +59,11 @@ const {
   backHref = '/articles/',
   backLabel = 'All articles',
   tagsLinked = true,
+  slideCount,
 } = Astro.props;
+
+/** Talks open on their slides; the prose below is the write-up. */
+const hasDeck = Astro.slots.has('deck');
 
 // Social preview: a compressed ~1200px variant instead of the original PNG.
 const ogAsset = ogImage ?? heroImage;
@@ -95,7 +101,15 @@ const showToc = tocEntries.length >= 3;
       <div class="article__meta">
         <time datetime={isoDate(date)}>{formatDate(date)}</time>
         <span aria-hidden="true">·</span>
-        <span>{readingTime} min read</span>
+        {
+          slideCount ? (
+            <span>
+              {slideCount} slides · {readingTime} min write-up
+            </span>
+          ) : (
+            <span>{readingTime} min read</span>
+          )
+        }
         {
           updated && (
             <>
@@ -130,7 +144,15 @@ const showToc = tocEntries.length >= 3;
     </header>
 
     {
-      heroImage && (
+      hasDeck && (
+        <div class="article__deck">
+          <slot name="deck" />
+        </div>
+      )
+    }
+
+    {
+      heroImage && !hasDeck && (
         <figure class="article__hero">
           <Image
             src={heroImage}
@@ -319,6 +341,15 @@ const showToc = tocEntries.length >= 3;
     margin-top: var(--sp-7);
     padding-top: var(--sp-6);
     border-top: 1px solid var(--border);
+  }
+  /* The deck breaks out of the reading column: slides need the width. */
+  .article__deck {
+    --deck-width: min(calc(100vw - 2 * var(--sp-4)), 1100px);
+    width: var(--deck-width);
+    margin: 0 0 var(--sp-8) calc((100% - var(--deck-width)) / 2);
+  }
+  .article__deck :global(.deck) {
+    margin-top: 0;
   }
   .article__hero {
     margin: 0 0 var(--sp-7);

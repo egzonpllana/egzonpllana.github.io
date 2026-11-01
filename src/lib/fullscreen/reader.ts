@@ -113,7 +113,7 @@ class FullscreenReader {
 
   private onKey(event: KeyboardEvent): void {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (native.isTypingTarget(event.target)) return;
+    if (event.defaultPrevented || native.isTypingTarget(event.target)) return;
     if (event.key === 'f' || event.key === 'F') {
       event.preventDefault();
       void this.switchMode();

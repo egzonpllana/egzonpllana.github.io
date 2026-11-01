@@ -22,7 +22,7 @@ export interface TalkCardEntry {
 export const TALKS_INTRO = {
   title: 'Talks',
   description:
-    'Talks and long-form guides - the slides and transcripts of what I actually said, and the write-ups that stand on their own.',
+    'Talks as I give them - the slides, the transcript of what I said on each one, and the write-up behind it.',
 } as const;
 
 /** The AI Today talk has its own slideshow page, so it is declared, not globbed. */

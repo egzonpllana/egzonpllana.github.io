@@ -2,9 +2,9 @@
 import { getImage } from 'astro:assets';
 import BaseLayout from '../layouts/BaseLayout.astro';
 import SectionHeading from '../components/SectionHeading.astro';
-import AiTalkSlideshow from '../components/AiTalkSlideshow.astro';
+import TalkDeck from '../components/TalkDeck.astro';
 import ViewCount from '../components/ViewCount.astro';
-import { AI_TALK_INTRO, AI_TALK_META } from '../data/aiTalk';
+import { AI_TALK_INTRO, AI_TALK_META, SLIDES } from '../data/aiTalk';
 import { formatDate, isoDate } from '../lib/format-date';
 import { AI_TODAY_CARD } from '../data/talks';
 
@@ -54,7 +54,7 @@ const og = AI_TODAY_CARD.image
         <ViewCount path={Astro.url.pathname} />
       </p>
       <p class="ai-intro" data-reveal>{AI_TALK_INTRO.body}</p>
-      <AiTalkSlideshow />
+      <TalkDeck slides={SLIDES} />
     </div>
   </section>
 </BaseLayout>

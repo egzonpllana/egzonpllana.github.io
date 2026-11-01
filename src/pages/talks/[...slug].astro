@@ -1,6 +1,8 @@
 ---
 import { getCollection, render } from 'astro:content';
 import ArticleLayout from '../../layouts/ArticleLayout.astro';
+import TalkDeck from '../../components/TalkDeck.astro';
+import { deckFor } from '../../data/talkDecks';
 import { readingTime } from '../../lib/reading-time';
 import { articleSlug } from '../../lib/slug';
 
@@ -16,6 +18,7 @@ export async function getStaticPaths() {
 const { talk } = Astro.props;
 const { Content, headings } = await render(talk);
 const minutes = readingTime(talk.body ?? '');
+const slides = deckFor(articleSlug(talk.id));
 ---
 
 <ArticleLayout
@@ -32,6 +35,8 @@ const minutes = readingTime(talk.body ?? '');
   backHref="/talks/"
   backLabel="All talks"
   tagsLinked={false}
+  slideCount={slides?.length}
 >
+  {slides && <TalkDeck slot="deck" slides={slides} />}
   <Content />
 </ArticleLayout>
