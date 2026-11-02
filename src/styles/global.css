@@ -291,16 +291,21 @@ main {
 .skip-link {
   position: absolute;
   left: var(--sp-4);
-  top: -3rem;
+  top: var(--sp-4);
   z-index: 100;
   background: var(--accent-text);
   color: var(--accent-fg);
   padding: var(--sp-2) var(--sp-4);
   border-radius: var(--radius-sm);
-  transition: top 0.2s var(--ease);
+  transform: translateY(calc(-100% - var(--sp-5)));
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.2s var(--ease), opacity 0.2s var(--ease);
 }
 .skip-link:focus {
-  top: var(--sp-4);
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* ===========================================================================
